@@ -136,7 +136,7 @@ class SineGen(nn.Module):
 
     def _f02uv(self, f0):
         # generate uv signal
-        uv = (f0 > self.voiced_threshold).type(torch.float32)
+        uv = (f0 > self.voiced_threshold).to(f0.dtype)
         return uv
 
     def _f02sine(self, f0_values):
@@ -191,7 +191,7 @@ class SineGen(nn.Module):
         """
         f0_buf = torch.zeros(f0.shape[0], f0.shape[1], self.dim, device=f0.device)
         # fundamental component
-        fn = torch.multiply(f0, torch.FloatTensor([[range(1, self.harmonic_num + 2)]]).to(f0.device))
+        fn = torch.multiply(f0, torch.arange(1, self.harmonic_num + 2, device=f0.device, dtype=f0.dtype).unsqueeze(0).unsqueeze(0))
         # generate sine waveforms
         sine_waves = self._f02sine(fn) * self.sine_amp
         # generate uv signal

@@ -1,3 +1,11 @@
+#!/usr/bin/env python3
+"""
+Exports the Synthesizer models using a bucketing strategy.
+
+This is a standalone script that contains all necessary code to avoid
+import issues and environment conflicts. It assumes the .pth checkpoint
+and config.json are present in the 'checkpoints' directory.
+"""
 import argparse
 import os
 import torch
@@ -6,14 +14,15 @@ import coremltools as ct
 import numpy as np
 from safetensors.torch import load_file
 from collections import OrderedDict
+import time
+
+# --- Model Imports ---
+# These are brought in from the kokoro package to make the script self-contained.
 
 from kokoro.model import KModel
+from kokoro.modules import LayerNorm, AdaLayerNorm, LinearNorm, AdainResBlk1d
 
 # --- CoreML-Friendly Model Components ---
-# These are rewritten versions of the modules in kokoro/modules.py
-# that avoid operations incompatible with torch.jit.trace.
-
-from kokoro.modules import LayerNorm, AdaLayerNorm, LinearNorm, AdainResBlk1d
 
 class CoreMLFriendlyTextEncoder(nn.Module):
     """Replaces the original TextEncoder to avoid pack_padded_sequence."""
@@ -99,7 +108,7 @@ class DurationModel(nn.Module):
         return pred_dur, d, t_en, s, ref_s
 
 class SynthesizerModel(nn.Module):
-    """Second-stage model: Synthesizes audio from intermediate features and a fixed-size alignment matrix."""
+    """Second-stage model: Synthesizes audio from intermediate features."""
     def __init__(self, kmodel: KModel):
         super().__init__()
         self.kmodel = kmodel
@@ -116,34 +125,25 @@ class SynthesizerModel(nn.Module):
 # --- Main Export Logic ---
 
 def prepare_pytorch_models(config_path, checkpoint_path):
-    """Ensures PyTorch models are available, converting from safetensors if needed."""
+    """Loads the KModel from the specified checkpoint."""
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Config file not found: {config_path}")
     if not os.path.exists(checkpoint_path):
-        print("PyTorch checkpoint not found. Attempting to convert from safetensors...")
-        mlx_resources = "/Users/mattmireles/Documents/GitHub/kokoro-mlx-swift/kokoro-ios/mlxtest/mlxtest/Resources"
-        safetensors_path = os.path.join(mlx_resources, "kokoro-v1_0.safetensors")
-        if not os.path.exists(safetensors_path):
-            raise FileNotFoundError(f"Cannot find {safetensors_path}.")
-        
-        state_dict = load_file(safetensors_path)
-        organized_dict = OrderedDict((k, OrderedDict()) for k in ['bert', 'bert_encoder', 'predictor', 'text_encoder', 'decoder'])
-        for key, value in state_dict.items():
-            module_name = key.split('.')[0]
-            if module_name in organized_dict:
-                organized_dict[module_name][key[len(module_name)+1:]] = value
-        
-        os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
-        torch.save(organized_dict, checkpoint_path)
-        print(f"Saved PyTorch checkpoint to {checkpoint_path}")
+        raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
 
     return KModel(config=config_path, model=checkpoint_path, disable_complex=True)
 
-def export_models(kmodel, output_dir):
-    """Exports the two-stage model to Core ML using a bucketing strategy."""
+def export_synthesizers(output_dir, buckets_str):
+    """Exports the synthesizer models for the specified buckets."""
+    config_path = "checkpoints/config.json"
+    checkpoint_path = "checkpoints/kokoro-v1_0.pth"
     
-    # --- 1. Export the (dynamic) DurationModel ---
-    print("\n--- Exporting Duration Model ---")
+    print("--- Loading Model ---")
+    kmodel = prepare_pytorch_models(config_path, checkpoint_path)
+    os.makedirs(output_dir, exist_ok=True)
+    
+    print("\n--- Preparing Intermediate Features ---")
     duration_model = DurationModel(kmodel).eval()
-    duration_file = os.path.join(output_dir, "kokoro_duration.mlpackage")
     
     trace_length = 256
     input_ids = torch.randint(0, 100, (1, trace_length), dtype=torch.int32)
@@ -152,80 +152,65 @@ def export_models(kmodel, output_dir):
     attention_mask = torch.ones(1, trace_length, dtype=torch.int32)
     
     with torch.no_grad():
-        traced_duration_model = torch.jit.trace(duration_model, (input_ids, ref_s, speed, attention_mask))
-
-    ml_duration_model = ct.convert(
-        traced_duration_model,
-        inputs=[
-            ct.TensorType(name="input_ids", shape=(1, ct.RangeDim(1, 512)), dtype=np.int32),
-            ct.TensorType(name="ref_s", shape=(1, 256), dtype=np.float32),
-            ct.TensorType(name="speed", shape=(1,), dtype=np.float32),
-            ct.TensorType(name="attention_mask", shape=(1, ct.RangeDim(1, 512)), dtype=np.int32)
-        ],
-        outputs=[ct.TensorType(name="pred_dur"), ct.TensorType(name="d"), ct.TensorType(name="t_en"), ct.TensorType(name="s"), ct.TensorType(name="ref_s_out")],
-        convert_to="mlprogram",
-        minimum_deployment_target=ct.target.iOS15
-    )
-    ml_duration_model.save(duration_file)
-    print(f"✅ Saved Duration Model to: {duration_file}")
-
-    # --- 2. Export multiple (fixed-size) SynthesizerModels ---
-    print("\n--- Exporting Synthesizer Models (Bucketing) ---")
-    
-    with torch.no_grad():
         _, d, t_en, s, ref_s_out = duration_model(input_ids, ref_s, speed, attention_mask)
     
-    buckets = {
-        "3s": 3 * 24000,
-        # "5s": 5 * 24000,
-        # "10s": 10 * 24000,
-        # "30s": 30 * 24000
-    }
+    # Define buckets
+    # e.g., "3s,5s,10s"
+    bucket_seconds = [int(b.replace('s','')) for b in buckets_str.split(',')]
+    buckets = {f"{sec}s": sec * 24000 for sec in bucket_seconds}
 
-    synthesizer_model_base = SynthesizerModel(kmodel).eval()
+    synthesizer_model_base = SynthesizerModel(kmodel).half().eval()
 
     for name, frame_count in buckets.items():
-        print(f"Exporting synthesizer for bucket: {name} ({frame_count} frames)")
+        print(f"\n--- Exporting Synthesizer for Bucket: {name} ({frame_count} frames) ---")
         synthesizer_file = os.path.join(output_dir, f"kokoro_synthesizer_{name}.mlpackage")
 
-        pred_aln_trg = torch.zeros((trace_length, frame_count), dtype=torch.float32)
-
+        pred_aln_trg = torch.zeros((trace_length, frame_count), dtype=torch.float16)
+        
+        print(f"[{time.ctime()}] Tracing model...")
         with torch.no_grad():
-            traced_synthesizer_model = torch.jit.trace(synthesizer_model_base, (d, t_en, s, ref_s_out, pred_aln_trg))
-
+            traced_synthesizer = torch.jit.trace(
+                synthesizer_model_base, 
+                (d.half(), t_en.half(), s.half(), ref_s_out.half(), pred_aln_trg)
+            )
+        print(f"[{time.ctime()}] Model tracing complete.")
+        
         d_shape = (1, kmodel.bert.config.hidden_size, trace_length)
         t_en_shape = (1, kmodel.bert.config.hidden_size, trace_length)
         s_shape = (1, 128)
         ref_s_shape = (1, 256)
         pred_aln_trg_shape = (trace_length, frame_count)
         
-        ml_synthesizer_model = ct.convert(
-            traced_synthesizer_model,
+        print(f"[{time.ctime()}] Converting to Core ML...")
+        ml_synthesizer = ct.convert(
+            traced_synthesizer,
             inputs=[
-                ct.TensorType(name="d", shape=d_shape),
-                ct.TensorType(name="t_en", shape=t_en_shape),
-                ct.TensorType(name="s", shape=s_shape),
-                ct.TensorType(name="ref_s", shape=ref_s_shape),
-                ct.TensorType(name="pred_aln_trg", shape=pred_aln_trg_shape)
+                ct.TensorType(name="d", shape=d_shape, dtype=np.float16),
+                ct.TensorType(name="t_en", shape=t_en_shape, dtype=np.float16),
+                ct.TensorType(name="s", shape=s_shape, dtype=np.float16),
+                ct.TensorType(name="ref_s", shape=ref_s_shape, dtype=np.float16),
+                ct.TensorType(name="pred_aln_trg", shape=pred_aln_trg_shape, dtype=np.float16)
             ],
             outputs=[ct.TensorType(name="waveform")],
             convert_to="mlprogram",
-            minimum_deployment_target=ct.target.iOS15
+            minimum_deployment_target=ct.target.iOS15,
+            compute_precision=ct.precision.FLOAT16
         )
-        ml_synthesizer_model.save(synthesizer_file)
-        print(f"✅ Saved Synthesizer Model to: {synthesizer_file}")
-
+        print(f"[{time.ctime()}] Core ML conversion complete.")
+        
+        ml_synthesizer.save(synthesizer_file)
+        print(f"✅ Saved Synthesizer Model ({name}) to: {synthesizer_file}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser("Export Kokoro Model to CoreML", add_help=True)
-    parser.add_argument("--output_dir", "-o", type=str, default="coreml", help="Output directory")
+    parser = argparse.ArgumentParser(description="Export Kokoro Synthesizer to CoreML with bucketing.")
+    parser.add_argument("--output_dir", "-o", type=str, default="coreml", help="Output directory for mlpackage files.")
+    parser.add_argument("--buckets", type=str, default="3s", help="Comma-separated list of bucket sizes in seconds (e.g., '3s,5s,10s').")
     args = parser.parse_args()
-    
-    os.makedirs(args.output_dir, exist_ok=True)
-    
-    config_path = "checkpoints/config.json"
-    checkpoint_path = "checkpoints/kokoro-v1_0.pth"
-    
-    kmodel = prepare_pytorch_models(config_path, checkpoint_path)
-    export_models(kmodel, args.output_dir)
-    print("\n\n🎉 Export complete. You're ready to ship.")
+
+    try:
+        export_synthesizers(args.output_dir, args.buckets)
+        print("\n\n🎉 Synthesizer export complete. You're ready to ship.")
+    except Exception as e:
+        print(f"\n❌ An error occurred during export: {e}")
+        import traceback
+        traceback.print_exc()
