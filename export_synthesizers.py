@@ -115,11 +115,17 @@ class SynthesizerModel(nn.Module):
         self.kmodel.text_encoder = CoreMLFriendlyTextEncoder(kmodel.text_encoder)
 
     def forward(self, d: torch.FloatTensor, t_en: torch.FloatTensor, s: torch.FloatTensor, ref_s: torch.FloatTensor, pred_aln_trg: torch.FloatTensor):
+        print("[DEBUG] SynthesizerModel.forward: starting")
         k = self.kmodel
+        print("[DEBUG] SynthesizerModel.forward: calculating 'en'")
         en = d.transpose(-1, -2) @ pred_aln_trg
+        print("[DEBUG] SynthesizerModel.forward: calculating 'F0_pred, N_pred'")
         F0_pred, N_pred = k.predictor.F0Ntrain(en, s)
+        print("[DEBUG] SynthesizerModel.forward: calculating 'asr'")
         asr = t_en @ pred_aln_trg
+        print("[DEBUG] SynthesizerModel.forward: calling k.decoder")
         audio = k.decoder(asr, F0_pred, N_pred, ref_s[:, :128]).squeeze(0)
+        print("[DEBUG] SynthesizerModel.forward: k.decoder finished")
         return audio
 
 # --- Main Export Logic ---
