@@ -8,7 +8,9 @@ self.postMessage({ status: "device", device });
 // Load the model
 const model_id = "onnx-community/Kokoro-82M-v1.0-ONNX";
 const tts = await KokoroTTS.from_pretrained(model_id, {
-  dtype: device === "wasm" ? "q8" : "fp32",
+  // Using fp16 on WebGPU is a good balance of speed and quality.
+  // For devices without WebGPU, we fall back to wasm with q8 quantization.
+  dtype: device === "webgpu" ? "fp16" : "q8",
   device,
 }).catch((e) => {
   self.postMessage({ status: "error", error: e.message });
@@ -20,10 +22,27 @@ self.postMessage({ status: "ready", voices: tts.voices, device });
 self.addEventListener("message", async (e) => {
   const { text, voice } = e.data;
 
-  // Generate speech
-  const audio = await tts.generate(text, { voice });
+  try {
+    // Generate speech
+    const stream = tts.stream(text, { voice });
+
+    // Post the first chunk back to the main thread
+    let first = true;
+    for await (const { audio } of stream) {
+      const blob = audio.toBlob();
+      self.postMessage({
+        status: "chunk",
+        audio: blob,
+        text,
+        first,
+      });
+      first = false;
+    }
+  } catch (e) {
+    self.postMessage({ status: "error", error: e.message });
+    return;
+  }
 
   // Send the audio file back to the main thread
-  const blob = audio.toBlob();
-  self.postMessage({ status: "complete", audio: URL.createObjectURL(blob), text });
+  self.postMessage({ status: "complete", text });
 });

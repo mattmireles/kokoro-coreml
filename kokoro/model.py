@@ -65,7 +65,7 @@ class KModel(torch.nn.Module):
         )
         if not model:
             model = hf_hub_download(repo_id=repo_id, filename=KModel.MODEL_NAMES[repo_id])
-        for key, state_dict in torch.load(model, map_location='cpu', weights_only=True).items():
+        for key, state_dict in torch.load(model, map_location='cpu').items():
             assert hasattr(self, key), key
             try:
                 getattr(self, key).load_state_dict(state_dict)

@@ -14,6 +14,7 @@ export default function App() {
   const [loadingMessage, setLoadingMessage] = useState("Loading...");
 
   const [results, setResults] = useState([]);
+  const [chunks, setChunks] = useState([]);
 
   // We use the `useEffect` hook to setup the worker as soon as the `App` component is mounted.
   useEffect(() => {
@@ -34,11 +35,29 @@ export default function App() {
           break;
         case "error":
           setError(e.data.data);
+          setStatus("ready"); // Reset status
+          setChunks([]); // Clear any partial chunks
+          break;
+        case "chunk":
+          // When the first chunk arrives, create a placeholder UI
+          if (e.data.first) {
+            setResults((prev) => [{ text: e.data.text, src: null }, ...prev]);
+          }
+          // Collect the blobs
+          setChunks((prev) => [...prev, e.data.audio]);
           break;
         case "complete":
-          const { audio, text } = e.data;
-          // Generation complete: re-enable the "Generate" button
-          setResults((prev) => [{ text, src: audio }, ...prev]);
+          // Generation complete: merge blobs and play
+          const fullBlob = new Blob(chunks, { type: "audio/wav" });
+          const audioUrl = URL.createObjectURL(fullBlob);
+
+          // Update the result with the final URL
+          setResults((prev) => {
+            const newResults = [...prev];
+            newResults[0].src = audioUrl;
+            return newResults;
+          });
+          setChunks([]); // Clear chunks for the next run
           setStatus("ready");
           break;
       }
@@ -119,9 +138,13 @@ export default function App() {
                 <div className="text-white bg-gray-800/70 backdrop-blur-sm border border-gray-700 rounded-lg p-4 z-10">
                   <span className="absolute right-5 font-bold">#{results.length - i}</span>
                   <p className="mb-3 max-w-[95%]">{result.text}</p>
-                  <audio controls src={result.src} className="w-full">
-                    Your browser does not support the audio element.
-                  </audio>
+                  {result.src === null ? (
+                    <div className="w-full h-8 bg-gray-600 rounded-lg animate-pulse"></div>
+                  ) : (
+                    <audio controls src={result.src} autoPlay className="w-full">
+                      Your browser does not support the audio element.
+                    </audio>
+                  )}
                 </div>
               </div>
             ))}
