@@ -1,4 +1,39 @@
-# ADAPTED from https://github.com/yl4579/StyleTTS2/blob/main/Modules/istftnet.py
+# Audio Synthesis and iSTFT-based Neural Vocoder Components
+#
+# This module implements the core audio generation pipeline for Kokoro TTS,
+# featuring an iSTFT-based neural vocoder that synthesizes high-quality
+# waveforms from intermediate acoustic features.
+#
+# Key Components:
+# - Generator: Main neural vocoder with HiFi-GAN-style architecture
+# - Decoder: High-level wrapper combining feature processing and generation
+# - SourceModuleHnNSF: Harmonic/noise source modeling for F0-conditioned synthesis
+# - AdaINResBlock1: Style-adaptive residual blocks for voice conditioning
+# - TorchSTFT/CustomSTFT: STFT implementations with CoreML compatibility options
+#
+# Architecture Philosophy:
+# - iSTFT-based synthesis for high-fidelity audio generation
+# - Style-conditioned layers throughout for voice adaptation
+# - Harmonic plus noise source modeling for natural speech characteristics
+# - Multi-scale residual processing for rich spectral detail
+#
+# CoreML Export Considerations:
+# - CustomSTFT used when disable_complex=True for ONNX/CoreML compatibility
+# - TorchSTFT used for native PyTorch inference (higher quality)
+# - Complex number operations avoided in CustomSTFT variant
+#
+# Cross-file dependencies:
+# - Imports from: custom_stft.py (CustomSTFT for export compatibility)
+# - Used by: model.py (KModel.decoder), modules.py (ProsodyPredictor components)
+# - Based on: StyleTTS2 iSTFTNet with Kokoro-specific optimizations
+#
+# Performance Notes:
+# - Optimized for 24kHz synthesis with 600-sample hop length
+# - Multi-resolution processing for efficient high-quality generation
+# - Style conditioning enables zero-shot voice cloning capabilities
+
+# Adapted from StyleTTS2: https://github.com/yl4579/StyleTTS2/blob/main/Modules/istftnet.py
+
 from kokoro.custom_stft import CustomSTFT
 from torch.nn.utils.parametrizations import weight_norm
 import math
@@ -7,17 +42,73 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-# https://github.com/yl4579/StyleTTS2/blob/main/Modules/utils.py
 def init_weights(m, mean=0.0, std=0.01):
+    # Initialize convolutional layer weights with normal distribution.
+    #
+    # This utility function provides consistent weight initialization
+    # across all convolutional layers in the vocoder architecture.
+    # Proper initialization is critical for stable training and convergence.
+    #
+    # Parameters:
+    # - m: PyTorch module to initialize
+    # - mean: Normal distribution mean (default: 0.0)
+    # - std: Normal distribution standard deviation (default: 0.01)
+    #
+    # Applied to:
+    # - All Conv1d layers in Generator architecture
+    # - Ensures consistent initialization across the network
+    #
+    # From: StyleTTS2 utilities
     classname = m.__class__.__name__
     if classname.find("Conv") != -1:
         m.weight.data.normal_(mean, std)
 
 def get_padding(kernel_size, dilation=1):
+    # Calculate padding for 'same' convolution with dilation.
+    #
+    # This utility ensures that convolutional operations maintain
+    # the input sequence length, which is essential for the iSTFT
+    # generation pipeline where temporal alignment must be preserved.
+    #
+    # Parameters:
+    # - kernel_size: Convolution kernel size
+    # - dilation: Dilation factor for dilated convolutions
+    #
+    # Returns:
+    # - int: Padding value for same-size output
+    #
+    # Used throughout:
+    # - AdaINResBlock1: Dilated convolutions in residual blocks
+    # - Generator: Upsampling and processing layers
+    #
     return int((kernel_size*dilation - dilation)/2)
 
 
 class AdaIN1d(nn.Module):
+    # Adaptive Instance Normalization for 1D sequences with style conditioning.
+    #
+    # This module implements style-conditioned normalization that adapts
+    # the normalization statistics based on voice characteristics. It's a
+    # key component enabling voice cloning and style transfer capabilities.
+    #
+    # Mathematical Operation:
+    # 1. Instance normalization: x_norm = InstanceNorm(x)
+    # 2. Style-dependent parameters: gamma, beta = Linear(style)
+    # 3. Adaptive transformation: output = (1 + gamma) * x_norm + beta
+    #
+    # ONNX Export Compatibility:
+    # - Uses affine=True in InstanceNorm1d to avoid channel dimension loss
+    # - Workaround for legacy torch.onnx.export limitations
+    # - Additional learnable parameters don't affect inference quality
+    #
+    # Parameters:
+    # - style_dim: Dimension of input style vector (typically 128)
+    # - num_features: Number of channels to normalize
+    #
+    # Used by:
+    # - AdaINResBlock1: Style-conditioned residual processing
+    # - Generator architecture: Voice adaptation throughout the network
+    #
     def __init__(self, style_dim, num_features):
         super().__init__()
         # affine should be False, however there's a bug in the old torch.onnx.export (not newer dynamo) that causes the channel dimension to be lost if affine=False. When affine is true, there's additional learnably parameters. This shouldn't really matter setting it to True, since we're in inference mode
@@ -25,6 +116,15 @@ class AdaIN1d(nn.Module):
         self.fc = nn.Linear(style_dim, num_features*2)
 
     def forward(self, x, s):
+        # Apply adaptive instance normalization with style conditioning.
+        #
+        # Parameters:
+        # - x: Input features, shape (batch, channels, sequence)
+        # - s: Style vector, shape (batch, style_dim)
+        #
+        # Returns:
+        # - torch.Tensor: Style-adapted features, same shape as input
+        #
         h = self.fc(s)
         h = h.view(h.size(0), h.size(1), 1)
         gamma, beta = torch.chunk(h, chunks=2, dim=1)

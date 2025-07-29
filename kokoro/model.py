@@ -1,3 +1,19 @@
+# Core Model Implementation for Kokoro TTS
+#
+# This module contains the main KModel class that wraps the Kokoro text-to-speech
+# neural network architecture. The model is designed for efficient inference and
+# CoreML conversion, with particular attention to Apple Neural Engine (ANE) optimization.
+#
+# Key Components:
+# - KModel: Main inference wrapper with phoneme-to-audio generation
+# - KModelForONNX: Export-friendly wrapper for ONNX/CoreML conversion
+# - Output: Structured dataclass for model outputs with audio and duration predictions
+#
+# Cross-file dependencies:
+# - Called by: pipeline.py (KPipeline.infer), export_coreml.py, export_synthesizers.py
+# - Imports from: modules.py (neural components), istftnet.py (decoder)
+# - Used by: All inference scripts, demo applications, and export pipelines
+
 from .istftnet import Decoder
 from .modules import CustomAlbert, ProsodyPredictor, TextEncoder
 from dataclasses import dataclass
@@ -9,20 +25,49 @@ import json
 import torch
 
 class KModel(torch.nn.Module):
-    '''
-    KModel is a torch.nn.Module with 2 main responsibilities:
-    1. Init weights, downloading config.json + model.pth from HF if needed
-    2. forward(phonemes: str, ref_s: FloatTensor) -> (audio: FloatTensor)
+    # Primary neural network model for Kokoro text-to-speech synthesis.
+    #
+    # KModel serves as the central inference engine that converts phoneme sequences
+    # into high-quality audio waveforms. It combines multiple neural components:
+    # - BERT-based text encoder for phoneme understanding
+    # - Prosody predictor for duration and F0/pitch modeling
+    # - iSTFT-based decoder for final audio synthesis
+    #
+    # Architecture Overview:
+    # 1. Phonemes -> BERT embeddings -> prosody prediction -> duration alignment
+    # 2. Text features + voice style -> F0/pitch and noise predictions
+    # 3. Aligned features -> decoder -> final audio waveform
+    #
+    # Key Design Decisions:
+    # - Language-agnostic: operates on phonemes, not raw text
+    # - Voice-conditioned: uses reference voice embeddings for style transfer
+    # - CoreML-friendly: designed to be traceable with torch.jit.trace
+    # - Memory-efficient: single instance can serve multiple pipelines
+    #
+    # Called by:
+    # - pipeline.py: KPipeline.infer() for production inference
+    # - export_coreml.py: DurationModel and SynthesizerModel wrappers
+    # - export_synthesizers.py: Two-stage export with bucketing
+    # - demo/app.py: Interactive Gradio interface
+    #
+    # Performance Notes:
+    # - Supports variable sequence lengths up to context_length (512 tokens)
+    # - Optimized for 24-kHz audio output with 600-frame hop length
+    # - Uses disable_complex=True for CoreML compatibility
+    #
 
-    You likely only need one KModel instance, and it can be reused across
-    multiple KPipelines to avoid redundant memory allocation.
-
-    Unlike KPipeline, KModel is language-blind.
-
-    KModel stores self.vocab and thus knows how to map phonemes -> input_ids,
-    so there is no need to repeatedly download config.json outside of KModel.
-    '''
-
+    # Model repository mappings for Hugging Face Hub downloads.
+    #
+    # These constants define the mapping between repository IDs and their
+    # corresponding checkpoint filenames. Used by __init__ to automatically
+    # download model weights when not provided locally.
+    #
+    # Supported Models:
+    # - hexgrad/Kokoro-82M: Original English model (82M parameters)
+    # - hexgrad/Kokoro-82M-v1.1-zh: Chinese-enhanced version
+    #
+    # File Format: PyTorch state_dict organized by module name
+    # (bert, bert_encoder, predictor, text_encoder, decoder)
     MODEL_NAMES = {
         'hexgrad/Kokoro-82M': 'kokoro-v1_0.pth',
         'hexgrad/Kokoro-82M-v1.1-zh': 'kokoro-v1_1-zh.pth',
@@ -35,6 +80,32 @@ class KModel(torch.nn.Module):
         model: Optional[str] = None,
         disable_complex: bool = False
     ):
+    # Initialize KModel with automatic weight and configuration loading.
+    #
+    # This constructor handles the complete model setup process:
+    # 1. Downloads config.json and model weights from Hugging Face if needed
+    # 2. Initializes all neural network components (BERT, predictor, decoder)
+    # 3. Loads pre-trained weights with fallback handling for version mismatches
+    #
+    # Parameters:
+    # - repo_id: Hugging Face repository ID (defaults to 'hexgrad/Kokoro-82M')
+    # - config: Model configuration (dict, file path, or None for auto-download)
+    # - model: Path to PyTorch checkpoint (None for auto-download)
+    # - disable_complex: Use CustomSTFT instead of torch.stft for CoreML export
+    #
+    # Configuration Keys:
+    # - vocab: Phoneme-to-ID mapping dictionary
+    # - n_token: Vocabulary size for embedding layers
+    # - hidden_dim: Hidden dimension for text and prosody encoders
+    # - style_dim: Voice embedding dimension (128 baseline + 128 style)
+    # - max_dur: Maximum duration prediction per phoneme
+    # - istftnet: Decoder architecture parameters
+    #
+    # Called by:
+    # - pipeline.py: KPipeline.__init__ with device placement
+    # - export_coreml.py: prepare_pytorch_models() for conversion
+    # - demo/app.py: Global model initialization
+    #
         super().__init__()
         if repo_id is None:
             repo_id = 'hexgrad/Kokoro-82M'
@@ -76,10 +147,40 @@ class KModel(torch.nn.Module):
 
     @property
     def device(self):
+    # Returns the device (CPU/CUDA/MPS) where the model is currently located.
+    #
+    # This property provides a convenient way to check model placement without
+    # inspecting individual parameter tensors. Uses the BERT module as the
+    # canonical device reference since it's always present.
+    #
+    # Returns: torch.device object (cuda:0, cpu, or mps)
+    #
+    # Used by:
+    # - pipeline.py: Device placement for input tensors and voice embeddings
+    # - export scripts: Ensuring model and data are on the same device
+    #
         return self.bert.device
 
     @dataclass
     class Output:
+    # Structured output container for KModel inference results.
+    #
+    # This dataclass encapsulates the two primary outputs from model inference:
+    # audio waveform and predicted phoneme durations. Used when return_output=True
+    # in the forward() method to provide detailed inference information.
+    #
+    # Fields:
+    # - audio: Generated waveform tensor, shape (T,) at 24-kHz sample rate
+    # - pred_dur: Per-phoneme duration in frames (40-fps), shape (N,) where N=num_phonemes
+    #
+    # Duration Interpretation:
+    # - Each duration value represents frames at 40-fps (600 samples at 24-kHz)
+    # - Used by pipeline.py for word-level timestamp alignment
+    # - Essential for lip-syncing and precise timing applications
+    #
+    # Used by:
+    # - pipeline.py: KPipeline.generate_from_tokens() for timestamp calculation
+    # - demo applications: Detailed output analysis and debugging
         audio: torch.FloatTensor
         pred_dur: Optional[torch.LongTensor] = None
 
@@ -90,6 +191,39 @@ class KModel(torch.nn.Module):
         ref_s: torch.FloatTensor,
         speed: float = 1
     ) -> tuple[torch.FloatTensor, torch.LongTensor]:
+    # Core inference method operating directly on tokenized input.
+    #
+    # This is the primary computational pathway that implements the full
+    # text-to-speech synthesis pipeline. It processes pre-tokenized phoneme
+    # sequences through the complete neural architecture.
+    #
+    # Architecture Flow:
+    # 1. BERT encoding: input_ids -> contextual phoneme embeddings
+    # 2. Prosody prediction: embeddings + voice_style -> duration + F0/pitch
+    # 3. Duration alignment: Create alignment matrix from predicted durations
+    # 4. Feature extraction: Text encoder -> aligned acoustic features
+    # 5. Audio synthesis: Decoder -> final waveform via iSTFT
+    #
+    # Parameters:
+    # - input_ids: Phoneme token IDs, shape (1, N) with <bos>/<eos> padding
+    # - ref_s: Voice embedding tensor, shape (1, 256) [128 baseline + 128 style]
+    # - speed: Speech rate multiplier (0.5=slow, 2.0=fast)
+    #
+    # Returns:
+    # - audio: Waveform tensor, shape (T,) at 24-kHz
+    # - pred_dur: Duration predictions, shape (N,) in 40-fps frames
+    #
+    # Critical Implementation Details:
+    # - Uses torch.no_grad() for inference-only mode
+    # - Handles variable sequence lengths with proper masking
+    # - Alignment matrix built via torch.repeat_interleave for efficiency
+    # - F0/pitch and noise predictions run in parallel branches
+    #
+    # Called by:
+    # - forward(): User-facing phoneme string interface
+    # - export_coreml.py: Model tracing and conversion
+    # - KModelForONNX.forward(): ONNX export wrapper
+    #
         input_lengths = torch.full(
             (input_ids.shape[0],), 
             input_ids.shape[-1], 
@@ -125,6 +259,38 @@ class KModel(torch.nn.Module):
         speed: float = 1,
         return_output: bool = False
     ) -> Union['KModel.Output', torch.FloatTensor]:
+    # User-friendly inference interface accepting phoneme strings.
+    #
+    # This method provides the primary public API for text-to-speech synthesis.
+    # It handles phoneme tokenization and delegates to forward_with_tokens()
+    # for the actual neural computation.
+    #
+    # Tokenization Process:
+    # 1. Map phoneme characters to vocabulary IDs via self.vocab
+    # 2. Filter out unknown phonemes (returns None from vocab.get())
+    # 3. Add <bos> (ID=0) and <eos> (ID=0) tokens for BERT compatibility
+    # 4. Validate sequence length against context_length (512 tokens max)
+    #
+    # Parameters:
+    # - phonemes: String of phoneme characters (e.g., "hˈɛloʊ wˈɜːld")
+    # - ref_s: Voice embedding, shape (1, 256) on model.device
+    # - speed: Speech rate control (1.0=normal, <1.0=slower, >1.0=faster) 
+    # - return_output: If True, returns Output dataclass; if False, just audio
+    #
+    # Returns:
+    # - KModel.Output: Full results with audio + duration (if return_output=True)
+    # - torch.FloatTensor: Audio waveform only (if return_output=False)
+    #
+    # Error Handling:
+    # - Asserts sequence length fits within BERT context window
+    # - Automatically moves ref_s to model device
+    # - Filters unknown phonemes silently (logs debug info)
+    #
+    # Called by:
+    # - pipeline.py: KPipeline.infer() for production inference
+    # - demo/app.py: Direct model usage in Gradio interface
+    # - Test scripts: Basic functionality validation
+    #
         input_ids = list(filter(lambda i: i is not None, map(lambda p: self.vocab.get(p), phonemes)))
         logger.debug(f"phonemes: {phonemes} -> input_ids: {input_ids}")
         assert len(input_ids)+2 <= self.context_length, (len(input_ids)+2, self.context_length)
@@ -137,7 +303,35 @@ class KModel(torch.nn.Module):
         return self.Output(audio=audio, pred_dur=pred_dur) if return_output else audio
 
 class KModelForONNX(torch.nn.Module):
+    # ONNX/CoreML export wrapper for KModel with simplified interface.
+    #
+    # This wrapper class provides a clean, tensor-only interface that's more
+    # suitable for model export and tracing. It eliminates string processing
+    # and focuses purely on the numerical computation pipeline.
+    #
+    # Design Rationale:
+    # - ONNX/CoreML exporters work better with pure tensor operations
+    # - Avoids Python string processing that can't be traced
+    # - Provides explicit input/output signatures for conversion tools
+    # - Maintains compatibility with the full KModel functionality
+    #
+    # Usage Pattern:
+    # 1. Wrap existing KModel: wrapper = KModelForONNX(trained_model)
+    # 2. Trace with torch.jit.trace using representative inputs
+    # 3. Convert traced model to ONNX or CoreML format
+    #
+    # Called by:
+    # - Export scripts when simple tensor-in/tensor-out interface is needed
+    # - Model serving scenarios where tokenization happens externally
+    #
     def __init__(self, kmodel: KModel):
+    # Initialize ONNX wrapper around existing KModel.
+    #
+    # Parameters:
+    # - kmodel: Pre-trained KModel instance with loaded weights
+    #
+    # The wrapped model retains all its original functionality but
+    # exposes only the tensor-based forward_with_tokens interface.
         super().__init__()
         self.kmodel = kmodel
 
@@ -147,5 +341,24 @@ class KModelForONNX(torch.nn.Module):
         ref_s: torch.FloatTensor,
         speed: float = 1
     ) -> tuple[torch.FloatTensor, torch.LongTensor]:
+    # Pure tensor-based inference suitable for ONNX/CoreML export.
+    #
+    # This method directly delegates to the underlying KModel's
+    # forward_with_tokens method, providing the same functionality
+    # with a cleaner interface for export tools.
+    #
+    # Parameters:
+    # - input_ids: Tokenized phonemes, shape (1, N)
+    # - ref_s: Voice embedding, shape (1, 256) 
+    # - speed: Speech rate multiplier
+    #
+    # Returns:
+    # - waveform: Audio output, shape (T,)
+    # - duration: Per-phoneme durations, shape (N,)
+    #
+    # Used for:
+    # - torch.jit.trace() input for model conversion
+    # - ONNX export workflows
+    # - CoreML conversion pipelines
         waveform, duration = self.kmodel.forward_with_tokens(input_ids, ref_s, speed)
         return waveform, duration

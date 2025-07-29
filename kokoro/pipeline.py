@@ -397,9 +397,10 @@ class KPipeline:
             
             # Non-English processing with chunking
             else:
-                # Split long text into smaller chunks (roughly 400 characters each)
-                # Using sentence boundaries when possible
-                chunk_size = 400
+                # Intelligent text chunking for non-English languages.
+    # Priority-based chunking: sentence boundaries -> character limits.
+    # Optimal chunk size for model context and processing efficiency.
+                CHUNK_SIZE = 400
                 chunks = []
                 
                 # Try to split on sentence boundaries first
@@ -412,7 +413,7 @@ class KPipeline:
                     if i + 1 < len(sentences):
                         sentence += sentences[i + 1]
                         
-                    if len(current_chunk) + len(sentence) <= chunk_size:
+                    if len(current_chunk) + len(sentence) <= CHUNK_SIZE:
                         current_chunk += sentence
                     else:
                         if current_chunk:
@@ -424,7 +425,7 @@ class KPipeline:
                 
                 # If no chunks were created (no sentence boundaries), fall back to character-based chunking
                 if not chunks:
-                    chunks = [graphemes[i:i+chunk_size] for i in range(0, len(graphemes), chunk_size)]
+                    chunks = [graphemes[i:i+CHUNK_SIZE] for i in range(0, len(graphemes), CHUNK_SIZE)]
                 
                 # Process each chunk
                 for chunk in chunks:
