@@ -22,9 +22,15 @@
 python -c "import platform; print(platform.platform())"  # Must show 'arm64'
 
 # Tested versions (July 2025)
-pip install coremltools==7.0  # or 7.0b5
-pip install torch==2.3.0 torchaudio numpy==1.26.4
+pip install coremltools==8.3.0  # Latest stable with improved ANE optimization
+pip install torch==2.6.0 torchaudio numpy==1.26.4
 ```
+
+**Note on CoreMLtools 8.3.0:** This version includes:
+- Improved ANE residency for operations like top-k
+- Better error handling for deployment targets
+- Bug fixes in FP16 weight quantization
+- Enhanced debugging utilities for numerical issues
 
 ## Step 1: Replace espeak-ng Dependency
 

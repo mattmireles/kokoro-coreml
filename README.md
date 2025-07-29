@@ -15,7 +15,7 @@ A production-ready PyTorch → CoreML conversion pipeline for [Kokoro-82M](https
 
 ```bash
 # Install dependencies
-pip install torch==2.3.0 coremltools==7.2 safetensors numpy==1.26.4
+pip install torch==2.6.0 coremltools==8.3.0 safetensors numpy==1.26.4
 
 # Clone the repository
 git clone https://github.com/yourusername/kokoro-coreml.git
