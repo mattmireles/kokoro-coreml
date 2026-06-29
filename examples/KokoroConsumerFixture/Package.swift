@@ -12,13 +12,13 @@ let package = Package(
         .executable(name: "kokoro-consumer-fixture", targets: ["KokoroConsumerFixture"]),
     ],
     dependencies: [
-        .package(path: "../../swift-tts"),
+        .package(name: "kokoro-coreml", path: "../.."),
     ],
     targets: [
         .executableTarget(
             name: "KokoroConsumerFixture",
             dependencies: [
-                .product(name: "KokoroTTS", package: "swift-tts"),
+                .product(name: "KokoroTTS", package: "kokoro-coreml"),
             ]
         ),
     ]

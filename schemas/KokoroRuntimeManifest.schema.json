@@ -8,6 +8,8 @@
     "sdk_commit",
     "hf_repo_id",
     "hf_revision",
+    "hf_provenance_verified",
+    "hf_download_manifest_sha256",
     "bundle_profile",
     "minimum_platforms",
     "supported_languages",
@@ -22,6 +24,8 @@
     "sdk_commit": { "type": "string", "minLength": 7 },
     "hf_repo_id": { "type": "string", "minLength": 1 },
     "hf_revision": { "type": "string", "minLength": 7 },
+    "hf_provenance_verified": { "const": true },
+    "hf_download_manifest_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "bundle_profile": { "enum": ["starter", "custom", "full"] },
     "minimum_platforms": {
       "type": "object",

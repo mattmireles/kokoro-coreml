@@ -11,6 +11,7 @@ func runSmoke() async throws {
         }
         resources = try await KokoroDownloadedModelStore(
             manifestURL: manifestURL,
+            expectedManifestSHA256: options.manifestSHA256,
             cacheDirectory: cacheDirectory
         ).hydrate()
     } else if let bundleRoot = options.bundleRoot {
@@ -34,7 +35,7 @@ func runSmoke() async throws {
 struct SmokeOptions {
     /// Usage text shown for invalid invocations.
     static let usage = """
-    usage: kokoro-sdk-smoke [--cpu-only] [--bundle <bundle-root> | --manifest-url <url> --cache-dir <dir>] [--text <text>] [--voice <voice>] [--out <wav>]
+    usage: kokoro-sdk-smoke [--cpu-only] [--bundle <bundle-root> | --manifest-url <url> --manifest-sha256 <sha256> --cache-dir <dir>] [--text <text>] [--voice <voice>] [--out <wav>]
            kokoro-sdk-smoke [--cpu-only] <bundle-root> [text]
     """
 
@@ -46,6 +47,9 @@ struct SmokeOptions {
 
     /// Hosted manifest URL for downloaded-resource mode.
     let manifestURL: URL?
+
+    /// Expected hosted manifest SHA-256 for downloaded-resource mode.
+    let manifestSHA256: String
 
     /// Cache directory for downloaded-resource mode.
     let cacheDirectory: URL?
@@ -67,6 +71,7 @@ struct SmokeOptions {
         var cpuOnly = false
         var bundleRoot: URL?
         var manifestURL: URL?
+        var manifestSHA256 = ""
         var cacheDirectory: URL?
         var text = "Hello world."
         var voice = KokoroVoiceID.afHeart
@@ -85,6 +90,7 @@ struct SmokeOptions {
             self.cpuOnly = cpuOnly
             self.bundleRoot = bundleRoot
             self.manifestURL = nil
+            self.manifestSHA256 = ""
             self.cacheDirectory = nil
             self.text = text
             self.voice = voice
@@ -107,6 +113,8 @@ struct SmokeOptions {
                     throw SmokeError.usage
                 }
                 manifestURL = url
+            case "--manifest-sha256":
+                manifestSHA256 = value
             case "--cache-dir":
                 cacheDirectory = URL(fileURLWithPath: value, isDirectory: true)
             case "--text":
@@ -120,10 +128,14 @@ struct SmokeOptions {
             }
             index += 2
         }
+        if manifestURL != nil && manifestSHA256.isEmpty {
+            throw SmokeError.usage
+        }
 
         self.cpuOnly = cpuOnly
         self.bundleRoot = bundleRoot
         self.manifestURL = manifestURL
+        self.manifestSHA256 = manifestSHA256
         self.cacheDirectory = cacheDirectory
         self.text = text
         self.voice = voice

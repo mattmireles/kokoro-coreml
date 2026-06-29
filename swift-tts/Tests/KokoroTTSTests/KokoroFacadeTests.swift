@@ -89,6 +89,41 @@ final class KokoroFacadeTests: XCTestCase {
         }
     }
 
+    /// Verifies downloaded manifests require a caller-pinned SHA-256 digest.
+    func testDownloadedStoreRejectsManifestHashMismatch() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let manifestURL = root.appendingPathComponent("HostedManifest.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data(#"{"version":"test","files":[]}"#.utf8).write(to: manifestURL)
+
+        do {
+            _ = try await KokoroDownloadedModelStore(
+                manifestURL: manifestURL,
+                expectedManifestSHA256: String(repeating: "0", count: 64),
+                cacheDirectory: root.appendingPathComponent("cache", isDirectory: true)
+            ).hydrate()
+            XCTFail("expected badHash")
+        } catch {
+            XCTAssertEqual(error as? KokoroError, .badHash(path: "HostedManifest.json"))
+        }
+    }
+
+    /// Verifies insecure remote manifests require explicit local-development opt-in.
+    func testDownloadedStoreRejectsInsecureRemoteManifestByDefault() async throws {
+        let manifestURL = URL(string: "http://models.example.test/HostedManifest.json")!
+
+        do {
+            _ = try await KokoroDownloadedModelStore(
+                manifestURL: manifestURL,
+                expectedManifestSHA256: String(repeating: "0", count: 64),
+                cacheDirectory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            ).hydrate()
+            XCTFail("expected insecureManifestURL")
+        } catch {
+            XCTAssertEqual(error as? KokoroError, .insecureManifestURL(manifestURL))
+        }
+    }
+
     /// Verifies hosted manifest paths are sanitized before building remote URLs.
     func testDownloadedStoreRejectsRemotePathEscapes() throws {
         let manifestURL = URL(string: "https://models.example.test/coreml/v1/HostedManifest.json")!
@@ -229,7 +264,7 @@ final class KokoroFacadeTests: XCTestCase {
         try FileManager.default.createSymbolicLink(at: linkedModel, withDestinationURL: outside)
         try Data("\(modelPackageEntry(path: "coreml/kokoro_duration_t32.mlpackage", data: Data("duration-32".utf8))["tree_sha256"]!)\n".utf8)
             .write(to: compiled.appendingPathComponent("kokoro_duration_t32.mlmodelc.kokoro-source-tree-sha256"))
-        let provider = try KokoroSDKModelProvider(resources: .directory(root))
+        let provider = try KokoroSDKModelProvider(resources: .directory(root, compiledModelsDirectory: compiled))
         let choice = try XCTUnwrap(provider.durationModelChoices().first)
 
         XCTAssertThrowsError(try provider.durationModel(choice: choice)) { error in
@@ -275,6 +310,29 @@ final class KokoroFacadeTests: XCTestCase {
         }
     }
 
+    /// Verifies the hosted-version sidecar is protected by cache symlink checks.
+    func testDownloadedStoreRejectsSymlinkedHostedVersionSidecar() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let outside = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let sidecar = root.appendingPathComponent(".kokoro-hosted-version")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: sidecar,
+            withDestinationURL: outside.appendingPathComponent("version")
+        )
+
+        XCTAssertThrowsError(try KokoroDownloadedModelStore.rejectExistingSymlinkComponents(
+            rootURL: root,
+            targetURL: sidecar
+        )) { error in
+            guard case .pathEscape = error as? KokoroError else {
+                XCTFail("expected pathEscape, got \(error)")
+                return
+            }
+        }
+    }
+
     /// Verifies public starter constants match the starter bundle profile.
     func testStarterVoiceConstantsMatchStarterBundle() {
         XCTAssertEqual(KokoroVoiceID.starterVoices, [.afHeart])
@@ -298,13 +356,35 @@ final class KokoroFacadeTests: XCTestCase {
         }
     }
 
+    /// Verifies malformed hn-NSF payloads fail before release-build DSP code.
+    func testModelProviderRejectsMalformedHnsfWeights() throws {
+        let root = try makeBundleRoot(hnsfPayload: #"{"linear_weights":[1.0],"linear_bias":0.0}"#)
+
+        let provider = try KokoroSDKModelProvider(resources: .directory(root))
+
+        XCTAssertThrowsError(try provider.hnsfWeights()) { error in
+            XCTAssertEqual(error as? KokoroError, .badHash(path: "runtime/hnsf_weights.json"))
+        }
+    }
+
+    /// Verifies manifests must declare the full SDK duration token set.
+    func testModelProviderRejectsIncompleteDurationTokenSet() throws {
+        let root = try makeBundleRoot(durationTokenSizes: [32])
+
+        XCTAssertThrowsError(try KokoroSDKModelProvider(resources: .directory(root))) { error in
+            XCTAssertEqual(error as? KokoroError, .missingModel("duration_token_sizes"))
+        }
+    }
+
     /// Creates a minimal generated-bundle shape for provider validation tests.
     private func makeBundleRoot(
         removeVoiceFile: Bool = false,
         schemaVersion: Int = 1,
         voiceHashOverride: String? = nil,
         voicePath: String = "voices/af_heart.bin",
-        modelPackages: [[String: Any]]? = nil
+        modelPackages: [[String: Any]]? = nil,
+        durationTokenSizes: [Int] = [32, 64, 128, 256, 320, 384, 512],
+        hnsfPayload: String? = nil
     ) throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -318,7 +398,11 @@ final class KokoroFacadeTests: XCTestCase {
         let bundledVocab = runtime.appendingPathComponent("kokoro-vocab.json")
         let bundledHnsf = runtime.appendingPathComponent("hnsf_weights.json")
         try FileManager.default.copyItem(at: vocabURL, to: bundledVocab)
-        try FileManager.default.copyItem(at: hnsfURL, to: bundledHnsf)
+        if let hnsfPayload {
+            try Data(hnsfPayload.utf8).write(to: bundledHnsf)
+        } else {
+            try FileManager.default.copyItem(at: hnsfURL, to: bundledHnsf)
+        }
 
         let voiceURL = voices.appendingPathComponent("af_heart.bin")
         let voiceData = Data(count: 256 * 4)
@@ -334,11 +418,12 @@ final class KokoroFacadeTests: XCTestCase {
             "hf_repo_id": "test/repo",
             "hf_revision": "testrev",
             "hf_provenance_verified": true,
+            "hf_download_manifest_sha256": String(repeating: "a", count: 64),
             "minimum_platforms": ["iOS": "18.0", "macOS": "15.0"],
             "supported_languages": ["en-US"],
             "bundle_profile": "starter",
             "buckets": [15],
-            "duration_token_sizes": [32, 64, 128, 256, 320, 384, 512],
+            "duration_token_sizes": durationTokenSizes,
             "model_packages": modelPackages ?? requiredPackageEntries(),
             "voices": [[
                 "path": voicePath,

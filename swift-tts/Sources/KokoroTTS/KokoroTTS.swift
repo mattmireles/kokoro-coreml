@@ -137,23 +137,90 @@ public actor KokoroTTS {
         }
         var prepared: [KokoroPreparedInput] = []
         let processor = textProcessor(for: voice)
-        for (index, chunk) in chunks.enumerated() {
-            do {
-                let phonemes = try processor.phonemize(chunk)
-                let refS = try voiceTable.refS(voiceID: voice, phonemeCount: phonemes.utf16Count)
-                prepared.append(try processor.prepare(
-                    text: chunk,
-                    voice: voice,
-                    refS: refS,
-                    options: options,
-                    key: chunks.count == 1 ? nil : "chunk-\(String(format: "%03d", index))",
-                    phonemeResult: phonemes
-                ))
-            } catch {
-                throw Self.mapPreparationError(error)
-            }
+        for chunk in chunks {
+            try appendPreparedChunk(
+                chunk,
+                voice: voice,
+                options: options,
+                processor: processor,
+                prepared: &prepared
+            )
         }
-        return prepared
+        guard prepared.count > 1 else {
+            return prepared
+        }
+        return prepared.enumerated().map { index, input in
+            KokoroPreparedInput(
+                key: "chunk-\(String(format: "%03d", index))",
+                text: input.text,
+                voice: input.voice,
+                inputIds: input.inputIds,
+                attentionMask: input.attentionMask,
+                refS: input.refS,
+                speed: input.speed,
+                canonicalDurationSeconds: input.canonicalDurationSeconds,
+                numTokens: input.numTokens,
+                hnsfWeightsSHA256: input.hnsfWeightsSHA256
+            )
+        }
+    }
+
+    /// Appends one chunk, recursively splitting if tokenization exceeds model limits.
+    private func appendPreparedChunk(
+        _ chunk: String,
+        voice: KokoroVoiceID,
+        options: KokoroSynthesisOptions,
+        processor: KokoroTextProcessor,
+        prepared: inout [KokoroPreparedInput]
+    ) throws {
+        do {
+            let phonemes = try processor.phonemize(chunk)
+            let refS = try voiceTable.refS(voiceID: voice, phonemeCount: phonemes.utf16Count)
+            prepared.append(try processor.prepare(
+                text: chunk,
+                voice: voice,
+                refS: refS,
+                options: options,
+                phonemeResult: phonemes
+            ))
+        } catch KokoroTextProcessingError.tokenBudgetExceeded {
+            let halves = try Self.splitOversizedChunk(chunk)
+            for half in halves {
+                try appendPreparedChunk(
+                    half,
+                    voice: voice,
+                    options: options,
+                    processor: processor,
+                    prepared: &prepared
+                )
+            }
+        } catch {
+            throw Self.mapPreparationError(error)
+        }
+    }
+
+    /// Splits an oversized chunk near its midpoint, preferring whitespace.
+    private static func splitOversizedChunk(_ chunk: String) throws -> [String] {
+        let trimmed = KokoroTextProcessor.normalizeWhitespace(chunk)
+        guard trimmed.count > 1 else {
+            throw KokoroError.inputTooLong(
+                tokens: PipelineConstants.maxCallerChunkTokens + 1,
+                maxTokens: PipelineConstants.maxCallerChunkTokens
+            )
+        }
+        let midpoint = trimmed.index(trimmed.startIndex, offsetBy: trimmed.count / 2)
+        let leftWhitespace = trimmed[..<midpoint].lastIndex(where: { $0.isWhitespace })
+        let rightWhitespace = trimmed[midpoint...].firstIndex(where: { $0.isWhitespace })
+        let splitIndex = leftWhitespace ?? rightWhitespace ?? midpoint
+        let left = KokoroTextProcessor.normalizeWhitespace(String(trimmed[..<splitIndex]))
+        let right = KokoroTextProcessor.normalizeWhitespace(String(trimmed[splitIndex...]))
+        guard !left.isEmpty, !right.isEmpty, left != trimmed, right != trimmed else {
+            throw KokoroError.inputTooLong(
+                tokens: PipelineConstants.maxCallerChunkTokens + 1,
+                maxTokens: PipelineConstants.maxCallerChunkTokens
+            )
+        }
+        return [left, right]
     }
 
     /// Returns the locale-appropriate text processor for a Kokoro voice.

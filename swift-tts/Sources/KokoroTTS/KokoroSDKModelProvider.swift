@@ -49,10 +49,13 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         guard manifest.schemaVersion == 1 else {
             throw KokoroError.unsupportedManifestSchema(manifest.schemaVersion)
         }
+        guard manifest.hfProvenanceVerified else {
+            throw KokoroError.badHash(path: "hf_provenance_verified")
+        }
         let manifestModelPaths = Set(manifest.modelPackages.map(\.path))
         self.modelsDirectory = root.appendingPathComponent("coreml", isDirectory: true)
         let compiledModelsDirectory = try resources.compiledModelsDirectoryURL()
-        try Self.validateCompiledModelsDirectory(rootURL: root, compiledModelsDirectory: compiledModelsDirectory)
+        try Self.validateCompiledModelsDirectory(bundleRootURL: root, compiledModelsDirectory: compiledModelsDirectory)
         self.compiledModelsDirectory = compiledModelsDirectory
         let durationChoices = KokoroPipeline.discoverDurationChoices(modelsDirectory: modelsDirectory)
             .filter { manifestModelPaths.contains("coreml/\($0.packageURL.lastPathComponent)") }
@@ -155,6 +158,9 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         }
         let url = try Self.containedURL(rootURL: rootURL, relativePath: manifest.runtimeAssets.hnsfWeights.path)
         let payload = try JSONDecoder().decode(Payload.self, from: Data(contentsOf: url))
+        guard payload.linear_weights.count == 9, payload.linear_weights.allSatisfy(\.isFinite), payload.linear_bias.isFinite else {
+            throw KokoroError.badHash(path: manifest.runtimeAssets.hnsfWeights.path)
+        }
         return (payload.linear_weights, payload.linear_bias)
     }
 
@@ -177,7 +183,7 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         config.computeUnits = units
         let compiledName = url.deletingPathExtension().lastPathComponent + ".mlmodelc"
         let precompiled = compiledModelsDirectory.appendingPathComponent(compiledName, isDirectory: true)
-        let compiled = try compiledModelURL(
+        var compiled = try compiledModelURL(
             sourceURL: url,
             destinationURL: precompiled,
             sourceTreeSHA256: package.treeSHA256
@@ -186,7 +192,21 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         do {
             loaded = try MLModel(contentsOf: compiled, configuration: config)
         } catch {
-            throw KokoroError.coreMLLoadFailed(url.lastPathComponent)
+            if compiled.standardizedFileURL.path == precompiled.standardizedFileURL.path {
+                try? Self.removeCompiledCache(cacheRootURL: compiledModelsDirectory, destinationURL: precompiled)
+                compiled = try compiledModelURL(
+                    sourceURL: url,
+                    destinationURL: precompiled,
+                    sourceTreeSHA256: package.treeSHA256
+                )
+                do {
+                    loaded = try MLModel(contentsOf: compiled, configuration: config)
+                } catch {
+                    throw KokoroError.coreMLLoadFailed(url.lastPathComponent)
+                }
+            } else {
+                throw KokoroError.coreMLLoadFailed(url.lastPathComponent)
+            }
         }
         models[cacheKey] = loaded
         return loaded
@@ -195,7 +215,7 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
     /// Returns a reusable compiled model URL, compiling and caching if needed.
     private func compiledModelURL(sourceURL: URL, destinationURL: URL, sourceTreeSHA256: String) throws -> URL {
         if try Self.compiledSidecarMatches(
-            rootURL: rootURL,
+            cacheRootURL: compiledModelsDirectory,
             destinationURL: destinationURL,
             sourceTreeSHA256: sourceTreeSHA256
         ) {
@@ -209,7 +229,7 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         }
         do {
             try Self.rejectExistingSymlinkComponents(
-                rootURL: rootURL,
+                rootURL: compiledModelsDirectory,
                 targetURL: destinationURL.deletingLastPathComponent()
             )
             try FileManager.default.createDirectory(
@@ -217,7 +237,7 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
                 withIntermediateDirectories: true
             )
             try Self.rejectExistingSymlinkComponents(
-                rootURL: rootURL,
+                rootURL: compiledModelsDirectory,
                 targetURL: destinationURL.deletingLastPathComponent()
             )
             if FileManager.default.fileExists(atPath: destinationURL.path) {
@@ -236,14 +256,14 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
 
     /// Returns whether a cached compiled model was built from the expected source tree.
     private static func compiledSidecarMatches(
-        rootURL: URL,
+        cacheRootURL: URL,
         destinationURL: URL,
         sourceTreeSHA256: String
     ) throws -> Bool {
         guard FileManager.default.fileExists(atPath: destinationURL.path) else {
             return false
         }
-        try rejectExistingSymlinkComponents(rootURL: rootURL, targetURL: destinationURL)
+        try rejectExistingSymlinkComponents(rootURL: cacheRootURL, targetURL: destinationURL)
         let values = try destinationURL.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
         guard values.isSymbolicLink != true, values.isDirectory == true else {
             return false
@@ -252,7 +272,7 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         guard FileManager.default.fileExists(atPath: sidecarURL.path) else {
             return false
         }
-        try rejectExistingSymlinkComponents(rootURL: rootURL, targetURL: sidecarURL)
+        try rejectExistingSymlinkComponents(rootURL: cacheRootURL, targetURL: sidecarURL)
         let sidecarValues = try sidecarURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
         guard sidecarValues.isSymbolicLink != true,
               sidecarValues.isRegularFile == true,
@@ -261,6 +281,19 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
             return false
         }
         return sidecar.trimmingCharacters(in: .whitespacesAndNewlines) == sourceTreeSHA256
+    }
+
+    /// Removes a corrupt compiled cache entry and its source-hash sidecar.
+    private static func removeCompiledCache(cacheRootURL: URL, destinationURL: URL) throws {
+        try rejectExistingSymlinkComponents(rootURL: cacheRootURL, targetURL: destinationURL)
+        if FileManager.default.fileExists(atPath: destinationURL.path) {
+            try FileManager.default.removeItem(at: destinationURL)
+        }
+        let sidecar = compiledSourceHashURL(for: destinationURL)
+        try rejectExistingSymlinkComponents(rootURL: cacheRootURL, targetURL: sidecar)
+        if FileManager.default.fileExists(atPath: sidecar.path) {
+            try FileManager.default.removeItem(at: sidecar)
+        }
     }
 
     /// Sidecar file recording the source package tree hash for one `.mlmodelc`.
@@ -338,14 +371,15 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         return url
     }
 
-    /// Verifies the compiled cache root is under the bundle root when reused.
-    private static func validateCompiledModelsDirectory(rootURL: URL, compiledModelsDirectory: URL) throws {
+    /// Verifies the compiled cache root can be used without following symlinks.
+    private static func validateCompiledModelsDirectory(bundleRootURL rootURL: URL, compiledModelsDirectory: URL) throws {
         let root = rootURL.standardizedFileURL.path
         let target = compiledModelsDirectory.standardizedFileURL.path
-        guard target == root || target.hasPrefix("\(root)/") else {
-            throw KokoroError.pathEscape(target)
+        if target == root || target.hasPrefix("\(root)/") {
+            try rejectExistingSymlinkComponents(rootURL: rootURL, targetURL: compiledModelsDirectory)
+        } else {
+            try rejectRootSymlink(rootURL: compiledModelsDirectory)
         }
-        try rejectExistingSymlinkComponents(rootURL: rootURL, targetURL: compiledModelsDirectory)
     }
 
     /// Verifies the manifest describes a model set that can satisfy synthesis.
@@ -357,6 +391,9 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
     ) throws {
         guard !durationChoices.isEmpty else {
             throw KokoroError.missingModel("duration")
+        }
+        guard manifest.durationTokenSizes == PipelineConstants.durationTokenSizes else {
+            throw KokoroError.missingModel("duration_token_sizes")
         }
         let paths = Set(manifest.modelPackages.map(\.path))
         for tokenLength in manifest.durationTokenSizes {
@@ -410,25 +447,28 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         var current = rootURL
         for component in suffix {
             current = current.appendingPathComponent(String(component))
+            if Self.isSymbolicLink(current) {
+                throw KokoroError.pathEscape(current.path)
+            }
             guard FileManager.default.fileExists(atPath: current.path) else {
                 continue
-            }
-            let values = try current.resourceValues(forKeys: [.isSymbolicLinkKey])
-            if values.isSymbolicLink == true {
-                throw KokoroError.pathEscape(current.path)
             }
         }
     }
 
     /// Rejects a generated bundle root that is itself a symlink.
     private static func rejectRootSymlink(rootURL: URL) throws {
+        if Self.isSymbolicLink(rootURL) {
+            throw KokoroError.pathEscape(rootURL.path)
+        }
         guard FileManager.default.fileExists(atPath: rootURL.path) else {
             return
         }
-        let values = try rootURL.resourceValues(forKeys: [.isSymbolicLinkKey])
-        if values.isSymbolicLink == true {
-            throw KokoroError.pathEscape(rootURL.path)
-        }
+    }
+
+    /// Returns true when a URL is itself a symbolic link.
+    private static func isSymbolicLink(_ url: URL) -> Bool {
+        (try? FileManager.default.destinationOfSymbolicLink(atPath: url.path)) != nil
     }
 
     /// Validates a model package against the manifest tree digest.

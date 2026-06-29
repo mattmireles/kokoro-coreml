@@ -2,7 +2,7 @@
 
 import { createHash } from 'node:crypto';
 import { copyFile, lstat, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -12,18 +12,19 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const defaultRepoId = 'mattmireles/kokoro-coreml';
 const defaultRevision = 'c02933e179932e51909ff3b29466a7debac7d0e6';
 const runtimeAssetDir = path.join(repoRoot, 'swift-tts/Sources/KokoroTTS/Resources/KokoroRuntime');
-const sdkDurationTokenSizes = [32, 64, 128, 256, 320, 384, 512];
+const sdkProfiles = JSON.parse(readFileSync(path.join(repoRoot, 'sdk_profiles.json'), 'utf8'));
+const sdkDurationTokenSizes = sdkProfiles.duration_token_sizes;
 const bundleMarkerName = '.kokoro-sdk-bundle';
 
 const profiles = {
   starter: {
-    voices: ['af_heart'],
-    buckets: [15],
+    voices: sdkProfiles.profiles.starter.voices,
+    buckets: sdkProfiles.profiles.starter.buckets,
     durationTokenSizes: sdkDurationTokenSizes,
   },
   full: {
     voices: null,
-    buckets: [3, 7, 10, 15, 30],
+    buckets: sdkProfiles.profiles.full.buckets,
     durationTokenSizes: sdkDurationTokenSizes,
   },
 };
