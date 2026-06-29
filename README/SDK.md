@@ -47,7 +47,8 @@ for focused runtime tests, but app developers should depend on the root package
 so `KokoroTTS` and `KokoroPipeline` resolve together from any checkout path.
 
 Model binaries are hosted on Hugging Face and hydrated by the SDK bundle tools.
-This release does not use GitHub LFS.
+This release does not use GitHub LFS. GitHub carries source, manifests, and
+small runtime resources; Hugging Face carries the model and voice binaries.
 
 The repo also includes `examples/KokoroConsumerFixture` and
 `examples/KokoroDemoApp` as integration fixtures.
@@ -61,7 +62,7 @@ https://huggingface.co/mattmireles/kokoro-coreml/resolve/main/HostedManifest.jso
 Current public starter manifest SHA-256:
 
 ```text
-3dc6a86d5f0c827aa8c8464c13488e679e3c433df5f84335fe61ea51baba4096
+3f072fe36743ab54fed0366c999c2ddabca98bd618809d66ac560888c1bbb0c1
 ```
 
 ## Build A Resource Bundle
@@ -132,7 +133,7 @@ import KokoroTTS
 
 let resources = try await KokoroDownloadedModelStore(
     manifestURL: URL(string: "https://huggingface.co/mattmireles/kokoro-coreml/resolve/main/HostedManifest.json")!,
-    expectedManifestSHA256: "3dc6a86d5f0c827aa8c8464c13488e679e3c433df5f84335fe61ea51baba4096",
+    expectedManifestSHA256: "3f072fe36743ab54fed0366c999c2ddabca98bd618809d66ac560888c1bbb0c1",
     cacheDirectory: cacheURL
 ).hydrate()
 

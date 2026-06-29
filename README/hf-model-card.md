@@ -151,6 +151,10 @@ macOS 15.0+, sample rate `24000`, starter voice `af_heart`, duration token
 sizes `32,64,128,256,320,384,512`, full buckets `3,7,10,15,30`, max caller
 chunk tokens `450`, voice embedding dimension `256`.
 
+GitHub carries the Swift source, manifests, and small runtime resources. Model
+and voice binaries are served from this Hugging Face repo; this SDK release does
+not use GitHub LFS.
+
 Build a starter bundle:
 
 ```bash

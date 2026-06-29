@@ -788,33 +788,51 @@ The physical iOS readiness gate is now closed by iPhone 15 Pro Max evidence.
 The HF metadata payload helper shares the downloader's env, repo `.env`, and
 Hugging Face cache token lookup. The final hardened HF metadata upload from
 clean `main` reached live revision
-`165f8cb3c70c38086117101038b9c6a440e45af2`.
+`89928aaa6a49173d587108f00c8f9b8eb5ab9f97`.
 `scripts/inspect_hf_artifacts.py --verify-hosted-digests` reports no missing
 SDK metadata, no unresolved top-level `HostedManifest.json` files, no stale
 `sdk/*/HostedManifest.json` profile files, and no hosted digest mismatches
 across 34 starter hosted files. The release manifest points at SDK commit
-`3c18a976dfb99a78e7903c247019d86c5dab8b35`. It records top-level hosted files
+`6a6074ed396847db6cdf1baaae4d3cb141fdef87`. It records top-level hosted files
 `runtime/hnsf_weights.json`, `runtime/kokoro-vocab.json`, and
-`voices/af_heart.bin`; starter profile `starter-3c18a976dfb9` has 10 models / 1
-voice and full profile `full-3c18a976dfb9` has 22 models / 28 supported English
-voices. Large binaries are hosted as Hugging Face release artifacts and are not
-stored in git or GitHub LFS.
+`voices/af_heart.bin`; starter profile `starter-6a6074ed3968` has 10 models / 1
+voice and full profile `full-6a6074ed3968` has 22 models / 28 supported English
+voices. The top-level public starter `HostedManifest.json` SHA-256 is
+`3f072fe36743ab54fed0366c999c2ddabca98bd618809d66ac560888c1bbb0c1`. Large
+binaries are hosted as Hugging Face release artifacts and are not stored in git
+or GitHub LFS.
 Verification after the docs/drift slice: `node
-scripts/check_sdk_drift.mjs`, `swift test --package-path swift-tts`, `swift
-test --package-path swift`, `node scripts/compare_botnet_prepare_input.mjs
---botnet-root /Users/mm/Documents/GitHub/botnet --fixtures
+scripts/check_sdk_drift.mjs`, `swift build`, `swift build --package-path
+examples/KokoroConsumerFixture`, `swift test --package-path swift-tts` (52
+tests passed, 2 expected Misaki runtime skips), `swift test --package-path
+swift` (46 tests passed), `uv run --with pytest python -m pytest` (119 passed,
+2 skipped), `npm --prefix kokoro.js test` (276 passed), `node
+scripts/compare_botnet_prepare_input.mjs --botnet-root
+/Users/mm/Documents/GitHub/botnet --fixtures
 tests/fixtures/kokoro-text-prep/*.json --compare full`, `python3
-scripts/verify_runtime_assets.py`, and `git diff --check` all passed.
-After the first Phase 7 audit found a bad SwiftPM package identity, an external
-temp package using `.package(path: "/Users/mm/Documents/GitHub/kokoro-coreml/swift-tts")`
-and `.product(name: "KokoroTTS", package: "swift-tts")` built successfully, and
-`scripts/check_sdk_drift.mjs` now asserts that install contract.
+scripts/verify_runtime_assets.py`, `node scripts/validate_sdk_bundle.mjs`
+against starter/full bundles, and `git diff --check` all passed.
+After the Phase 7 audit found a bad SwiftPM package identity and mutable
+download trust, the root repo package now exposes the drop-in `KokoroTTS`
+product, the hosted downloader requires an expected manifest SHA-256, production
+downloads require HTTPS, download size/count limits are enforced, stale or
+corrupt compiled caches repair once, oversized text chunks split recursively,
+and `scripts/check_sdk_drift.mjs` now compiles an external temp package using
+`.package(name: "kokoro-coreml", path: "<repo-root>")` and `.product(name:
+"KokoroTTS", package: "kokoro-coreml")`. The second audit loop removed root
+diagnostic executables from the app-facing package surface, keyed default
+compiled-model caches by manifest identity rather than transient bundle path,
+streamed hosted file downloads to disk with byte caps and SHA-256 verification,
+and added direct regressions for manifest-stable cache reuse and recursive
+oversized-token chunk splitting. Final audit status: Architecture A
+(cross-agent), Correctness risk A (cross-agent), Security/Ops A (local
+re-audit after the security reviewer timed out), and Complexity debt A (local
+re-audit after the complexity reviewer timed out).
 
 **Verification:** README links all required assets and does not require Botnet
 inside an iOS/macOS app; HF snapshot provenance is reproducible from a checked
-command or script; SDK constants/docs/model-card drift check passes. Clean
-checkout artifact build/run proof comes from the Phase 4-6 bundle and smoke
-evidence, and must be rerun before remote HF publication.
+command or script; SDK constants/docs/model-card drift check passes; final
+starter/full bundles and live Hugging Face hosted digests are verified.
 
 ## Executable Memory
 
@@ -830,7 +848,8 @@ evidence, and must be rerun before remote HF publication.
 - Regression test: `swift test --package-path swift-tts --filter KokoroText`
 - Regression test: `swift test --package-path swift-tts --filter KokoroMisaki`
 - Regression test: Xcode-built `swift-tts` `kokoro-sdk-smoke <bundle-root> "Hello world"` prints finite samples, sample rate, and duration.
-- Phase 6 target: extend the smoke fixture to write WAV output and exercise hosted-manifest cache hydration.
+- Completed Phase 6 follow-up: the SDK smoke fixture writes optional WAV output
+  and exercises bundled and hosted-manifest cache hydration.
 - Regression test: `node scripts/check_sdk_drift.mjs`
 - Regression test: `xcodebuild` or XcodeBuildMCP build of `Examples/KokoroDemoApp` on simulator.
 - Manual release gate: physical iPhone raw-text smoke with first call, warm
