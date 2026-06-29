@@ -18,6 +18,37 @@ from typing import Any
 ENUM_SIZES = [32, 64, 128, 256, 320, 384, 512]
 # packages/contracts MAX_TTS_CHUNK_TOKENS
 MAX_CALLER_CHUNK_TOKENS = 450
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _runtime_root(arg_root: Path | None) -> Path:
+    """Return the Kokoro runtime root for tokenizer/vocab asset lookup.
+
+    Called by ``main`` and service mode before loading vocab or Python Kokoro
+    modules. The default is this checkout when it contains repo-local runtime
+    assets. ``KOKORO_COREML_ROOT`` and ``--runtime-root`` remain explicit
+    overrides for Botnet or generated-runtime layouts.
+    """
+    if arg_root is not None:
+        return arg_root.resolve()
+    env_root = os.environ.get("KOKORO_COREML_ROOT", "").strip()
+    if env_root:
+        return Path(env_root).resolve()
+    if (REPO_ROOT / "_kokoro_vocab.json").exists():
+        return REPO_ROOT
+    return Path.cwd().resolve()
+
+
+def _ensure_python_runtime_path(root: Path) -> None:
+    """Put the runtime root on ``sys.path`` for direct script execution.
+
+    Running ``python scripts/kokoro-prepare-input.py`` sets ``sys.path[0]`` to
+    ``scripts/``. Without this helper, the local ``kokoro`` package is invisible
+    unless the caller has installed it into the active Python environment.
+    """
+    root_text = str(root)
+    if root_text not in sys.path:
+        sys.path.insert(0, root_text)
 
 
 def _language_for_voice(voice: str) -> str:
@@ -27,8 +58,10 @@ def _language_for_voice(voice: str) -> str:
 def _load_vocab(root: Path) -> dict[str, int]:
     home_checkout = Path.home() / "Documents" / "GitHub" / "kokoro-coreml"
     candidates = [
+        root / "_kokoro_vocab.json",
         root / "checkpoints" / "config.json",
         root / "outputs" / "hnsf_validation" / "config.json",
+        home_checkout / "_kokoro_vocab.json",
         home_checkout / "checkpoints" / "config.json",
         home_checkout / "outputs" / "hnsf_validation" / "config.json",
     ]
@@ -111,10 +144,12 @@ def _prepare_entries(
     return entries
 
 
-def _run_serve() -> int:
+def _run_serve(runtime_root: Path | None) -> int:
+    root = _runtime_root(runtime_root)
+    _ensure_python_runtime_path(root)
+
     from kokoro import KPipeline
 
-    root = Path.cwd()
     vocab = _load_vocab(root)
     pipelines: dict[str, Any] = {}
     voice_packs: dict[str, Any] = {}
@@ -167,13 +202,17 @@ def main() -> int:
     parser.add_argument("--key")
     parser.add_argument("--voice")
     parser.add_argument("--speed", type=float)
+    parser.add_argument("--runtime-root", type=Path)
     args = parser.parse_args()
     if args.serve:
-        return _run_serve()
+        return _run_serve(args.runtime_root)
     if (args.text_file is None) == (args.text_list_file is None):
         parser.error("provide exactly one of --text-file or --text-list-file")
     if args.output is None or args.key is None or args.voice is None or args.speed is None:
         parser.error("--output, --key, --voice, and --speed are required outside --serve")
+
+    root = _runtime_root(args.runtime_root)
+    _ensure_python_runtime_path(root)
 
     from kokoro import KPipeline
 
@@ -182,7 +221,6 @@ def main() -> int:
         if args.text_file is not None
         else json.loads(args.text_list_file.read_text(encoding="utf-8"))
     )
-    root = Path.cwd()
     vocab = _load_vocab(root)
 
     entries = []

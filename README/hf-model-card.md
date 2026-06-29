@@ -123,17 +123,62 @@ Five fixed-duration buckets: **3s, 7s, 10s, 15s, 30s**. Pick the smallest bucket
 
 The alignment matrix and the hn-NSF harmonic source are not models -- they're a few hundred lines of Swift/vDSP in the GitHub repo's `KokoroPipeline`.
 
-## Usage (Swift)
+## Usage (Swift SDK)
+
+This section is the Swift SDK contract for the matching Git release commit. The
+repo publishes SDK bundle manifests and checksums at the top level for the
+starter profile and under `sdk/starter/` and `sdk/full/` for profile-specific
+metadata. If you are using an older HF snapshot, use the low-level
+`KokoroPipeline` snippets from that snapshot instead.
 
 ```swift
-import KokoroPipeline  // from the GitHub repo
+import KokoroTTS
 
-let pipeline = try KokoroPipeline(modelsDirectory: modelsURL)
-let result = try pipeline.synthesize(text: "Hello world", voice: "af_heart")
-// result.waveform: 24 kHz mono PCM, trimmed to actual speech length
+let resources = KokoroResourceProvider.directory(bundleURL)
+let tts = try await KokoroTTS.load(resources: resources)
+try await tts.prewarm(text: "Hello world.", voice: .afHeart)
+
+let audio = try await tts.synthesize("Hello world.", voice: .afHeart)
+let samples = audio.samples        // 24 kHz mono Float PCM
+let buffer = try audio.makePCMBuffer()
 ```
 
-Or load the packages raw and orchestrate yourself -- the full glue (tokenizer, alignment builder, harmonic source, PCM playback) is in the [GitHub repo](https://github.com/mattmireles/kokoro-coreml). It's small. You can read it in an afternoon.
+The SDK is in the GitHub repo's `swift-tts` package. It owns raw-text
+preparation, Misaki phonemization, Botnet-compatible chunking, model loading,
+and AVFoundation PCM buffer creation. Current SDK contract: iOS 18.0+,
+macOS 15.0+, sample rate `24000`, starter voice `af_heart`, duration token
+sizes `32,64,128,256,320,384,512`, full buckets `3,7,10,15,30`, max caller
+chunk tokens `450`, voice embedding dimension `256`.
+
+Build a starter bundle:
+
+```bash
+python3 scripts/download_models.py \
+  --repo-id mattmireles/kokoro-coreml \
+  --revision <hf-revision> \
+  --sdk-profile starter \
+  --manifest-out /tmp/kokoro-download-manifest.json
+
+node scripts/build_sdk_bundle.mjs \
+  --profile starter \
+  --compile-models 1 \
+  --output /tmp/kokoro-sdk-starter \
+  --repo-id mattmireles/kokoro-coreml \
+  --revision <hf-revision> \
+  --download-manifest /tmp/kokoro-download-manifest.json
+
+node scripts/validate_sdk_bundle.mjs /tmp/kokoro-sdk-starter
+```
+
+Downloaded-resource apps can hydrate the top-level starter
+`HostedManifest.json` with `KokoroDownloadedModelStore`. Production apps should
+serve manifests over HTTPS and pin the expected HF revision or
+`sdk/SDKReleaseManifest.json` checksum. Bundled-resource apps can use
+`KokoroResourceProvider.directory`, `.appBundle`, or `.packageBundle`.
+
+Previous snippets that used `KokoroPipeline` directly are now low-level
+examples. Keep them for benchmarking and graph work; use `KokoroTTS` for app
+integration.
 
 ## Tensor shapes (3s bucket)
 
@@ -162,7 +207,7 @@ Everything is static and float16. No dynamic ops. No `RangeDim`. No `non_zero` k
 
 ## Requirements
 
-- **iOS 16+ / macOS 13+** (MLProgram + modern Core ML runtime)
+- **iOS 18.0+ / macOS 15.0+** for the drop-in raw-text `KokoroTTS` SDK
 - **Apple Silicon** (M1+) or **A15+** for Neural Engine acceleration
 - Runs on older chips too, just slower
 
