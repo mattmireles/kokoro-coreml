@@ -10,11 +10,8 @@ let package = Package(
     ],
     products: [
         .library(name: "KokoroTTS", targets: ["KokoroTTS"]),
-        .library(name: "KokoroPipeline", targets: ["KokoroPipeline"]),
         .executable(name: "kokoro-sdk-smoke", targets: ["KokoroSDKSmoke"]),
         .executable(name: "kokoro-misaki-probe", targets: ["KokoroMisakiProbe"]),
-        .executable(name: "kokoro-bench", targets: ["KokoroBenchmark"]),
-        .executable(name: "kokoro-hnsf-bench", targets: ["KokoroHnsfBenchmark"]),
     ],
     dependencies: [
         .package(
@@ -47,16 +44,6 @@ let package = Package(
             name: "KokoroMisakiProbe",
             dependencies: ["KokoroTTS"],
             path: "swift-tts/Sources/KokoroMisakiProbe"
-        ),
-        .executableTarget(
-            name: "KokoroBenchmark",
-            dependencies: ["KokoroPipeline"],
-            path: "swift/Sources/KokoroBenchmark"
-        ),
-        .executableTarget(
-            name: "KokoroHnsfBenchmark",
-            dependencies: ["KokoroPipeline"],
-            path: "swift/Sources/KokoroHnsfBenchmark"
         ),
     ]
 )
