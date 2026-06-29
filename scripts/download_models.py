@@ -320,6 +320,9 @@ def _repo_files_for_patterns(repo_id: str, revision: str | None, patterns: list[
             continue
         size = getattr(item, "size", None)
         lfs = getattr(item, "lfs", None)
+        local = _REPO_ROOT / path
+        if size is None and lfs is None and local.is_dir():
+            continue
         sha256 = None
         if isinstance(lfs, dict):
             sha256 = lfs.get("sha256")
@@ -328,11 +331,9 @@ def _repo_files_for_patterns(repo_id: str, revision: str | None, patterns: list[
             sha256 = getattr(lfs, "sha256", None)
             size = size if size is not None else getattr(lfs, "size", None)
         if not sha256:
-            local = _REPO_ROOT / path
             if local.is_file():
                 sha256 = _sha256_file(local)
         if size is None:
-            local = _REPO_ROOT / path
             if local.is_file():
                 size = local.stat().st_size
         if size is None or not sha256:
