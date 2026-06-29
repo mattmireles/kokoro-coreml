@@ -1,7 +1,7 @@
 # Kokoro Drop-In SDK v1 Plan
 
 **Date:** 2026-06-28
-**Status:** Implemented locally; final audit fixes in progress
+**Status:** Complete on `main`
 
 ## Executive Summary
 
@@ -787,14 +787,15 @@ and marks old `KokoroPipeline` snippets as low-level.
 The physical iOS readiness gate is now closed by iPhone 15 Pro Max evidence.
 The HF metadata payload helper shares the downloader's env, repo `.env`, and
 Hugging Face cache token lookup. The final hardened HF metadata upload reached
-live revision `ccaa3199213acb163b14477e1eaee8b896740e69`.
-`scripts/inspect_hf_artifacts.py` reports no missing SDK metadata and no
-unresolved top-level `HostedManifest.json` files. The directly hydratable
-starter manifest has 34 files and the release manifest points at SDK commit
-`8a278df2d3d10ecb62c3eb65516cd09e31a182f3`. It records top-level hosted files
+live revision `8647aef720d0ca121d2e1ac29c1bd8ef02a9dc5c`.
+`scripts/inspect_hf_artifacts.py --verify-hosted-digests` reports no missing
+SDK metadata, no unresolved top-level `HostedManifest.json` files, no stale
+`sdk/*/HostedManifest.json` profile files, and no hosted digest mismatches
+across 34 starter hosted files. The release manifest points at SDK commit
+`781e56a896a6f7acc1040681c73547b58fdde2d8`. It records top-level hosted files
 `runtime/hnsf_weights.json`, `runtime/kokoro-vocab.json`, and
-`voices/af_heart.bin`; starter profile `starter-8a278df2d3d1` has 10 models / 1
-voice and full profile `full-8a278df2d3d1` has 22 models / 28 supported English
+`voices/af_heart.bin`; starter profile `starter-781e56a896a6` has 10 models / 1
+voice and full profile `full-781e56a896a6` has 22 models / 28 supported English
 voices.
 Verification after the docs/drift slice: `node
 scripts/check_sdk_drift.mjs`, `swift test --package-path swift-tts`, `swift
