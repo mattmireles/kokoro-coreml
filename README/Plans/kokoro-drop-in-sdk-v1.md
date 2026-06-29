@@ -58,7 +58,7 @@ developer diagnostic path, not an app runtime dependency.
       edge cases and existing bakeoff fixtures, with known Misaki-vs-eSpeak
       differences recorded instead of hidden.
 - [x] Document a release artifact workflow for the large model assets instead of
-      pretending they belong in git.
+      pretending they belong in git or GitHub LFS.
 - [x] Make `scripts/download_models.py` and Hugging Face revision pinning the
       default way to hydrate large model/voice assets for SDK bundles.
 - [x] Prove MisakiSwift packaging on macOS and iOS before exposing a public
@@ -786,17 +786,19 @@ artifact. `README/hf-model-card.md` now points app developers at `KokoroTTS`
 and marks old `KokoroPipeline` snippets as low-level.
 The physical iOS readiness gate is now closed by iPhone 15 Pro Max evidence.
 The HF metadata payload helper shares the downloader's env, repo `.env`, and
-Hugging Face cache token lookup. The final hardened HF metadata upload reached
-live revision `8647aef720d0ca121d2e1ac29c1bd8ef02a9dc5c`.
+Hugging Face cache token lookup. The final hardened HF metadata upload from
+clean `main` reached live revision
+`165f8cb3c70c38086117101038b9c6a440e45af2`.
 `scripts/inspect_hf_artifacts.py --verify-hosted-digests` reports no missing
 SDK metadata, no unresolved top-level `HostedManifest.json` files, no stale
 `sdk/*/HostedManifest.json` profile files, and no hosted digest mismatches
 across 34 starter hosted files. The release manifest points at SDK commit
-`781e56a896a6f7acc1040681c73547b58fdde2d8`. It records top-level hosted files
+`3c18a976dfb99a78e7903c247019d86c5dab8b35`. It records top-level hosted files
 `runtime/hnsf_weights.json`, `runtime/kokoro-vocab.json`, and
-`voices/af_heart.bin`; starter profile `starter-781e56a896a6` has 10 models / 1
-voice and full profile `full-781e56a896a6` has 22 models / 28 supported English
-voices.
+`voices/af_heart.bin`; starter profile `starter-3c18a976dfb9` has 10 models / 1
+voice and full profile `full-3c18a976dfb9` has 22 models / 28 supported English
+voices. Large binaries are hosted as Hugging Face release artifacts and are not
+stored in git or GitHub LFS.
 Verification after the docs/drift slice: `node
 scripts/check_sdk_drift.mjs`, `swift test --package-path swift-tts`, `swift
 test --package-path swift`, `node scripts/compare_botnet_prepare_input.mjs
@@ -895,7 +897,7 @@ evidence, and must be rerun before remote HF publication.
 
 - **Q:** Should all model assets be committed to git?
 - **A:** No. `coreml/` is ignored and too large; release artifacts and manifests
-  are the right boundary.
+  are the right boundary. Do not use GitHub LFS for this repo.
 
 - **Q:** Should the public SDK break `KokoroPipeline.synthesize(...)`?
 - **A:** No. Add `KokoroTTS` above it.

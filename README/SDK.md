@@ -49,6 +49,9 @@ SwiftPM dependency before that, mirror this repo layout so `swift-tts` can still
 resolve its sibling `../swift` package, or publish both packages explicitly.
 Mirroring only `swift-tts` is not enough.
 
+Model binaries are hosted on Hugging Face and hydrated by the SDK bundle tools.
+This release does not use GitHub LFS.
+
 The repo also includes `examples/KokoroConsumerFixture` and
 `examples/KokoroDemoApp` as integration fixtures.
 
