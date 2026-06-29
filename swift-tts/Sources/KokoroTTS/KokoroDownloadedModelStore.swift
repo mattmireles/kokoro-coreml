@@ -136,13 +136,13 @@ public struct KokoroDownloadedModelStore: Sendable {
             try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
             try Self.rejectExistingSymlinkComponents(rootURL: cacheDirectory, targetURL: target.deletingLastPathComponent())
             let fileURL = try Self.remoteURL(manifestURL: manifestURL, relativePath: file.path)
-            let payload = try await downloadWithRetry(
+            try await downloadFileWithRetry(
                 fileURL,
-                maxBytes: min(file.bytes, limits.maxFileBytes),
+                target: target,
+                expectedBytes: file.bytes,
+                expectedSHA256: file.sha256,
                 label: file.path
             )
-            try Task.checkCancellation()
-            try payload.write(to: target, options: .atomic)
             guard try await isValidFile(url: target, bytes: file.bytes, sha256: file.sha256) else {
                 throw KokoroError.badHash(path: file.path)
             }
@@ -179,15 +179,7 @@ public struct KokoroDownloadedModelStore: Sendable {
         for _ in 0..<3 {
             try Task.checkCancellation()
             do {
-                let (data, response) = try await URLSession.shared.data(from: url)
-                if let http = response as? HTTPURLResponse,
-                   !(200..<300).contains(http.statusCode) {
-                    throw URLError(.badServerResponse)
-                }
-                if data.count > maxBytes {
-                    throw KokoroError.downloadTooLarge(path: label, bytes: data.count, maxBytes: maxBytes)
-                }
-                return data
+                return try await Self.downloadCappedData(from: url, maxBytes: maxBytes, label: label)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -198,6 +190,321 @@ public struct KokoroDownloadedModelStore: Sendable {
             }
         }
         throw lastError ?? URLError(.cannotLoadFromNetwork)
+    }
+
+    /// Downloads one hosted file directly to disk with a small fixed retry budget.
+    private func downloadFileWithRetry(
+        _ url: URL,
+        target: URL,
+        expectedBytes: Int,
+        expectedSHA256: String,
+        label: String
+    ) async throws {
+        let maxBytes = min(expectedBytes, limits.maxFileBytes)
+        if url.isFileURL {
+            try Task.checkCancellation()
+            let values = try url.resourceValues(forKeys: [.fileSizeKey])
+            let byteCount = values.fileSize ?? 0
+            guard byteCount <= maxBytes else {
+                throw KokoroError.downloadTooLarge(path: label, bytes: byteCount, maxBytes: maxBytes)
+            }
+            guard byteCount == expectedBytes,
+                  try Self.fileSHA256(url) == expectedSHA256 else {
+                throw KokoroError.badHash(path: label)
+            }
+            if FileManager.default.fileExists(atPath: target.path) {
+                try FileManager.default.removeItem(at: target)
+            }
+            try FileManager.default.copyItem(at: url, to: target)
+            return
+        }
+        var lastError: Error?
+        for _ in 0..<3 {
+            try Task.checkCancellation()
+            do {
+                try await Self.downloadCappedFile(
+                    from: url,
+                    to: target,
+                    expectedBytes: expectedBytes,
+                    expectedSHA256: expectedSHA256,
+                    maxBytes: maxBytes,
+                    label: label
+                )
+                return
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                if Task.isCancelled {
+                    throw CancellationError()
+                }
+                lastError = error
+            }
+        }
+        throw lastError ?? URLError(.cannotLoadFromNetwork)
+    }
+
+    /// Downloads an HTTP(S) response while enforcing the byte cap incrementally.
+    private static func downloadCappedData(from url: URL, maxBytes: Int, label: String) async throws -> Data {
+        let downloader = CappedDataDownloader(maxBytes: maxBytes, label: label)
+        return try await downloader.download(from: url)
+    }
+
+    /// Downloads an HTTP(S) file to disk while enforcing the byte cap incrementally.
+    private static func downloadCappedFile(
+        from url: URL,
+        to target: URL,
+        expectedBytes: Int,
+        expectedSHA256: String,
+        maxBytes: Int,
+        label: String
+    ) async throws {
+        let downloader = CappedFileDownloader(
+            target: target,
+            expectedBytes: expectedBytes,
+            expectedSHA256: expectedSHA256,
+            maxBytes: maxBytes,
+            label: label
+        )
+        try await downloader.download(from: url)
+    }
+
+    /// URLSession delegate that rejects oversized responses before buffering them fully.
+    private final class CappedDataDownloader: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+        /// Maximum accepted response bytes.
+        private let maxBytes: Int
+
+        /// Human-readable download label used in errors.
+        private let label: String
+
+        /// Accumulated response data, bounded by `maxBytes`.
+        private var data = Data()
+
+        /// Active async continuation.
+        private var continuation: CheckedContinuation<Data, Error>?
+
+        /// Active URLSession, retained until completion.
+        private var session: URLSession?
+
+        /// Active data task, cancelled on byte-limit failures.
+        private var task: URLSessionDataTask?
+
+        /// Error detected before URLSession's completion callback.
+        private var terminalError: Error?
+
+        /// Creates a capped downloader.
+        ///
+        /// - Parameters:
+        ///   - maxBytes: Maximum accepted response byte count.
+        ///   - label: Human-readable path or manifest label for errors.
+        init(maxBytes: Int, label: String) {
+            self.maxBytes = maxBytes
+            self.label = label
+        }
+
+        /// Starts a capped data download.
+        ///
+        /// - Parameter url: HTTP(S) URL to download.
+        /// - Returns: Response bytes when status and size are valid.
+        func download(from url: URL) async throws -> Data {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    self.continuation = continuation
+                    let session = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: nil)
+                    self.session = session
+                    let task = session.dataTask(with: url)
+                    self.task = task
+                    task.resume()
+                }
+            } onCancel: {
+                self.task?.cancel()
+            }
+        }
+
+        /// Validates status and declared content length before accepting bytes.
+        func urlSession(
+            _ session: URLSession,
+            dataTask: URLSessionDataTask,
+            didReceive response: URLResponse,
+            completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+        ) {
+            if let http = response as? HTTPURLResponse,
+               !(200..<300).contains(http.statusCode) {
+                terminalError = URLError(.badServerResponse)
+                completionHandler(.cancel)
+                return
+            }
+            if response.expectedContentLength > Int64(maxBytes) {
+                terminalError = KokoroError.downloadTooLarge(
+                    path: label,
+                    bytes: Int(response.expectedContentLength),
+                    maxBytes: maxBytes
+                )
+                completionHandler(.cancel)
+                return
+            }
+            completionHandler(.allow)
+        }
+
+        /// Appends one streamed response chunk if it remains inside the byte cap.
+        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive chunk: Data) {
+            let nextCount = data.count + chunk.count
+            guard nextCount <= maxBytes else {
+                terminalError = KokoroError.downloadTooLarge(path: label, bytes: nextCount, maxBytes: maxBytes)
+                dataTask.cancel()
+                return
+            }
+            data.append(chunk)
+        }
+
+        /// Resumes the async caller with either the bounded data or the first terminal error.
+        func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+            session.invalidateAndCancel()
+            defer {
+                continuation = nil
+                self.session = nil
+                self.task = nil
+            }
+            if let terminalError {
+                continuation?.resume(throwing: terminalError)
+            } else if let error {
+                continuation?.resume(throwing: error)
+            } else {
+                continuation?.resume(returning: data)
+            }
+        }
+    }
+
+    /// URLSession delegate that downloads a file to disk without buffering it in memory.
+    private final class CappedFileDownloader: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+        /// Final target URL under the SDK cache root.
+        private let target: URL
+
+        /// Expected byte count from the hosted manifest.
+        private let expectedBytes: Int
+
+        /// Expected SHA-256 digest from the hosted manifest.
+        private let expectedSHA256: String
+
+        /// Maximum accepted response bytes.
+        private let maxBytes: Int
+
+        /// Human-readable download label used in errors.
+        private let label: String
+
+        /// Active async continuation.
+        private var continuation: CheckedContinuation<Void, Error>?
+
+        /// Active URLSession, retained until completion.
+        private var session: URLSession?
+
+        /// Active download task, cancelled on byte-limit failures.
+        private var task: URLSessionDownloadTask?
+
+        /// Error detected before URLSession's completion callback.
+        private var terminalError: Error?
+
+        /// Whether `didFinishDownloadingTo` moved a verified file into place.
+        private var finished = false
+
+        /// Creates a capped file downloader.
+        ///
+        /// - Parameters:
+        ///   - target: Final cache file URL.
+        ///   - expectedBytes: Expected final byte count.
+        ///   - expectedSHA256: Expected final SHA-256 digest.
+        ///   - maxBytes: Maximum accepted response byte count.
+        ///   - label: Human-readable path or manifest label for errors.
+        init(target: URL, expectedBytes: Int, expectedSHA256: String, maxBytes: Int, label: String) {
+            self.target = target
+            self.expectedBytes = expectedBytes
+            self.expectedSHA256 = expectedSHA256
+            self.maxBytes = maxBytes
+            self.label = label
+        }
+
+        /// Starts a capped disk-backed download.
+        ///
+        /// - Parameter url: HTTP(S) URL to download.
+        func download(from url: URL) async throws {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    self.continuation = continuation
+                    let session = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: nil)
+                    self.session = session
+                    let task = session.downloadTask(with: url)
+                    self.task = task
+                    task.resume()
+                }
+            } onCancel: {
+                self.task?.cancel()
+            }
+        }
+
+        /// Cancels the task as soon as URLSession reports the byte cap is exceeded.
+        func urlSession(
+            _ session: URLSession,
+            downloadTask: URLSessionDownloadTask,
+            didWriteData bytesWritten: Int64,
+            totalBytesWritten: Int64,
+            totalBytesExpectedToWrite: Int64
+        ) {
+            guard totalBytesWritten <= Int64(maxBytes) else {
+                terminalError = KokoroError.downloadTooLarge(
+                    path: label,
+                    bytes: Int(totalBytesWritten),
+                    maxBytes: maxBytes
+                )
+                downloadTask.cancel()
+                return
+            }
+        }
+
+        /// Verifies the temporary file and moves it into the app cache.
+        func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+            do {
+                let values = try location.resourceValues(forKeys: [.fileSizeKey])
+                let byteCount = values.fileSize ?? 0
+                guard byteCount == expectedBytes else {
+                    throw KokoroError.badHash(path: label)
+                }
+                guard byteCount <= maxBytes else {
+                    throw KokoroError.downloadTooLarge(path: label, bytes: byteCount, maxBytes: maxBytes)
+                }
+                guard try KokoroDownloadedModelStore.fileSHA256(location) == expectedSHA256 else {
+                    throw KokoroError.badHash(path: label)
+                }
+                if FileManager.default.fileExists(atPath: target.path) {
+                    try FileManager.default.removeItem(at: target)
+                }
+                try FileManager.default.moveItem(at: location, to: target)
+                finished = true
+            } catch {
+                terminalError = error
+            }
+        }
+
+        /// Resumes the async caller after URLSession completes or fails.
+        func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+            session.invalidateAndCancel()
+            defer {
+                continuation = nil
+                self.session = nil
+                self.task = nil
+            }
+            if let http = task.response as? HTTPURLResponse,
+               !(200..<300).contains(http.statusCode),
+               terminalError == nil {
+                continuation?.resume(throwing: URLError(.badServerResponse))
+            } else if let terminalError {
+                continuation?.resume(throwing: terminalError)
+            } else if let error {
+                continuation?.resume(throwing: error)
+            } else if !finished {
+                continuation?.resume(throwing: URLError(.cannotDecodeContentData))
+            } else {
+                continuation?.resume()
+            }
+        }
     }
 
     /// Checks whether a cached file matches expected size and hash.
@@ -212,11 +519,11 @@ public struct KokoroDownloadedModelStore: Sendable {
         if bytes > limits.maxFileBytes {
             throw KokoroError.downloadTooLarge(path: url.lastPathComponent, bytes: bytes, maxBytes: limits.maxFileBytes)
         }
-        let data = try Data(contentsOf: url)
-        guard data.count == bytes else {
+        let fileValues = try url.resourceValues(forKeys: [.fileSizeKey])
+        guard fileValues.fileSize == bytes else {
             return false
         }
-        return Self.sha256(data) == sha256
+        return try Self.fileSHA256(url) == sha256
     }
 
     /// Returns the locally recorded hosted bundle version, if present.
@@ -262,6 +569,29 @@ public struct KokoroDownloadedModelStore: Sendable {
     /// Computes a lowercase SHA-256 hex digest.
     private static func sha256(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Computes a lowercase SHA-256 hex digest by streaming file bytes.
+    private static func fileSHA256(_ url: URL) throws -> String {
+        guard let stream = InputStream(url: url) else {
+            throw URLError(.cannotOpenFile)
+        }
+        stream.open()
+        defer { stream.close() }
+        var digest = SHA256()
+        let bufferSize = 1024 * 1024
+        var buffer = [UInt8](repeating: 0, count: bufferSize)
+        while stream.hasBytesAvailable {
+            let count = stream.read(&buffer, maxLength: bufferSize)
+            if count < 0 {
+                throw stream.streamError ?? URLError(.cannotDecodeContentData)
+            }
+            if count == 0 {
+                break
+            }
+            digest.update(data: Data(buffer.prefix(count)))
+        }
+        return digest.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     /// Resolves a hosted-manifest path under the cache root.

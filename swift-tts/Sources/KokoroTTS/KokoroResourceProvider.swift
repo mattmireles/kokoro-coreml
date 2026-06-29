@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 
 /// Locates a generated Kokoro SDK runtime bundle.
@@ -39,31 +38,20 @@ public enum KokoroResourceProvider: Sendable {
         }
     }
 
-    /// Resolves the writable or bundled compiled-model directory.
+    /// Resolves the caller-supplied compiled-model cache directory.
     ///
-    /// - Returns: Directory where `.mlmodelc` models may be loaded or cached.
-    func compiledModelsDirectoryURL() throws -> URL {
+    /// The SDK computes a stable manifest-keyed cache when this returns `nil`.
+    ///
+    /// - Returns: Explicit directory where `.mlmodelc` models may be loaded or cached.
+    func explicitCompiledModelsDirectoryURL() -> URL? {
         switch self {
         case .downloadedDirectory(_, let compiledModelsDirectory):
             return compiledModelsDirectory
-        case .directory(let root, let compiledModelsDirectory):
-            return compiledModelsDirectory ?? Self.defaultCompiledModelsDirectory(for: root)
+        case .directory(_, let compiledModelsDirectory):
+            return compiledModelsDirectory
         case .appBundle(_, _, let compiledModelsDirectory),
              .packageBundle(_, _, let compiledModelsDirectory):
-            return try compiledModelsDirectory ?? Self.defaultCompiledModelsDirectory(for: rootURL())
+            return compiledModelsDirectory
         }
-    }
-
-    /// Returns a stable writable cache directory for compiled Core ML models.
-    private static func defaultCompiledModelsDirectory(for root: URL) -> URL {
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        let digest = SHA256.hash(data: Data(root.standardizedFileURL.path.utf8))
-            .prefix(8)
-            .map { String(format: "%02x", $0) }
-            .joined()
-        return caches
-            .appendingPathComponent("KokoroTTS", isDirectory: true)
-            .appendingPathComponent("compiled-\(digest)", isDirectory: true)
     }
 }

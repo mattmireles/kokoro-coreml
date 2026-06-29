@@ -15,7 +15,7 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
     private let modelsDirectory: URL
 
     /// Directory containing or caching compiled `.mlmodelc` models.
-    private let compiledModelsDirectory: URL
+    let compiledModelsDirectory: URL
 
     /// Lazy duration choices discovered from available model packages.
     private let durationChoices: [DurationModelChoice]
@@ -54,7 +54,8 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         }
         let manifestModelPaths = Set(manifest.modelPackages.map(\.path))
         self.modelsDirectory = root.appendingPathComponent("coreml", isDirectory: true)
-        let compiledModelsDirectory = try resources.compiledModelsDirectoryURL()
+        let compiledModelsDirectory = resources.explicitCompiledModelsDirectoryURL()
+            ?? Self.defaultCompiledModelsDirectory(for: manifest)
         try Self.validateCompiledModelsDirectory(bundleRootURL: root, compiledModelsDirectory: compiledModelsDirectory)
         self.compiledModelsDirectory = compiledModelsDirectory
         let durationChoices = KokoroPipeline.discoverDurationChoices(modelsDirectory: modelsDirectory)
@@ -380,6 +381,44 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         } else {
             try rejectRootSymlink(rootURL: compiledModelsDirectory)
         }
+    }
+
+    /// Returns a stable writable cache directory for compiled Core ML models.
+    ///
+    /// The cache key deliberately avoids the runtime bundle path because iOS app
+    /// update installs can change bundle URLs while keeping the exact same SDK
+    /// resource manifest. Manifest identity gives app-bundled resources stable
+    /// cache reuse while still invalidating when the HF revision, SDK commit,
+    /// profile, runtime assets, model packages, or voice embeddings change.
+    private static func defaultCompiledModelsDirectory(for manifest: KokoroRuntimeManifest) -> URL {
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let digest = compiledCacheDigest(for: manifest).prefix(16)
+        return caches
+            .appendingPathComponent("KokoroTTS", isDirectory: true)
+            .appendingPathComponent("compiled-\(digest)", isDirectory: true)
+    }
+
+    /// Builds the manifest identity digest used by the default compiled cache.
+    private static func compiledCacheDigest(for manifest: KokoroRuntimeManifest) -> String {
+        var lines: [String] = [
+            "schema=\(manifest.schemaVersion)",
+            "sdk=\(manifest.sdkCommit)",
+            "repo=\(manifest.hfRepoID)",
+            "revision=\(manifest.hfRevision)",
+            "profile=\(manifest.bundleProfile)",
+            "download=\(manifest.hfDownloadManifestSHA256)",
+            "vocab=\(manifest.runtimeAssets.vocab.sha256)",
+            "hnsf=\(manifest.runtimeAssets.hnsfWeights.sha256)",
+        ]
+        lines.append(contentsOf: manifest.modelPackages
+            .sorted { $0.path < $1.path }
+            .map { "\($0.path)=\($0.treeSHA256)" })
+        lines.append(contentsOf: manifest.voices
+            .sorted { $0.path < $1.path }
+            .map { "\($0.path)=\($0.sha256)" })
+        let data = Data(lines.joined(separator: "\n").utf8)
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     /// Verifies the manifest describes a model set that can satisfy synthesis.

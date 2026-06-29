@@ -36,7 +36,7 @@ public actor KokoroTTS {
     ///   - voiceTable: Voice table loader.
     ///   - modelProvider: Core ML model provider.
     ///   - hnsf: hn-NSF linear weights and bias.
-    private init(
+    init(
         chunker: TextChunker,
         americanTextProcessor: KokoroTextProcessor,
         britishTextProcessor: KokoroTextProcessor,

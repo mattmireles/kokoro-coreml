@@ -10,8 +10,6 @@ let package = Package(
     ],
     products: [
         .library(name: "KokoroTTS", targets: ["KokoroTTS"]),
-        .executable(name: "kokoro-sdk-smoke", targets: ["KokoroSDKSmoke"]),
-        .executable(name: "kokoro-misaki-probe", targets: ["KokoroMisakiProbe"]),
     ],
     dependencies: [
         .package(
@@ -34,16 +32,6 @@ let package = Package(
             resources: [
                 .process("Resources"),
             ]
-        ),
-        .executableTarget(
-            name: "KokoroSDKSmoke",
-            dependencies: ["KokoroTTS"],
-            path: "swift-tts/Sources/KokoroSDKSmoke"
-        ),
-        .executableTarget(
-            name: "KokoroMisakiProbe",
-            dependencies: ["KokoroTTS"],
-            path: "swift-tts/Sources/KokoroMisakiProbe"
         ),
     ]
 )

@@ -1,6 +1,21 @@
 import CryptoKit
+import KokoroPipeline
 import XCTest
 @testable import KokoroTTS
+
+private struct CharacterCountPhonemizer: KokoroPhonemizer {
+    /// Phoneme scalar emitted once per normalized input character.
+    let phoneme: Character
+
+    /// Returns a known Kokoro vocab phoneme repeated to match input character count.
+    ///
+    /// - Parameter text: Raw chunk text.
+    /// - Returns: Deterministic phonemes sized to trigger token-budget fallback.
+    func phonemize(_ text: String) throws -> KokoroPhonemeResult {
+        let count = KokoroTextProcessor.normalizeWhitespace(text).count
+        return KokoroPhonemeResult(phonemes: String(repeating: String(phoneme), count: count))
+    }
+}
 
 final class KokoroFacadeTests: XCTestCase {
     /// Verifies the SDK model provider validates runtime assets and voice hashes.
@@ -67,7 +82,27 @@ final class KokoroFacadeTests: XCTestCase {
         let provider = KokoroResourceProvider.downloadedDirectory(root: root, compiledModelsDirectory: compiled)
 
         XCTAssertEqual(try provider.rootURL(), root)
-        XCTAssertEqual(try provider.compiledModelsDirectoryURL(), compiled)
+        XCTAssertEqual(provider.explicitCompiledModelsDirectoryURL(), compiled)
+    }
+
+    /// Verifies default compiled caches are keyed by manifest identity, not bundle path.
+    func testDefaultCompiledCacheIsStableAcrossBundlePaths() throws {
+        let first = try KokoroSDKModelProvider(resources: .directory(makeBundleRoot()))
+        let second = try KokoroSDKModelProvider(resources: .directory(makeBundleRoot()))
+
+        XCTAssertEqual(first.compiledModelsDirectory, second.compiledModelsDirectory)
+        XCTAssertFalse(first.compiledModelsDirectory.path.contains("KokoroRuntimeManifest.json"))
+    }
+
+    /// Verifies app callers may still override the default compiled-model cache.
+    func testDirectoryResourceProviderUsesExplicitCompiledCacheDirectory() throws {
+        let root = try makeBundleRoot()
+        let compiled = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+
+        let provider = try KokoroSDKModelProvider(resources: .directory(root, compiledModelsDirectory: compiled))
+
+        XCTAssertEqual(provider.compiledModelsDirectory, compiled)
     }
 
     /// Verifies facade load defers Core ML compilation and Misaki/MLX setup.
@@ -75,6 +110,31 @@ final class KokoroFacadeTests: XCTestCase {
         let root = try makeBundleRoot()
 
         _ = try await loadFacadeFromMainActor(resources: .directory(root))
+    }
+
+    /// Verifies `KokoroTTS.prepare` recursively splits chunks that exceed token budget after phonemization.
+    func testFacadePrepareRecursivelySplitsOversizedTokenizedChunks() async throws {
+        let root = try makeBundleRoot()
+        let modelProvider = try KokoroSDKModelProvider(resources: .directory(root))
+        let vocab = try modelProvider.vocab()
+        let processor = KokoroTextProcessor(
+            phonemizer: CharacterCountPhonemizer(phoneme: "h"),
+            vocab: vocab
+        )
+        let tts = KokoroTTS(
+            chunker: TextChunker(maxChunkSeconds: 10_000),
+            americanTextProcessor: processor,
+            britishTextProcessor: processor,
+            voiceTable: VoiceTable(voicesDirectory: root.appendingPathComponent("voices", isDirectory: true)),
+            modelProvider: modelProvider,
+            hnsf: try modelProvider.hnsfWeights()
+        )
+        let text = String(repeating: "a", count: PipelineConstants.maxCallerChunkTokens + 100)
+
+        let prepared = try await tts.prepare(text, voice: .afHeart)
+
+        XCTAssertGreaterThan(prepared.count, 1)
+        XCTAssertTrue(prepared.allSatisfy { ($0.numTokens ?? 0) <= PipelineConstants.maxCallerChunkTokens })
     }
 
     /// Verifies hosted manifest paths cannot escape the downloaded cache.
