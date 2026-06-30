@@ -303,6 +303,7 @@ def _repo_files_for_patterns(repo_id: str, revision: str | None, patterns: list[
     """Return HF file metadata for the exact repo files matched by allow patterns."""
 
     from huggingface_hub import HfApi
+    from huggingface_hub.hf_api import RepoFile
 
     api = HfApi(token=token)
     files = []
@@ -313,6 +314,13 @@ def _repo_files_for_patterns(repo_id: str, revision: str | None, patterns: list[
         recursive=True,
         expand=True,
     ):
+        # `list_repo_tree(recursive=True)` yields both file (blob) and folder
+        # (tree) nodes for nested paths like `*.mlpackage/Data/...`. Folder
+        # nodes carry no size/sha256 and are never themselves a download
+        # target, so they must be skipped here rather than treated as a
+        # missing-digest error below.
+        if not isinstance(item, RepoFile):
+            continue
         path = getattr(item, "path", None)
         if not isinstance(path, str):
             continue
