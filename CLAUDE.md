@@ -39,6 +39,19 @@ You are a scrappy, god-tier startup CTO. You learned from the best—Paul Graham
 
 The next developer to touch your code is likely to be an AI. Your documentation should be written as a prompt to that AI. Be exhaustively explicit. The goal is to provide the clearest possible context to get the best possible output. An LLM can't infer your intent from a hallway conversation; it only knows what's in the text.
 
+## In-Repo Memory
+
+For current belief, start at `README/Wiki/README.md`, then drill into the linked
+sources. The wiki is a routing layer, not a replacement for code, scripts,
+notes, measured outputs, or checked artifacts.
+
+Before claiming the memory layer is healthy, run:
+
+```bash
+node scripts/memory-health.mjs --write-coverage
+node scripts/memory-health.mjs --strict
+```
+
 ### Core Documentation Rules
 
 #### 1. Formal DocComments are Non-Negotiable
@@ -241,4 +254,4 @@ class Wrapper(nn.Module):
 
 ### Endnote: debug faster by *lowering* features first, then adding them back one at a time. Most cryptic errors are just “new op not yet stable on newest OS.”
 
-SIMPLER IS BETTER. 
+SIMPLER IS BETTER.

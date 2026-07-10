@@ -6,6 +6,127 @@ Institutional memory for Kokoro PyTorch → Core ML (`mlprogram`) export, synthe
 
 ---
 
+## Issue: Core ML punctuation tokens clicked in reader audio — Active
+
+**First spotted:** 2026-05-26
+**Status:** Active
+
+### Summary
+
+Reader-audio listening samples produced by the split Swift/Core ML Kokoro path
+had audible clicks at punctuation, especially periods, commas, right
+parentheses, and spaced em dashes. The runtime now fades punctuation-owned
+duration spans to silence after waveform extraction; full production sample
+regeneration and listening approval are still pending.
+
+### Symptom
+
+```text
+sft_16Pz6vnuoiHTzJMb:deep:counter-argument:0
+chunk 1: click at "Counter-Argument."
+chunk 3: clicks around "(2023) —", "dataset,", "annotators,", and "protocol."
+chunk 5: clicks around "classification —", "claim —", and "Ultraphonix,"
+```
+
+Notably, `et al.` did not click, which helped separate abbreviation handling
+from standalone punctuation tokens.
+
+### Root Cause
+
+Kokoro's duration model assigns real time to punctuation tokens so pauses
+survive synthesis. The PyTorch reference renders those spans as near-silence,
+but the split Core ML decoder/vocoder path sometimes emitted short transients
+inside punctuation-owned spans.
+
+### Related Guides
+
+- [Core ML compute-unit scheduling guide](../Guides/apple-silicon/CoreML-Compute-Unit-Scheduling-guide.md)
+  - Useful when distinguishing model graph behavior from CPU/GPU/ANE runtime
+    scheduling differences.
+- [Core ML LSTM enumerated shapes guide](../Guides/apple-silicon/CoreML-LSTM-Enumerated-Shapes.md)
+  - Covers the fixed-shape Duration path that supplies punctuation token
+    durations.
+
+### Fix
+
+**Files:**
+
+- `swift/Sources/KokoroPipeline/MLMultiArrayHelpers.swift`
+- `swift/Sources/KokoroPipeline/KokoroSynthesisExecutor.swift`
+- `swift/Tests/KokoroPipelineTests/MLMultiArrayBindingTests.swift`
+
+Changes:
+
+- Added `suppressPunctuationTokenAudio(...)`, keyed by Kokoro punctuation token
+  IDs for semicolon, colon, comma, period, question mark, bang, em dash,
+  ellipsis, quotes, parentheses, and whitespace immediately adjacent to those
+  punctuation tokens.
+- Applied the suppressor after Stage 9 waveform extraction, using `inputIds`
+  plus `predDur` to convert punctuation token duration frames into sample spans.
+- Kept pause timing intact and faded the surrounding samples instead of
+  stripping punctuation before synthesis.
+- Added Swift coverage for comma and period spans with fade behavior.
+
+### Verification
+
+```bash
+swift test --filter MLMultiArrayBindingTests
+uv run python scripts/kokoro_service_proof.py \
+  --text "Attia et al. (2023) — a different dataset, different annotators, different evaluation protocol." \
+  --voice bm_lewis \
+  --output-dir /tmp/kokoro-punct-fix-short \
+  --compute-units cpuOnly
+swift run kokoro-bench \
+  --models-dir /Users/mm/Documents/GitHub/kokoro-coreml/coreml \
+  --inputs-dir /tmp/kokoro-punct-debug-inputs \
+  --hnsf-weights /tmp/kokoro-punct-debug-inputs/hnsf_weights.json \
+  --input-key short \
+  --wav /tmp/kokoro-punct-debug/short.wav \
+  --dump-tensors /tmp/kokoro-punct-debug/tensors \
+  --compute-units cpuOnly \
+  --output /tmp/kokoro-punct-debug/metrics.json
+```
+
+Focused Swift tests passed. Tensor dump comparison showed exact punctuation and
+adjacent-space spans for `. (2023) —`, commas, and final period changed to
+`peak=0`, `max_delta=0`, and `rms=0` in the final post-processed waveform.
+
+### Investigation Log
+
+**2026-05-26**
+
+- **Hypothesis:** The clicks came from chunk concatenation seams.
+- **Tried:** Compared user-reported clicks against chunk boundaries and token
+  timing.
+- **Outcome:** Ruled out. Clicks occurred at punctuation inside a single chunk.
+
+**2026-05-26**
+
+- **Hypothesis:** Text normalization or phonemization dropped letters.
+- **Tried:** Printed phonemes and token IDs for `point`, `word`, `randomly`,
+  and the counter-argument chunks.
+- **Outcome:** Mostly ruled out for punctuation. Phonemes were present with no
+  unknown token IDs; punctuation was represented as standalone timed symbols.
+
+**2026-05-26**
+
+- **Hypothesis:** Core ML renders punctuation tokens as transients.
+- **Tried:** Decoded the production MP3 and probed reported punctuation windows,
+  then compared with PyTorch reference windows.
+- **Outcome:** Confirmed. PyTorch punctuation windows were near-silent, while
+  Core ML output had impulses at several punctuation-owned spans.
+
+### If This Recurs
+
+- [ ] Dump `tokens`, `pred_dur_valid`, `waveform_raw_trimmed`, and `waveform`
+      for the affected input.
+- [ ] Convert punctuation token frames to sample spans with
+      `samplesPerDurationFrame = 600` at 24 kHz.
+- [ ] Confirm final punctuation spans are silent before asking for a listening
+      pass.
+
+---
+
 ## Issue: HAR-post buckets emitted half-duration audio and re-export could double-wrap LSTMs — Resolved
 
 **First spotted:** 2026-04-17

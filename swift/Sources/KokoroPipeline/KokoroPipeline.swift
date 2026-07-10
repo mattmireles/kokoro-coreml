@@ -31,6 +31,10 @@ public enum PipelineConstants {
     public static let sampleRate: Int = 24000
     /// F0 frame rate (Hz). Converts F0 frame count to seconds.
     public static let f0FrameRate: Double = 80.0
+    /// Samples per duration-model frame (40 fps). Matches Python ``AudioConstants.HOP_LENGTH``.
+    public static let samplesPerDurationFrame: Int = sampleRate * 2 / Int(f0FrameRate)
+    /// Fade length (~5 ms @ 24 kHz) applied around punctuation-owned spans.
+    public static let punctuationFadeSamples: Int = 120
     /// Legacy duration model fixed token length.
     public static let durationTokenLength: Int = 128
     /// Voice embedding total dimension.
@@ -56,7 +60,15 @@ public enum PipelineConstants {
     public static let defaultBuckets: [Int] = [3, 7, 10, 15, 30]
 
     /// Duration model enumerated token sizes. Caller pads to nearest.
-    public static let durationTokenSizes: [Int] = [32, 64, 128, 256, 512]
+    public static let durationTokenSizes: [Int] = [32, 64, 128, 256, 320, 384, 512]
+
+    /// Largest duration-token bucket shipped in the Core ML bundle.
+    public static var maxDurationTokenLength: Int {
+        durationTokenSizes.max() ?? 512
+    }
+
+    /// Caller-side chunk token cap from `packages/contracts` (`MAX_TTS_CHUNK_TOKENS`).
+    public static let maxCallerChunkTokens = 450
 }
 
 // MARK: - Stage Timing
@@ -119,6 +131,8 @@ public struct SynthesisResult {
     public let harExpectedTime: Int
     /// Number of audio samples retained after trimming.
     public let trimSampleCount: Int
+    /// Per-input-token duration frame counts (BOS + phoneme ids + EOS), aligned with the caller's ``inputIds`` prefix.
+    public let tokenDurationFrames: [Int]
 }
 
 public struct DurationModelChoice {
@@ -172,8 +186,8 @@ public class KokoroPipeline: KokoroModelProvider {
         linearWeights: [Float],
         linearBias: Float
     ) throws {
-        // Duration models. Prefer exact native packages for exact token-count
-        // matches, and keep padded mask-aware packages as the general fallback.
+        // Duration models. Use padded mask-aware packages for production by
+        // default; exact native packages are an opt-in benchmark path.
         let durationChoices = Self.discoverDurationChoices(modelsDirectory: modelsDirectory)
         var durModels: [String: MLModel] = [:]
         for choice in durationChoices {
@@ -264,12 +278,21 @@ public class KokoroPipeline: KokoroModelProvider {
 
     // MARK: - Private Helpers
 
-    public static func discoverDurationChoices(modelsDirectory: URL) -> [DurationModelChoice] {
+    public static func discoverDurationChoices(
+        modelsDirectory: URL,
+        useExactDurationModels: Bool = ProcessInfo.processInfo.environment["KOKORO_USE_EXACT_DURATION_MODELS"] == "1",
+        maxDurationTokenLength: Int? = nil
+    ) -> [DurationModelChoice] {
         var choices: [DurationModelChoice] = []
         let fm = FileManager.default
+        let resolvedModelsDirectory = modelsDirectory.resolvingSymlinksInPath()
+        func accepts(_ tokenLength: Int) -> Bool {
+            guard let maxDurationTokenLength else { return true }
+            return tokenLength <= maxDurationTokenLength
+        }
 
-        if let urls = try? fm.contentsOfDirectory(
-            at: modelsDirectory,
+        if useExactDurationModels, let urls = try? fm.contentsOfDirectory(
+            at: resolvedModelsDirectory,
             includingPropertiesForKeys: nil
         ) {
             for url in urls {
@@ -282,6 +305,7 @@ public class KokoroPipeline: KokoroModelProvider {
                     .replacingOccurrences(of: "kokoro_duration_exact_t", with: "")
                     .replacingOccurrences(of: ".mlpackage", with: "")
                 guard let tokenLength = Int(raw) else { continue }
+                guard accepts(tokenLength) else { continue }
                 choices.append(DurationModelChoice(
                     cacheKey: "exact_t\(tokenLength)",
                     tokenLength: tokenLength,
@@ -293,7 +317,8 @@ public class KokoroPipeline: KokoroModelProvider {
         }
 
         for tokenLength in PipelineConstants.durationTokenSizes {
-            let url = modelsDirectory.appendingPathComponent("kokoro_duration_t\(tokenLength).mlpackage")
+            guard accepts(tokenLength) else { continue }
+            let url = resolvedModelsDirectory.appendingPathComponent("kokoro_duration_t\(tokenLength).mlpackage")
             if fm.fileExists(atPath: url.path) {
                 choices.append(DurationModelChoice(
                     cacheKey: "padded_t\(tokenLength)",
@@ -305,7 +330,7 @@ public class KokoroPipeline: KokoroModelProvider {
             }
         }
 
-        let legacyURL = modelsDirectory.appendingPathComponent("kokoro_duration.mlpackage")
+        let legacyURL = resolvedModelsDirectory.appendingPathComponent("kokoro_duration.mlpackage")
         if fm.fileExists(atPath: legacyURL.path),
            !choices.contains(where: { $0.cacheKey == "padded_t128" }) {
             choices.append(DurationModelChoice(

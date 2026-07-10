@@ -315,8 +315,6 @@ public func executeKokoroSynthesis(
     // Stage 8: GeneratorFromHar Core ML.
     let t14 = CFAbsoluteTimeGetCurrent()
     let genModel = try modelProvider.generatorModel(bucketSec: bucketSec)
-    let harArray = try makeZeroArray3D(channels: HarmonicConstants.harChannels, time: harFrames)
-    copyInto(array: harArray, from: harFlat)
     let genRefS = try makeZeroArray2D(dim: PipelineConstants.voiceEmbeddingDim)
     copyInto(array: genRefS, from: request.refS)
 
@@ -329,8 +327,9 @@ public func executeKokoroSynthesis(
         targetTime: xPreExpectedTime
     )
     let harPadded = try zeroPad3D(
-        source: harArray,
+        sourceValues: harFlat,
         channels: HarmonicConstants.harChannels,
+        sourceTime: harFrames,
         targetTime: harExpectedTime
     )
 
@@ -355,7 +354,21 @@ public func executeKokoroSynthesis(
         round(Double(originalF0Len) / PipelineConstants.f0FrameRate * Double(PipelineConstants.sampleRate))
     )
     let trimLen = min(waveformArray.count, targetLen)
-    let audio = floatValues(from: waveformArray, limit: trimLen)
+    let rawAudio = floatValues(from: waveformArray, limit: trimLen)
+    let expectedAudioSamples = predDur.reduce(0, +) * PipelineConstants.samplesPerDurationFrame
+    #if DEBUG
+    if trimLen < expectedAudioSamples {
+        assertionFailure(
+            "Trimmed waveform (\(trimLen) samples) is shorter than pred_dur span " +
+            "(\(expectedAudioSamples) samples); punctuation suppression may be partial"
+        )
+    }
+    #endif
+    let audio = suppressPunctuationTokenAudio(
+        rawAudio,
+        inputIds: Array(request.inputIds.prefix(predDur.count)),
+        predDur: predDur
+    )
     let t17 = CFAbsoluteTimeGetCurrent()
     timings.trim = t17 - t16
 
@@ -366,6 +379,7 @@ public func executeKokoroSynthesis(
             values: waveformValues,
             shape: waveformArray.shape.map { $0.intValue }
         )
+        try tensorDump?.writeFloatArray(name: "waveform_raw_trimmed", values: rawAudio, shape: [trimLen])
         try tensorDump?.writeFloatArray(name: "waveform", values: audio, shape: [trimLen])
     }
 
@@ -385,7 +399,8 @@ public func executeKokoroSynthesis(
         decoderFrameCount: frameCount,
         xPreExpectedTime: xPreExpectedTime,
         harExpectedTime: harExpectedTime,
-        trimSampleCount: trimLen
+        trimSampleCount: trimLen,
+        tokenDurationFrames: predDur
     )
 }
 

@@ -5,6 +5,26 @@ description: Validate CoreML model numerical correctness against PyTorch referen
 
 # CoreML Validate
 
+## Parent skill
+
+Entry point for all Core ML work: [coreml](../coreml/SKILL.md). Use this skill
+when the routed intent is **numerical parity**, not compute-unit profiling.
+
+## Repo gate
+
+Read [references/repo-profiles.md](../references/repo-profiles.md).
+
+**Stop** unless both exist:
+
+1. A Core ML `.mlpackage` for the model under test (any path in-repo).
+2. A reference pipeline (PyTorch, MLX, or C++ per profile).
+
+**crossfade:** No `kokoro` package required. Before any `.mlpackage` exists, use
+MLX/C++ parity per `CLAUDE.md` Part 3 — do not run this skill.
+
+**kokoro-coreml:** Typical layout is `coreml/` + `kokoro` package; see kokoro
+export scripts in [coreml/reference.md](../coreml/reference.md).
+
 ## Purpose
 
 Answer the question: **"Does the CoreML model produce the same output as
@@ -34,10 +54,11 @@ tensor correlation, max absolute error, and pass/fail against defined thresholds
 ## Reference Material
 
 Before validating, consult:
-- `CLAUDE.md` Part 3 — Common Failure Modes (FP16 drift, preprocessing mismatch)
+
+- `CLAUDE.md` Part 4 — Core ML edge cases (FP16 drift, layout, stateful caches)
 - `CLAUDE.md` Part 5 — Validate/Profile/Iterate checklist
-- `README/Notes/debug-notes.md` — Past numerical parity issues (especially the
-  decoder-only ghost audio issue documenting per-stage bisection methodology)
+- kokoro sibling: `../kokoro-coreml/README/Notes/debug-notes.md` — bisection
+  methodology (decoder ghost audio, stage isolation)
 
 ## Key Concepts
 
@@ -266,8 +287,8 @@ For **audio/TTS models**, perceptual metrics matter more than element-wise:
 
 ## Canonical References
 
-- CLAUDE.md Part 3: Common Failure Modes
+- CLAUDE.md Part 4: Core ML / ANE edge cases
 - CLAUDE.md Part 5: Validate/Profile/Iterate
-- Debug notes (bisection methodology): `README/Notes/debug-notes.md`
+- Kokoro debug notes (bisection): `../kokoro-coreml/README/Notes/debug-notes.md`
 - Test files: `test_coreml_export_verify.py`, `test_coreml_numeric_validate.py`
 - Export scripts: `export_f0ntrain.py`, `export_duration.py`, `examples/export_coreml.py`

@@ -21,7 +21,7 @@ import torch
 
 _ROOT = Path(__file__).resolve().parent.parent
 
-BAKEOFF_INPUTS = {
+DEFAULT_BAKEOFF_INPUTS = {
     "3s": "The quick brown fox jumps over the dog.",
     "7s": (
         "The morning sun cast long shadows across the garden as birds began "
@@ -43,7 +43,7 @@ BAKEOFF_INPUTS = {
     ),
 }
 # Duration model enumerated sizes — pad tokens to nearest.
-ENUM_SIZES = [32, 64, 128, 256, 512]
+ENUM_SIZES = [32, 64, 128, 256, 320, 384, 512]
 VOICE = "af_heart"
 SPEED = 1.0
 
@@ -82,7 +82,17 @@ def main():
         json.dump(hnsf_config, f)
     print(f"Saved hn-nsf weights: {len(linear_w)} weights, bias={linear_b:.6f}")
 
-    for key, text in BAKEOFF_INPUTS.items():
+    runtime_manifest = _ROOT / "outputs" / "external_bakeoff" / "runtime_input_manifest.json"
+    if runtime_manifest.exists():
+        manifest = json.loads(runtime_manifest.read_text())
+        bakeoff_inputs = {
+            key: value["text"]
+            for key, value in manifest.get("inputs", {}).items()
+        }
+    else:
+        bakeoff_inputs = DEFAULT_BAKEOFF_INPUTS
+
+    for key, text in bakeoff_inputs.items():
         print(f"\n--- {key}: {text!r:.60} ---")
 
         # Tokenize

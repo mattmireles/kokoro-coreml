@@ -5,6 +5,19 @@ description: Profile CoreML model execution to determine which compute units (AN
 
 # CoreML Profile
 
+## Parent skill
+
+Entry point for all Core ML work: [coreml](../coreml/SKILL.md). Use this skill
+when the routed intent is **runtime placement** (ANE/GPU/CPU), not numerical parity.
+
+## Repo gate
+
+Read [references/repo-profiles.md](../references/repo-profiles.md). Requires
+exported `.mlpackage` files and profiling tooling for the active profile.
+**kokoro-coreml:** `coreml/` + `swift/.build/release/kokoro-bench`. **crossfade:**
+use when Core ML artifacts exist; otherwise profile via `docs/benchmark.md` and
+Instruments on the C++/MLX path first.
+
 ## Purpose
 
 Answer the question: **"Where is my model actually running?"** Detect silent
@@ -30,15 +43,25 @@ bottlenecks across ANE/GPU/CPU on Apple Silicon.
 - Xcode must be installed and selected: `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`
 - For `powermetrics`: requires `sudo` (will prompt user)
 - For `xctrace`: no special permissions needed
-- Models must be exported (`.mlpackage` files in `coreml/` directory)
+- Models must be exported (`.mlpackage` at any in-repo path; kokoro: usually `coreml/`)
 
 ## Reference Material
 
 Before profiling, read these guides for context:
-- `README/Guides/apple-silicon/CoreML-Compute-Unit-Scheduling-guide.md` — The
-  definitive reference on silent fallback, graph partitioning, and verification
-- `README/Notes/debug-notes.md` — Institutional memory of past issues
+
+**crossfade (in-repo):**
+
+- `README/Guides/Stateful-KV-caches-CoreML-guide.md` — Stateful KV, ANE residency,
+  `powermetrics`, p50/p99 decode-loop measurement
 - `CLAUDE.md` Part 5 — Validate/Profile/Iterate checklist
+
+**kokoro-coreml profile or sibling `../kokoro-coreml/`:**
+
+- `README/Guides/apple-silicon/CoreML-Compute-Unit-Scheduling-guide.md` — silent
+  fallback, graph partitioning, verification
+- `README/Notes/debug-notes.md` — institutional memory of past issues
+
+Full index: [coreml/reference.md](../coreml/reference.md).
 
 ## Key Concepts
 
@@ -237,8 +260,8 @@ the generated code or compiled model metadata for compute unit annotations.
 
 ## Canonical References
 
-- Guide: `README/Guides/apple-silicon/CoreML-Compute-Unit-Scheduling-guide.md`
-- Debug notes: `README/Notes/debug-notes.md`
-- CLAUDE.md Part 5: Validate/Profile/Iterate
-- Bakeoff harness (real-world profiling): `scripts/bakeoff_harness.py`
-- Swift benchmark: `swift/Sources/KokoroBenchmark/main.swift`
+- Master router: [coreml/SKILL.md](../coreml/SKILL.md)
+- crossfade: `README/Guides/Stateful-KV-caches-CoreML-guide.md`, `CLAUDE.md` Part 5
+- kokoro sibling: `../kokoro-coreml/README/Guides/apple-silicon/CoreML-Compute-Unit-Scheduling-guide.md`,
+  `../kokoro-coreml/README/Notes/debug-notes.md`
+- kokoro bakeoff: `scripts/bakeoff_harness.py`, `swift/Sources/KokoroBenchmark/main.swift`

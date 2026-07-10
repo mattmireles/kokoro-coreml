@@ -123,6 +123,11 @@ High-level approach before diving into phases. Include a simple diagram if helpf
 
 **Verification:** [How to know this phase is complete]
 
+## Executable Memory
+
+- Regression test: `[command that proves the core contract]`
+- Not testable: `[only use when no command can prove it; explain the manual proof]`
+
 ## Success Criteria
 
 ### Hard Requirements (Must Pass)

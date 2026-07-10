@@ -77,6 +77,18 @@ Counterbalanced ordering, 5 iterations, warm median. Full data: [bakeoff-results
 
 Five CoreML models chained with native Swift DSP. Text goes in, 24 kHz audio comes out. Zero Python at inference time.
 
+## In-Repo Memory
+
+For current belief before changing runtime, export, or bakeoff behavior, start
+at [README/Wiki/README.md](README/Wiki/README.md). The wiki routes back to
+canonical sources; it does not replace code, scripts, notes, or measured
+outputs. Check it with:
+
+```bash
+node scripts/memory-health.mjs --write-coverage
+node scripts/memory-health.mjs --strict
+```
+
 ```
 Text → Phonemes → Duration (CoreML) → Alignment (Swift) → Matrix ops (Accelerate)
   → F0Ntrain (CoreML) → DecoderPre (CoreML) + hn-nsf (Swift) → GeneratorFromHar (CoreML) → Audio
@@ -91,7 +103,7 @@ Four models run on the ANE. One DSP stage (harmonic source) runs in Swift with d
 Text --> Phonemes (tokenizer)
     |
     v
-Duration CoreML [32/64/128/256/512 tokens] --> pred_dur, d, t_en, s, ref_s
+Duration CoreML [32/64/128/256/320/384/512 tokens] --> pred_dur, d, t_en, s, ref_s
     |
     v
 Alignment (Swift) --> one-hot matrix from pred_dur
@@ -118,7 +130,7 @@ Trim (Swift) --> final audio
 
 | Model | Sizes | Input | Output | Role |
 | --- | --- | --- | --- | --- |
-| `kokoro_duration_t{N}` | T=32, 64, 128, 256, 512 | input_ids, attention_mask, ref_s, speed | pred_dur, d, t_en, s, ref_s_out | BERT + prosody prediction |
+| `kokoro_duration_t{N}` | T=32, 64, 128, 256, 320, 384, 512 | input_ids, attention_mask, ref_s, speed | pred_dur, d, t_en, s, ref_s_out | BERT + prosody prediction |
 | `kokoro_f0ntrain_t{N}` | T=120, 400, 560, 1200, 2400 | en, s | F0_pred, N_pred | Pitch/noise from aligned features |
 | `kokoro_decoder_pre_{N}s` | 3s, 7s, 10s, 15s, 30s | asr, f0, n_input, ref_s | x_pre | Decoder stack (Conv + AdaIN) |
 | `kokoro_decoder_har_post_{N}s` | 3s, 7s, 10s, 15s, 30s | x_pre, ref_s, har | waveform | Generator (0 linear ops, all Conv1d for ANE) |
@@ -170,6 +182,7 @@ The `swift/` directory contains a Swift Package (`KokoroPipeline`) with:
 - **`HarmonicSource.swift`** -- hn-nsf in Swift/Accelerate (Double-precision phase accumulator)
 - **`AlignmentBuilder.swift`** -- one-hot alignment matrix from phoneme durations
 - **`MLMultiArrayHelpers.swift`** -- matrix multiply (cblas_sgemm), zero-padding, stride-safe MLMultiArray ops
+- **`WaveformPostProcess.swift`** -- punctuation-span fade-to-silence after generator trim
 - **`BucketSelector.swift`** -- smallest bucket >= ceil(audio_seconds)
 
 ```swift

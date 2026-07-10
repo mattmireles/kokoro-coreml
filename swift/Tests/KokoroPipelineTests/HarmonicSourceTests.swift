@@ -98,6 +98,19 @@ final class HarmonicSourceTests: XCTestCase {
         XCTAssertEqual(components.har, direct.har)
     }
 
+    func testGaussianNoiseMatchesScalarBoxMullerReference() {
+        let count = 1025
+        let seed: UInt64 = 42
+        var candidate = [Float](repeating: 0, count: count)
+        generateGaussianNoise(into: &candidate, count: count, seed: seed)
+
+        let reference = scalarGaussianNoiseReference(count: count, seed: seed)
+        XCTAssertEqual(candidate.count, reference.count)
+        for index in 0..<count {
+            XCTAssertEqual(candidate[index], reference[index], accuracy: 2e-6, "noise sample \(index)")
+        }
+    }
+
     // MARK: - Linear interpolation
 
     func testLinearInterpolateIdentity() {
@@ -117,5 +130,26 @@ final class HarmonicSourceTests: XCTestCase {
         // dst=1: src_idx = 1.5 * 2 - 0.5 = 2.5 -> lerp(2, 3, 0.5) = 2.5
         XCTAssertEqual(result[0], 0.5, accuracy: 1e-10)
         XCTAssertEqual(result[1], 2.5, accuracy: 1e-10)
+    }
+
+    private func scalarGaussianNoiseReference(count: Int, seed: UInt64) -> [Float] {
+        var rng = SeededRNG(seed: seed)
+        var output = [Float](repeating: 0, count: count)
+        var i = 0
+        while i < count - 1 {
+            let u1 = max(Float.ulpOfOne, Float(rng.next() & 0xFFFFFF) / Float(0xFFFFFF))
+            let u2 = Float(rng.next() & 0xFFFFFF) / Float(0xFFFFFF)
+            let r = sqrt(-2.0 * log(u1))
+            let theta = 2.0 * Float.pi * u2
+            output[i] = r * cos(theta)
+            output[i + 1] = r * sin(theta)
+            i += 2
+        }
+        if i < count {
+            let u1 = max(Float.ulpOfOne, Float(rng.next() & 0xFFFFFF) / Float(0xFFFFFF))
+            let u2 = Float(rng.next() & 0xFFFFFF) / Float(0xFFFFFF)
+            output[i] = sqrt(-2.0 * log(u1)) * cos(2.0 * Float.pi * u2)
+        }
+        return output
     }
 }

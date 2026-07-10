@@ -67,6 +67,46 @@ public enum HarmonicConstants {
     public static let harChannels: Int = 22
 }
 
+/// Cached fixed STFT basis for Kokoro's 20-point Hann-window transform.
+///
+/// `stftTransform(_:)` runs on every synthesis call and the basis never changes,
+/// so constructing it once avoids repeated trigonometry and enables vectorized
+/// decimated dot products through `vDSP_desamp`.
+private enum HarmonicSTFTBasis {
+    static let window: [Float] = {
+        let nfft = HarmonicConstants.stftNfft
+        var values = [Float](repeating: 0, count: nfft)
+        for n in 0..<nfft {
+            values[n] = 0.5 * (1.0 - cos(2.0 * Float.pi * Float(n) / Float(nfft)))
+        }
+        return values
+    }()
+
+    static let real: [Float] = {
+        buildBasis(imaginary: false)
+    }()
+
+    static let imaginary: [Float] = {
+        buildBasis(imaginary: true)
+    }()
+
+    private static func buildBasis(imaginary: Bool) -> [Float] {
+        let nfft = HarmonicConstants.stftNfft
+        let freqBins = HarmonicConstants.stftFreqBins
+        let twoPiOverN = 2.0 * Float.pi / Float(nfft)
+        var basis = [Float](repeating: 0, count: freqBins * nfft)
+
+        for k in 0..<freqBins {
+            for n in 0..<nfft {
+                let angle = twoPiOverN * Float(k) * Float(n)
+                let trig = imaginary ? -sin(angle) : cos(angle)
+                basis[k * nfft + n] = window[n] * trig
+            }
+        }
+        return basis
+    }
+}
+
 // MARK: - F0 Upsample
 
 /// Nearest-neighbor upsample of F0 curve by ``HarmonicConstants.upsampleScale``.
@@ -223,17 +263,27 @@ public func sineGen(
     // Vectorized: for each time step, dot product of 9 harmonic values with weights
     assert(linearWeights.count == dim, "Linear weights must have \(dim) elements")
 
+    // Compute weighted sum across harmonics:
+    // merged[t] = tanh(bias + sum_h(sineWaves[h*L+t] * weights[h])).
     var merged = [Float](repeating: 0, count: L)
-
-    // Compute weighted sum across harmonics
-    // merged[t] = bias + sum_h(sineWaves[h*L+t] * weights[h])
-    for t in 0..<L {
-        var sum: Float = linearBias
-        for h in 0..<dim {
-            sum += sineWaves[h * L + t] * linearWeights[h]
+    linearWeights.withUnsafeBufferPointer { weightsPtr in
+        sineWaves.withUnsafeBufferPointer { sinePtr in
+            merged.withUnsafeMutableBufferPointer { mergedPtr in
+                vDSP_mmul(
+                    weightsPtr.baseAddress!, 1,
+                    sinePtr.baseAddress!, 1,
+                    mergedPtr.baseAddress!, 1,
+                    1,
+                    vDSP_Length(L),
+                    vDSP_Length(dim)
+                )
+            }
         }
-        merged[t] = tanh(sum)
     }
+    var bias = linearBias
+    vDSP_vsadd(merged, 1, &bias, &merged, 1, vDSP_Length(L))
+    var tanhCount = Int32(L)
+    vvtanhf(&merged, merged, &tanhCount)
 
     return merged
 }
@@ -274,45 +324,57 @@ public func stftTransform(_ signal: [Float]) -> (magnitude: [Float], phase: [Flo
     let paddedLen = padded.count
     let nFrames = (paddedLen - nfft) / hop + 1
 
-    // Hann window (periodic, matching torch.hann_window(20, periodic=True))
-    var window = [Float](repeating: 0, count: nfft)
-    for n in 0..<nfft {
-        window[n] = 0.5 * (1.0 - cos(2.0 * Float.pi * Float(n) / Float(nfft)))
-    }
-
-    // DFT basis (matching custom_stft.py DFT math)
-    // For k = 0..<freqBins, n = 0..<nfft:
-    //   real_basis[k][n] = window[n] * cos(2*pi*k*n / nfft)
-    //   imag_basis[k][n] = window[n] * (-sin(2*pi*k*n / nfft))
-    let twoPiOverN = 2.0 * Float.pi / Float(nfft)
-    var realBasis = [[Float]](repeating: [Float](repeating: 0, count: nfft), count: freqBins)
-    var imagBasis = [[Float]](repeating: [Float](repeating: 0, count: nfft), count: freqBins)
-    for k in 0..<freqBins {
-        for n in 0..<nfft {
-            let angle = twoPiOverN * Float(k) * Float(n)
-            realBasis[k][n] = window[n] * cos(angle)
-            imagBasis[k][n] = window[n] * (-sin(angle))
-        }
-    }
-
-    // Compute STFT frame by frame
+    // Compute STFT rows with decimated FIR dot products. This is equivalent to
+    // the scalar loop over frames/bins, but keeps the hot loop inside vDSP.
     var magnitude = [Float](repeating: 0, count: freqBins * nFrames)
     var phase = [Float](repeating: 0, count: freqBins * nFrames)
+    var real = [Float](repeating: 0, count: nFrames)
+    var imag = [Float](repeating: 0, count: nFrames)
+    var magSquared = [Float](repeating: 0, count: nFrames)
+    var eps = Float(1e-14)
+    var vectorCount = Int32(nFrames)
+    let frameCount = vDSP_Length(nFrames)
 
-    for frame in 0..<nFrames {
-        let offset = frame * hop
-        for k in 0..<freqBins {
-            var realSum: Float = 0
-            var imagSum: Float = 0
-            for n in 0..<nfft {
-                let sample = padded[offset + n]
-                realSum += sample * realBasis[k][n]
-                imagSum += sample * imagBasis[k][n]
+    padded.withUnsafeBufferPointer { paddedPtr in
+        HarmonicSTFTBasis.real.withUnsafeBufferPointer { realBasisPtr in
+            HarmonicSTFTBasis.imaginary.withUnsafeBufferPointer { imagBasisPtr in
+                for k in 0..<freqBins {
+                    let rowOffset = k * nFrames
+                    let realFilter = realBasisPtr.baseAddress!.advanced(by: k * nfft)
+                    let imagFilter = imagBasisPtr.baseAddress!.advanced(by: k * nfft)
+
+                    real.withUnsafeMutableBufferPointer { realPtr in
+                        vDSP_desamp(
+                            paddedPtr.baseAddress!, vDSP_Stride(hop),
+                            realFilter,
+                            realPtr.baseAddress!,
+                            frameCount,
+                            vDSP_Length(nfft)
+                        )
+                    }
+                    imag.withUnsafeMutableBufferPointer { imagPtr in
+                        vDSP_desamp(
+                            paddedPtr.baseAddress!, vDSP_Stride(hop),
+                            imagFilter,
+                            imagPtr.baseAddress!,
+                            frameCount,
+                            vDSP_Length(nfft)
+                        )
+                    }
+
+                    vDSP_vsq(real, 1, &magSquared, 1, frameCount)
+                    vDSP_vma(imag, 1, imag, 1, magSquared, 1, &magSquared, 1, frameCount)
+                    magnitude.withUnsafeMutableBufferPointer { magnitudePtr in
+                        let magnitudeRow = magnitudePtr.baseAddress!.advanced(by: rowOffset)
+                        vDSP_vsadd(magSquared, 1, &eps, magnitudeRow, 1, frameCount)
+                        vvsqrtf(magnitudeRow, magnitudeRow, &vectorCount)
+                    }
+                    phase.withUnsafeMutableBufferPointer { phasePtr in
+                        let phaseRow = phasePtr.baseAddress!.advanced(by: rowOffset)
+                        vvatan2f(phaseRow, imag, real, &vectorCount)
+                    }
+                }
             }
-            let mag = sqrt(realSum * realSum + imagSum * imagSum + 1e-14)
-            let ph = atan2(imagSum, realSum)
-            magnitude[k * nFrames + frame] = mag
-            phase[k * nFrames + frame] = ph
         }
     }
 
@@ -498,24 +560,41 @@ struct SeededRNG: RandomNumberGenerator {
 /// Much faster than per-sample generation because it avoids protocol dispatch
 /// overhead on `RandomNumberGenerator` and can vectorize the math.
 func generateGaussianNoise(into buffer: inout [Float], count: Int, seed: UInt64? = nil) {
-    // Generate pairs of uniform random numbers, then Box-Muller transform
     var rng = SeededRNG(seed: seed ?? UInt64.random(in: 0..<UInt64.max))
+    let pairCount = (count + 1) / 2
+    guard pairCount > 0 else { return }
 
-    // Generate uniform random pairs and apply Box-Muller
-    var i = 0
-    while i < count - 1 {
-        let u1 = max(Float.ulpOfOne, Float(rng.next() & 0xFFFFFF) / Float(0xFFFFFF))
-        let u2 = Float(rng.next() & 0xFFFFFF) / Float(0xFFFFFF)
-        let r = sqrt(-2.0 * log(u1))
-        let theta = 2.0 * Float.pi * u2
-        buffer[i] = r * cos(theta)
-        buffer[i + 1] = r * sin(theta)
-        i += 2
+    var u1 = [Float](repeating: 0, count: pairCount)
+    var u2 = [Float](repeating: 0, count: pairCount)
+    let scale = Float(0xFFFFFF)
+    let tiny = Float.ulpOfOne
+    for i in 0..<pairCount {
+        u1[i] = max(tiny, Float(rng.next() & 0xFFFFFF) / scale)
+        u2[i] = Float(rng.next() & 0xFFFFFF) / scale
     }
-    // Handle odd count
-    if i < count {
-        let u1 = max(Float.ulpOfOne, Float(rng.next() & 0xFFFFFF) / Float(0xFFFFFF))
-        let u2 = Float(rng.next() & 0xFFFFFF) / Float(0xFFFFFF)
-        buffer[i] = sqrt(-2.0 * log(u1)) * cos(2.0 * Float.pi * u2)
+
+    var minusTwo = Float(-2.0)
+    var twoPi = Float(2.0 * Float.pi)
+    var radii = [Float](repeating: 0, count: pairCount)
+    var theta = [Float](repeating: 0, count: pairCount)
+    vForce.log(u1, result: &radii)
+    vDSP_vsmul(radii, 1, &minusTwo, &radii, 1, vDSP_Length(pairCount))
+    vForce.sqrt(radii, result: &radii)
+    vDSP_vsmul(u2, 1, &twoPi, &theta, 1, vDSP_Length(pairCount))
+
+    var cosTheta = [Float](repeating: 0, count: pairCount)
+    var sinTheta = [Float](repeating: 0, count: pairCount)
+    var n = Int32(pairCount)
+    vvcosf(&cosTheta, theta, &n)
+    vvsinf(&sinTheta, theta, &n)
+
+    var outIndex = 0
+    for i in 0..<pairCount {
+        buffer[outIndex] = radii[i] * cosTheta[i]
+        outIndex += 1
+        if outIndex < count {
+            buffer[outIndex] = radii[i] * sinTheta[i]
+            outIndex += 1
+        }
     }
 }

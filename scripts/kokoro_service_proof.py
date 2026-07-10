@@ -43,7 +43,7 @@ BAKEOFF_INPUTS = {
     ),
 }
 
-ENUM_SIZES = [32, 64, 128, 256, 512]
+ENUM_SIZES = [32, 64, 128, 256, 320, 384, 512]
 
 
 def _sha256_bytes(data: bytes) -> str:

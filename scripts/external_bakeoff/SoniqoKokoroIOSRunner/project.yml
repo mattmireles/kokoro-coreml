@@ -1,0 +1,27 @@
+name: SoniqoKokoroIOSRunner
+options:
+  bundleIdPrefix: com.kokoro.externalbakeoff
+  deploymentTarget:
+    iOS: "18.0"
+
+packages:
+  speech-swift:
+    path: ${SPEECH_SWIFT_PATH}
+
+targets:
+  SoniqoKokoroIOSRunner:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+    info:
+      path: Sources/Info.plist
+      properties:
+        UILaunchScreen: {}
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.kokoro.externalbakeoff.SoniqoKokoroIOSRunner
+      CODE_SIGN_STYLE: Automatic
+      DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
+    dependencies:
+      - package: speech-swift
+        product: KokoroTTS

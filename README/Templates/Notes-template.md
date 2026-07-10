@@ -126,6 +126,13 @@ Links to relevant guides that provide context or solutions:
 
 ---
 
+## Required Executable Memory
+
+Every resolved issue must include one of these lines:
+
+- Regression test: `[command that proves the fix still works]`
+- Not testable: `[why no command can prove it, plus strongest manual proof]`
+
 <!--
 USAGE NOTES:
 

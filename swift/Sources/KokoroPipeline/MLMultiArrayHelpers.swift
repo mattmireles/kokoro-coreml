@@ -342,60 +342,6 @@ private func alignValuesToFrames(
     return result
 }
 
-/// Batch matrix multiply: C = A @ B for 3D tensors.
-///
-/// A: (1, M, K), B: (1, K, N) → C: (1, M, N)
-///
-/// Uses cblas_sgemm from Accelerate for the inner (M, K) × (K, N) → (M, N) multiply.
-/// Row-major layout (matching MLMultiArray default for 3D float32).
-///
-/// This replaces: ``en = d.transpose(-1, -2) @ pred_aln_trg``
-/// and ``asr = t_en @ pred_aln_trg``
-public func matmul3D(
-    a: MLMultiArray, // (1, M, K)
-    b: [Float],      // flat (K, N) in row-major
-    M: Int, K: Int, N: Int
-) throws -> MLMultiArray {
-    let result = try makeZeroArray3D(channels: M, time: N)
-
-    // Ensure A is contiguous (CoreML outputs may have non-trivial strides).
-    let aStrides = a.strides.map { $0.intValue }
-    let aIsContiguous = aStrides.count >= 3 && aStrides[2] == 1 && aStrides[1] == K
-
-    let aContiguous: MLMultiArray
-    if aIsContiguous {
-        aContiguous = a
-    } else {
-        // Copy to contiguous layout
-        aContiguous = try makeZeroArray3D(channels: M, time: K)
-        let dstPtr = aContiguous.dataPointer.assumingMemoryBound(to: Float.self)
-        for m in 0..<M {
-            for k in 0..<K {
-                dstPtr[m * K + k] = a[[0, m, k] as [NSNumber]].floatValue
-            }
-        }
-    }
-
-    let aPtr = aContiguous.dataPointer.assumingMemoryBound(to: Float.self)
-    let cPtr = result.dataPointer.assumingMemoryBound(to: Float.self)
-
-    // A is (1, M, K) row-major → pointer to M*K matrix
-    // B is flat (K, N) row-major
-    // C is (1, M, N) row-major → pointer to M*N matrix
-    b.withUnsafeBufferPointer { bBuf in
-        cblas_sgemm(
-            CblasRowMajor, CblasNoTrans, CblasNoTrans,
-            Int32(M), Int32(N), Int32(K),
-            1.0,       // alpha
-            aPtr, Int32(K),
-            bBuf.baseAddress!, Int32(N),
-            0.0,       // beta
-            cPtr, Int32(N)
-        )
-    }
-    return result
-}
-
 // MARK: - Zero-Pad to Bucket Geometry
 
 /// Zero-pad a 3D array (1, C, T_src) to (1, C, T_target).
@@ -405,8 +351,23 @@ public func matmul3D(
 /// Uses subscript access (not raw pointer arithmetic) to handle MLMultiArray
 /// strides correctly. CoreML model outputs may have non-trivial strides.
 public func zeroPad3D(source: MLMultiArray, channels: Int, targetTime: Int) throws -> MLMultiArray {
+    let sourceShape = source.shape.map { $0.intValue }
+    if sourceShape.count >= 3,
+       sourceShape[0] == 1,
+       sourceShape[1] == channels,
+       sourceShape[2] == targetTime {
+        return source
+    }
+    guard sourceShape.count >= 3, sourceShape[0] == 1, sourceShape[1] == channels else {
+        throw PipelineValidationError.invalidArrayShape(
+            operation: "zeroPad3D",
+            expected: "(1, \(channels), time)",
+            actual: sourceShape
+        )
+    }
+
     let result = try makeZeroArray3D(channels: channels, time: targetTime)
-    let srcTime = source.shape[2].intValue
+    let srcTime = sourceShape[2]
     let copyTime = min(srcTime, targetTime)
 
     // Check if source has standard contiguous strides (batch=C*T, channel=T, time=1)
@@ -434,6 +395,44 @@ public func zeroPad3D(source: MLMultiArray, channels: Int, targetTime: Int) thro
     return result
 }
 
+/// Zero-pad flat channel-major values to a 3D ``MLMultiArray`` of shape
+/// `(1, channels, targetTime)`.
+///
+/// This is the direct path for Swift-built tensors such as `har`, where the
+/// source is already a flat `(channels, sourceTime)` buffer. It avoids creating
+/// a temporary source ``MLMultiArray`` only to copy the same channel rows again.
+public func zeroPad3D(
+    sourceValues: [Float],
+    channels: Int,
+    sourceTime: Int,
+    targetTime: Int
+) throws -> MLMultiArray {
+    let expectedCount = channels * sourceTime
+    guard channels > 0, sourceTime >= 0, targetTime >= 0, sourceValues.count == expectedCount else {
+        throw PipelineValidationError.invalidArrayShape(
+            operation: "zeroPad3D",
+            expected: "(1, \(channels), \(sourceTime)) flat channel-major count \(expectedCount)",
+            actual: [sourceValues.count]
+        )
+    }
+
+    let result = try makeZeroArray3D(channels: channels, time: targetTime)
+    let copyTime = max(0, min(sourceTime, targetTime))
+    guard copyTime > 0 else { return result }
+
+    let dstPtr = result.dataPointer.assumingMemoryBound(to: Float.self)
+    sourceValues.withUnsafeBufferPointer { srcBuf in
+        guard let srcBase = srcBuf.baseAddress else { return }
+        for c in 0..<channels {
+            let srcOffset = c * sourceTime
+            let dstOffset = c * targetTime
+            memcpy(dstPtr + dstOffset, srcBase + srcOffset, copyTime * MemoryLayout<Float>.size)
+        }
+    }
+
+    return result
+}
+
 /// Zero-pad a 1D array (1, T_src) to (1, T_target).
 ///
 /// Matches: ``f0_pad = np.zeros((1, full_f0_len)); f0_pad[:,:t] = f0[:,:t]``
@@ -442,42 +441,6 @@ public func zeroPad1D(source: [Float], targetLength: Int) -> [Float] {
     let copyLen = min(source.count, targetLength)
     for i in 0..<copyLen {
         result[i] = source[i]
-    }
-    return result
-}
-
-// MARK: - Transpose
-
-/// Transpose a 3D MLMultiArray from (1, A, B) to (1, B, A).
-///
-/// Used when Duration model outputs (1, tokens, hidden) but downstream
-/// matmul expects (1, hidden, tokens).
-/// ``dim1`` is B (the inner dimension of source, outer of result).
-/// ``dim2`` is A (the outer dimension of source, inner of result).
-public func transpose3D(source: MLMultiArray, dim1: Int, dim2: Int) throws -> MLMultiArray {
-    // source is (1, dim2, dim1) in row-major — we want (1, dim1, dim2)
-    let result = try makeZeroArray3D(channels: dim1, time: dim2)
-    let dstPtr = result.dataPointer.assumingMemoryBound(to: Float.self)
-
-    // Check if source is contiguous (fast path)
-    let strides = source.strides.map { $0.intValue }
-    let isContiguous = strides.count >= 3 && strides[2] == 1 && strides[1] == dim1
-
-    if isContiguous {
-        // Fast path: direct pointer transpose
-        let srcPtr = source.dataPointer.assumingMemoryBound(to: Float.self)
-        for i in 0..<dim2 {
-            for j in 0..<dim1 {
-                dstPtr[j * dim2 + i] = srcPtr[i * dim1 + j]
-            }
-        }
-    } else {
-        // Safe path: subscript access for non-contiguous layouts
-        for i in 0..<dim2 {
-            for j in 0..<dim1 {
-                dstPtr[j * dim2 + i] = source[[0, i, j] as [NSNumber]].floatValue
-            }
-        }
     }
     return result
 }

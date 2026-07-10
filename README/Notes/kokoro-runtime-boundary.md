@@ -13,6 +13,8 @@ these assets from `kokoro-coreml`:
   - `kokoro_duration_t64.mlpackage`
   - `kokoro_duration_t128.mlpackage`
   - `kokoro_duration_t256.mlpackage`
+  - `kokoro_duration_t320.mlpackage`
+  - `kokoro_duration_t384.mlpackage`
   - `kokoro_duration_t512.mlpackage`
   - optional exact-duration packages such as `kokoro_duration_exact_t44.mlpackage`
   - `kokoro_f0ntrain_t120.mlpackage`

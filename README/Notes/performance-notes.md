@@ -23,6 +23,1294 @@ These numbers do **not** include:
 - model download
 - application-level audio playback
 
+## External Bakeoff: surgical Core ML vs MLX and iOS/Core ML Kokoro
+
+**Collected:** 2026-06-05
+**Status:** Complete; signed iPhone execution ingested, waveform sanity passed,
+human listening decisions recorded, and final completion verifier passed.
+
+This bakeoff compares the current Swift + Core ML Config F reference against
+popular Apple Silicon Kokoro implementations:
+
+- **MLX:** `Blaizzy/mlx-audio`, pinned clone
+  `862dfbe5338e91df6f74ac986b4df8bede7961a6`, package version
+  `mlx-audio 0.4.3`, model `mlx-community/Kokoro-82M-bf16`.
+- **Primary iOS/Core ML comparator:** `soniqo/speech-swift`, pinned clone
+  `0d09a2ed5464c7c94cf4545be59043c21f8775ea`, using
+  `KokoroTTSModel.fromPretrained(computeUnits: .all)`.
+- **Long-bucket Core ML backup:** `laishere/kokoro-coreml`, pinned clone
+  `484907db6a8347a6afb6e7b86850ea2878c6a3fb`.
+
+`mlalma/kokoro-ios` was excluded from the primary table because its public
+package is MLX Swift, not Core ML. ONNX, GGML, browser, cloud, and non-Kokoro
+engines were out of scope.
+
+### Method
+
+The shared manifest uses the shipped runtime buckets: `3s`, `7s`, `10s`,
+`15s`, and `30s`. All adapters requested voice `af_heart`. The full sweeps
+record one cold call followed by five warm calls; explicitly marked targeted
+reruns record ten warm calls for the named bucket. The warm table reports the
+median warm wall time. RTF uses the observed emitted audio duration, not the
+nominal bucket label.
+
+The intended timing boundary is from immediately before the implementation's
+synthesis call or CLI invocation until full PCM audio is materialized in memory.
+Config F, MLX, and Soniqo follow that boundary. laishere's public benchmark
+boundary excludes G2P and feed preparation and times only the seven-stage Core
+ML chain; those numbers are therefore useful as a Core ML chain comparison, but
+not a fully equivalent end-to-end TTS boundary.
+
+The paper-facing comparison is warmed inference only. Cold calls, Core ML AOT
+compile, model load, cache fill, and any first-use stall are retained as
+operational evidence, but excluded from ranking, speedup, and thesis tables.
+The current Config F rows use the production-shaped staged policy
+(`duration`/`F0Ntrain`/generator on CPU+GPU, decoder-pre on CPU+ANE), exact
+duration model discovery, and three discarded preflight calls before recorded
+warm calls. The earlier `--compute-units all` + padded-duration rows are kept
+below as historical cold-start/operational evidence, not as the paper-facing
+inference comparison. After the HnSF vDSP optimization and direct HAR-padding
+fast path, the `m2-air` `3s`, `7s`, and `30s` cells and the `m2-studio` `30s`
+cell use single-bucket N=10 reruns with the same preflight policy because the
+corresponding full-sweep cells showed generator-level run-to-run variance.
+Other Config F cells are N=5 full-sweep medians.
+
+### Machine Provenance
+
+| Machine | Hardware model | Memory | macOS |
+| --- | --- | ---: | --- |
+| m2-studio | Mac14,14 | 64 GiB | 26.5 / 25F71 |
+| m2-air | Mac14,15 | 24 GiB | 15.7.7 / 24G720 |
+| irvine-m1 | Macmini9,1 | 16 GiB | 15.7.7 / 24G720 |
+
+### iPhone Status
+
+The connected iPhone 12 Pro is visible to CoreDevice as `Webcam`
+(`F383FC46-FD64-5346-AEC6-59E3E2F8C9CA`, model `iPhone13,3`, UDID
+`00008101-001134561A0A001E`) and is connected, paired, and running with
+Developer Mode enabled. The minimal Soniqo Kokoro iOS runner in
+`scripts/external_bakeoff/SoniqoKokoroIOSRunner/` was built with automatic
+signing, installed, launched, run on device, and ingested into
+`outputs/external_bakeoff/results_soniqo_speech_swift_kokoro_ios_iphone-12-pro.json`.
+The runner uses the shared runtime manifest (`3s`, `7s`, `10s`, `15s`, `30s`)
+and records one cold call plus five warmed inference calls per bucket with
+observed-duration RTF.
+
+#### iphone-12-pro
+
+iPhone13,3, iOS 26.5.
+
+| Impl | 3s | 7s | 10s | 15s | 30s | Caveats |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Soniqo iOS | 832.7 ms / 0.308 | 833.9 ms / 0.167 | 853.6 ms / 0.171 | 864.4 ms / 0.173 | 879.1 ms / 0.176 | Long buckets emit 5.0s public artifact |
+
+The iPhone 3s cold call was `10866.3 ms`, reflecting first-use model setup. The
+7s, 10s, 15s, and 30s cold calls were `867.7 ms`, `891.4 ms`, `883.1 ms`, and
+`925.2 ms` respectively. As on macOS, Soniqo emits `2.7s` for the 3s input and
+`5.0s` for each longer manifest input, so the iPhone long-bucket numbers are
+device execution evidence for the public Soniqo artifact, not full-duration
+7s/10s/15s/30s parity evidence.
+
+Whisper, ASR, VAD, playback, and echo-demo dependencies are not part of this
+bakeoff boundary. The iOS runner is intentionally Kokoro TTS only.
+
+### Consolidated Warm Median and RTF by Platform
+
+Each cell is `warm median wall time / observed RTF`. These are steady-state
+post-prime inference medians; cold and compile-inclusive timings are not
+eligible for this table.
+
+#### m2-studio
+
+Mac14,14, 64 GiB, macOS 26.5 / 25F71.
+
+| Impl | 3s | 7s | 10s | 15s | 30s | Caveats |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Config F | 60.2 ms / 0.022 | 110.5 ms / 0.016 | 149.6 ms / 0.016 | 222.6 ms / 0.016 | 449.0 ms / 0.016 | staged + exact duration + vDSP HnSF + direct HAR padding; 30s is N=10 rerun |
+| MLX | error | 223.9 ms / 0.033 | 288.8 ms / 0.030 | 376.3 ms / 0.027 | 762.7 ms / 0.028 | 3s broadcast-shape failure |
+| Soniqo | 71.7 ms / 0.027 | 69.3 ms / 0.014 | 71.0 ms / 0.014 | 68.1 ms / 0.014 | 69.5 ms / 0.014 | Long buckets emit 5.0s public artifact |
+| laishere | 212.3 ms / 0.077 | 403.3 ms / 0.059 | 626.3 ms / 0.065 | 429.8 ms / 0.031 | 925.1 ms / 0.034 | Excludes G2P/feed prep |
+
+#### m2-air
+
+Mac14,15, 24 GiB, macOS 15.7.7 / 24G720.
+
+| Impl | 3s | 7s | 10s | 15s | 30s | Caveats |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Config F | 151.7 ms / 0.054 | 335.0 ms / 0.050 | 474.6 ms / 0.049 | 704.7 ms / 0.051 | 1430.0 ms / 0.052 | staged + exact duration + vDSP HnSF + direct HAR padding; 3s/7s/30s are N=10 reruns |
+| MLX | error | 685.6 ms / 0.102 | 835.8 ms / 0.087 | 1521.0 ms / 0.109 | 2600.3 ms / 0.095 | 3s broadcast-shape failure |
+| Soniqo | 1097.4 ms / 0.406 | 1135.8 ms / 0.227 | 1123.0 ms / 0.225 | 1125.5 ms / 0.225 | 1123.5 ms / 0.225 | Long buckets emit 5.0s public artifact |
+| laishere | 142.0 ms / 0.051 | 316.9 ms / 0.046 | 450.2 ms / 0.047 | 657.3 ms / 0.047 | 1476.4 ms / 0.054 | Excludes G2P/feed prep |
+
+#### irvine-m1
+
+Macmini9,1, 16 GiB, macOS 15.7.7 / 24G720.
+
+| Impl | 3s | 7s | 10s | 15s | 30s | Caveats |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Config F | 239.2 ms / 0.085 | 510.2 ms / 0.076 | 700.7 ms / 0.073 | 1028.9 ms / 0.074 | 1977.7 ms / 0.072 | staged + exact duration + vDSP HnSF + direct HAR padding |
+| MLX | error | 824.0 ms / 0.122 | 1124.3 ms / 0.117 | 1589.5 ms / 0.114 | 3077.9 ms / 0.112 | 3s broadcast-shape failure |
+| Soniqo | 1330.9 ms / 0.493 | 1343.6 ms / 0.269 | 1313.9 ms / 0.263 | 1343.6 ms / 0.269 | 1351.2 ms / 0.270 | Long buckets emit 5.0s public artifact |
+| laishere | 176.3 ms / 0.064 | 394.6 ms / 0.058 | 593.9 ms / 0.062 | 912.0 ms / 0.065 | 2135.1 ms / 0.078 | Excludes G2P/feed prep |
+
+### Historical Cold and Compile-Inclusive Wall Time
+
+These values come from the original same-window run. They are useful for
+operational first-use behavior and for showing why unprimed Core ML results can
+be polluted by compile/cache work. They are not used in the warmed inference
+ranking above.
+
+| Machine | Impl | 3s | 7s | 10s | 15s | 30s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| m2-studio | Config F | 125.5 ms | 309.5 ms | 570.9 ms | 647.3 ms | 1389.1 ms |
+| m2-studio | MLX | error | 195.9 ms | 4737.1 ms | 438.1 ms | 930.2 ms |
+| m2-studio | Soniqo | 615.2 ms | 433.0 ms | 398.0 ms | 411.7 ms | 414.3 ms |
+| m2-studio | laishere | 237.0 ms | 359.0 ms | 839.7 ms | 676.1 ms | 1955.1 ms |
+| m2-air | Config F | 313.8 ms | 683.1 ms | 1054.0 ms | 2134.6 ms | 9447.1 ms |
+| m2-air | MLX | error | 670.4 ms | 20802.8 ms | 1636.8 ms | 2851.4 ms |
+| m2-air | Soniqo | 1189.8 ms | 1210.7 ms | 1237.2 ms | 1273.7 ms | 1233.1 ms |
+| m2-air | laishere | 289.9 ms | 330.7 ms | 710.6 ms | 746.8 ms | 1616.2 ms |
+| irvine-m1 | Config F | 286.0 ms | 647.7 ms | 1035.0 ms | 1372.5 ms | 9114.3 ms |
+| irvine-m1 | MLX | error | 807.2 ms | 20027.8 ms | 1662.4 ms | 3293.4 ms |
+| irvine-m1 | Soniqo | 1395.3 ms | 1391.9 ms | 1413.1 ms | 1461.0 ms | 1431.8 ms |
+| irvine-m1 | laishere | 1102.5 ms | 1239.3 ms | 1877.0 ms | 1659.6 ms | 2791.8 ms |
+
+### Warm Median Wall Time
+
+| Machine | Impl | 3s | 7s | 10s | 15s | 30s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| m2-studio | Config F | 60.2 ms | 110.5 ms | 149.6 ms | 222.6 ms | 449.0 ms |
+| m2-studio | MLX | error | 223.9 ms | 288.8 ms | 376.3 ms | 762.7 ms |
+| m2-studio | Soniqo | 71.7 ms | 69.3 ms | 71.0 ms | 68.1 ms | 69.5 ms |
+| m2-studio | laishere | 212.3 ms | 403.3 ms | 626.3 ms | 429.8 ms | 925.1 ms |
+| m2-air | Config F | 151.7 ms | 335.0 ms | 474.6 ms | 704.7 ms | 1430.0 ms |
+| m2-air | MLX | error | 685.6 ms | 835.8 ms | 1521.0 ms | 2600.3 ms |
+| m2-air | Soniqo | 1097.4 ms | 1135.8 ms | 1123.0 ms | 1125.5 ms | 1123.5 ms |
+| m2-air | laishere | 142.0 ms | 316.9 ms | 450.2 ms | 657.3 ms | 1476.4 ms |
+| irvine-m1 | Config F | 239.2 ms | 510.2 ms | 700.7 ms | 1028.9 ms | 1977.7 ms |
+| irvine-m1 | MLX | error | 824.0 ms | 1124.3 ms | 1589.5 ms | 3077.9 ms |
+| irvine-m1 | Soniqo | 1330.9 ms | 1343.6 ms | 1313.9 ms | 1343.6 ms | 1351.2 ms |
+| irvine-m1 | laishere | 176.3 ms | 394.6 ms | 593.9 ms | 912.0 ms | 2135.1 ms |
+
+### Observed RTF
+
+| Machine | Impl | 3s | 7s | 10s | 15s | 30s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| m2-studio | Config F | 0.022 | 0.016 | 0.016 | 0.016 | 0.016 |
+| m2-studio | MLX | error | 0.033 | 0.030 | 0.027 | 0.028 |
+| m2-studio | Soniqo | 0.027 | 0.014 | 0.014 | 0.014 | 0.014 |
+| m2-studio | laishere | 0.077 | 0.059 | 0.065 | 0.031 | 0.034 |
+| m2-air | Config F | 0.054 | 0.050 | 0.049 | 0.051 | 0.052 |
+| m2-air | MLX | error | 0.102 | 0.087 | 0.109 | 0.095 |
+| m2-air | Soniqo | 0.406 | 0.227 | 0.225 | 0.225 | 0.225 |
+| m2-air | laishere | 0.051 | 0.046 | 0.047 | 0.047 | 0.054 |
+| irvine-m1 | Config F | 0.085 | 0.076 | 0.073 | 0.074 | 0.072 |
+| irvine-m1 | MLX | error | 0.122 | 0.117 | 0.114 | 0.112 |
+| irvine-m1 | Soniqo | 0.493 | 0.269 | 0.263 | 0.269 | 0.270 |
+| irvine-m1 | laishere | 0.064 | 0.058 | 0.062 | 0.065 | 0.078 |
+
+### Observed Audio Duration
+
+| Machine | Impl | 3s | 7s | 10s | 15s | 30s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| m2-studio | Config F | 2.800s | 6.750s | 9.600s | 13.900s | 27.375s |
+| m2-studio | MLX | error | 6.750s | 9.600s | 13.900s | 27.375s |
+| m2-studio | Soniqo | 2.700s | 5.000s | 5.000s | 5.000s | 5.000s |
+| m2-studio | laishere | 2.775s | 6.800s | 9.625s | 13.975s | 27.375s |
+| m2-air | Config F | 2.800s | 6.750s | 9.600s | 13.900s | 27.375s |
+| m2-air | MLX | error | 6.750s | 9.600s | 13.900s | 27.375s |
+| m2-air | Soniqo | 2.700s | 5.000s | 5.000s | 5.000s | 5.000s |
+| m2-air | laishere | 2.775s | 6.825s | 9.650s | 13.925s | 27.350s |
+| irvine-m1 | Config F | 2.800s | 6.750s | 9.600s | 13.900s | 27.375s |
+| irvine-m1 | MLX | error | 6.750s | 9.600s | 13.900s | 27.375s |
+| irvine-m1 | Soniqo | 2.700s | 5.000s | 5.000s | 5.000s | 5.000s |
+| irvine-m1 | laishere | 2.775s | 6.750s | 9.625s | 13.950s | 27.375s |
+
+### Config F Speed Ratio
+
+Values are comparator warm median divided by Config F warm median, using only
+steady-state post-prime inference cells. Values above `1.0x` mean Config F was
+faster. Values below `1.0x` mean the comparator was faster.
+
+| Machine | Comparator | 3s | 7s | 10s | 15s | 30s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| m2-studio | MLX / Config F | n/a | 2.03x | 1.93x | 1.69x | 1.70x |
+| m2-studio | Soniqo / Config F | 1.19x | 0.63x | 0.47x | 0.31x | 0.15x |
+| m2-studio | laishere / Config F | 3.53x | 3.65x | 4.19x | 1.93x | 2.06x |
+| m2-air | MLX / Config F | n/a | 2.05x | 1.76x | 2.16x | 1.82x |
+| m2-air | Soniqo / Config F | 7.23x | 3.39x | 2.37x | 1.60x | 0.79x |
+| m2-air | laishere / Config F | 0.94x | 0.95x | 0.95x | 0.93x | 1.03x |
+| irvine-m1 | MLX / Config F | n/a | 1.62x | 1.60x | 1.54x | 1.56x |
+| irvine-m1 | Soniqo / Config F | 5.56x | 2.63x | 1.88x | 1.31x | 0.68x |
+| irvine-m1 | laishere / Config F | 0.74x | 0.77x | 0.85x | 0.89x | 1.08x |
+
+### Config F Fast-Path Correction
+
+The first completed external bakeoff table measured Config F with
+`kokoro-bench --compute-units all` and mostly padded duration models. That
+configuration made Core ML solve large padded duration graphs before the
+generator ran. On M2 Studio, the duration stage alone accounted for about
+`81.8 ms`, `153.9 ms`, `373.7 ms`, `417.8 ms`, and `732.7 ms` across the
+`3s`, `7s`, `10s`, `15s`, and `30s` rows. That was the immediate reason MLX
+looked faster: MLX used a fused Metal path while Config F was paying avoidable
+Core ML graph-dispatch and padded-duration cost.
+
+The production-shaped Swift policy is exposed as
+`kokoro-bench --compute-units staged`: duration, F0Ntrain, and generator load
+with `.cpuAndGPU`, while decoder-pre loads with `.cpuAndNeuralEngine`. The
+external Config F adapter now defaults to this staged policy and enables exact
+duration model discovery by default. With the missing
+`kokoro_duration_exact_t156.mlpackage` generated for the `10s` fixture, the
+corrected warm medians after the vDSP HnSF optimization and direct HAR-padding
+fast path are:
+
+| Machine | 3s | 7s | 10s | 15s | 30s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| m2-studio | 60.2 ms | 110.5 ms | 149.6 ms | 222.6 ms | 449.0 ms |
+| m2-air | 151.7 ms | 335.0 ms | 474.6 ms | 704.7 ms | 1430.0 ms |
+| irvine-m1 | 239.2 ms | 510.2 ms | 700.7 ms | 1028.9 ms | 1977.7 ms |
+
+This corrected run flips the MLX comparison for every MLX-comparable Mac
+bucket across all three hardware platforms. It also beats Soniqo's valid `3s`
+macOS cell on every Mac and beats laishere on every M2 Studio cell. The
+remaining negative rows are important: laishere's narrower Core ML-chain-only
+boundary is still faster on M2 Air and M1 short/medium buckets, though the gap
+is now small on M2 Air and Config F now wins the M2 Air and M1 `30s` laishere
+rows. Soniqo's 5s-only public artifact remains faster than full-duration Config
+F for the 30s row because it emits much less audio. The exact duration package
+set, including
+`kokoro_duration_exact_t156.mlpackage`, still needs to be published with the
+model artifacts for third-party reproduction.
+
+#### Corrected Config F stage medians
+
+Each cell is the median per-stage time from the corrected staged + exact
+current-code run. The generator remains the dominant cost on M2 Air and M1; the
+Swift HnSF step is the second largest long-bucket cost on all machines.
+
+| Machine | Input | Duration | F0Ntrain | DecoderPre | Generator | Swift HnSF |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| m2-studio | 3s | 9.5 ms | 5.8 ms | 4.2 ms | 28.8 ms | 10.5 ms |
+| m2-studio | 7s | 13.6 ms | 6.6 ms | 5.5 ms | 58.3 ms | 24.7 ms |
+| m2-studio | 10s | 17.8 ms | 7.8 ms | 7.5 ms | 79.2 ms | 35.5 ms |
+| m2-studio | 15s | 22.4 ms | 11.3 ms | 16.1 ms | 115.8 ms | 53.8 ms |
+| m2-studio | 30s | 41.2 ms | 18.6 ms | 50.5 ms | 220.6 ms | 113.2 ms |
+| m2-air | 3s | 11.4 ms | 5.0 ms | 3.0 ms | 120.6 ms | 10.7 ms |
+| m2-air | 7s | 18.3 ms | 8.7 ms | 5.2 ms | 277.6 ms | 24.6 ms |
+| m2-air | 10s | 23.7 ms | 11.1 ms | 7.5 ms | 395.1 ms | 35.5 ms |
+| m2-air | 15s | 33.2 ms | 15.4 ms | 11.4 ms | 589.3 ms | 53.9 ms |
+| m2-air | 30s | 73.2 ms | 31.6 ms | 29.9 ms | 1182.6 ms | 108.2 ms |
+| irvine-m1 | 3s | 26.5 ms | 12.1 ms | 4.4 ms | 167.6 ms | 27.3 ms |
+| irvine-m1 | 7s | 43.9 ms | 18.0 ms | 8.4 ms | 387.6 ms | 47.1 ms |
+| irvine-m1 | 10s | 58.0 ms | 21.9 ms | 11.3 ms | 550.6 ms | 57.5 ms |
+| irvine-m1 | 15s | 79.4 ms | 31.8 ms | 17.9 ms | 821.5 ms | 75.7 ms |
+| irvine-m1 | 30s | 140.7 ms | 42.6 ms | 34.9 ms | 1633.2 ms | 120.6 ms |
+
+#### Vectorized HnSF Gaussian noise
+
+The Swift HnSF path still used a scalar Box-Muller loop for Gaussian noise even
+after the vDSP STFT/vectorization pass. Replacing the scalar transcendental
+work with vectorized `vForce`/`vDSP` math preserves the same seeded RNG draw
+order and leaves the final waveform inside the existing parity tolerance.
+
+Matched local M2 Studio control: scalar `HEAD` (`3a2e083`) was built in a
+temporary worktree and compared against the vectorized candidate with the same
+models, inputs, `KOKORO_USE_EXACT_DURATION_MODELS=1`, `--compute-units staged`,
+`--warmup 2`, and `--iterations 5`.
+
+| Input | Scalar wall | Vector wall | Wall delta | Scalar HnSF | Vector HnSF | HnSF delta |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 3s | 72.9 ms | 72.4 ms | +0.7% | 10.4 ms | 8.4 ms | +19.2% |
+| 7s | 131.1 ms | 125.9 ms | +3.9% | 24.9 ms | 19.8 ms | +20.6% |
+| 10s | 165.6 ms | 160.3 ms | +3.2% | 34.5 ms | 28.5 ms | +17.5% |
+| 15s | 278.7 ms | 253.6 ms | +9.0% | 56.4 ms | 45.5 ms | +19.3% |
+| 30s | 490.3 ms | 459.9 ms | +6.2% | 109.5 ms | 88.6 ms | +19.0% |
+
+Parity check against the pre-change `30s` tensor dump passed for
+`har_source`, `har_magnitude`, `har_phase`, `har`, `har_padded`, `waveform`,
+and `waveform_full` with no failing boundary. Final waveform correlation was
+`0.999997` with max abs `0.00274658`; the HnSF boundary tensors were
+correlation `1.0`.
+
+#### Direct HAR padding fast path
+
+Current `main` avoids constructing a temporary HAR `MLMultiArray` before
+padding the generator input. It pads the flat Swift-built HAR buffer directly
+into the final `(1, 22, targetTime)` array and returns the source `x_pre`
+unchanged when it already matches `(1, 512, targetTime)`. This removes one
+full HAR copy and one no-op `x_pre` copy from the generator boundary without
+changing model inputs.
+
+The largest current-code win was the M2 Air `30s` path, where the targeted
+N=10 warm median moved from `1511.5 ms` in the vDSP-only snapshot to
+`1430.0 ms`. Other cells are mostly neutral to modestly faster, which is
+consistent with the generator model prediction itself still dominating the
+wall clock.
+
+#### Generator isolation evidence
+
+`kokoro-bench --generator-input-dump` now supports repeated warm generator
+predictions against a previously dumped Swift tensor boundary:
+
+```bash
+swift/.build/release/kokoro-bench \
+  --models-dir coreml \
+  --inputs-dir outputs/swift_bench_inputs \
+  --hnsf-weights outputs/swift_bench_inputs/hnsf_weights.json \
+  --generator-input-dump outputs/generator_isolation/dumps/7s \
+  --compute-units cpuAndGPU \
+  --warmup 3 \
+  --iterations 10 \
+  --output outputs/generator_isolation/results/generator_7s_cpuAndGPU.json
+```
+
+The result files are ignored under `outputs/generator_isolation/`; they are
+stage-isolation evidence, not paper table rows. Each value below is the N=10
+median after three discarded warmups, using the exact `x_pre_padded`, `ref_s`,
+and `har_padded` tensors emitted by the current Swift pipeline.
+
+| Machine | Input | `cpuAndGPU` | `.all` | `cpuAndNeuralEngine` | `cpuOnly` |
+| --- | --- | ---: | ---: | ---: | ---: |
+| m2-studio | 3s | 27.2 ms | 27.0 ms | 1535.5 ms | 100.9 ms |
+| m2-studio | 7s | 59.5 ms | 60.3 ms | not rerun | not rerun |
+| m2-air | 3s | 120.1 ms | 155.4 ms | not rerun | not rerun |
+| m2-air | 7s | 277.6 ms | 426.2 ms | not rerun | not rerun |
+| irvine-m1 | 3s | 168.9 ms | 172.8 ms | not rerun | not rerun |
+| irvine-m1 | 7s | 384.7 ms | 394.2 ms | not rerun | not rerun |
+
+This isolates the generator as the dominant Config F stage and rules out an
+incorrect compute-unit policy for the current `GeneratorFromHar` package. On
+the two lower-end Macs, `.all` is slower than explicit `cpuAndGPU`; on M2
+Studio, `.all` merely ties `cpuAndGPU`. Forcing CPU+ANE is catastrophic even at
+3s. This does not by itself prove laishere's generator-equivalent chain is
+faster; it proves our current fused generator is the main place where a
+same-boundary optimization could move the full-pipeline table.
+
+#### Exact generator geometry probe
+
+`scripts/probe_generator_exact_geometry.py` tests a tempting shortcut: export
+`GeneratorFromHar` at the observed trimmed audio length instead of the padded
+bucket length, then run it against cropped tensors from the current Swift
+generator dumps. The generated packages and reports are ignored under
+`outputs/generator_exact_geometry/`.
+
+Local M2 Studio results, `cpuAndGPU`, N=10 median after three discarded
+warmups:
+
+| Source dump | Exact output | `x_pre` time | HAR time | Warm generator median | Corr vs current trimmed | SNR | Max abs | Decision |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 3s | 2.800s / 67,200 samples | 224 | 26,881 | 27.1 ms | 0.927 | 8.87 dB | 0.240 | reject |
+| 7s | 6.750s / 162,000 samples | 540 | 64,801 | 55.7 ms | 0.952 | 10.73 dB | 0.389 | reject |
+
+The speed signal is not enough to matter, and the sample-level parity failure
+is large. A generator-only exact-geometry crop is therefore not a safe
+production optimization. The current bucketed generator uses tail context from
+the padded package before trimming; removing that context changes the emitted
+prefix. If exact-duration packages are revisited, they need an end-to-end
+exact graph and a listening/quality gate, not just a shorter HAR-post package
+fed by cropped bucket tensors.
+
+#### Generator split probes
+
+`scripts/probe_generator_split.py`,
+`scripts/probe_generator_noise_split.py`, and
+`scripts/probe_generator_dual_anchor_split.py` test whether laishere-style
+package boundaries help the current static HAR-post generator.
+`scripts/probe_generator_stage_split.py` then splits the body by generator
+upsample stage to locate the remaining bottleneck. The generated packages and
+reports are ignored under `outputs/generator_split/`,
+`outputs/generator_noise_split/`, `outputs/generator_dual_anchor_split/`, and
+`outputs/generator_stage_split/`.
+
+Local M2 Studio. Unless noted, values are N=10 medians after three discarded
+warmups. The audio-anchor CPU+ANE and palettized CPU+ANE rows used N=3 after
+one discarded warmup because they were already unambiguously slower than fused;
+they are rejection probes only.
+
+| Probe | Input | Placement | Fused median | Split median | Split stages | Parity vs fused | Decision |
+| --- | --- | --- | ---: | ---: | --- | --- | --- |
+| final tail only | 3s | body CPU+GPU, tail CPU-only | 28.3 ms | 29.1 ms | body 28.4 ms, tail 0.8 ms | corr 0.999996, SNR 51.55 dB | reject |
+| final tail only | 7s | body CPU+GPU, tail CPU-only | 57.5 ms | 58.4 ms | body 57.2 ms, tail 1.2 ms | corr 0.999996, SNR 52.08 dB | reject |
+| HAR noise split | 3s | noise CPU+GPU, body CPU+GPU | 28.9 ms | 32.5 ms | noise 13.1 ms, body 19.5 ms | exact sample match | reject |
+| HAR noise split | 7s | noise CPU+GPU, body CPU+GPU | 57.6 ms | 63.4 ms | noise 25.8 ms, body 37.7 ms | exact sample match | reject |
+| HAR noise split | 3s | noise CPU+GPU/ALL, body CPU+ANE | 29-30 ms | 249-260 ms | body 237-248 ms | corr 0.999906, SNR 37.65 dB | reject |
+| per-stage split | 3s | noise/stage0/stage1 CPU+GPU | 28.6 ms | 33.0 ms | noise 12.6 ms, stage0 9.0 ms, stage1+tail 11.3 ms | corr 0.999997, SNR 52.39 dB | reject as a production split; keep as profiler |
+| per-stage split | 7s | noise/stage0/stage1 CPU+GPU | 58.5 ms | 66.5 ms | noise 26.6 ms, stage0 17.7 ms, stage1+tail 22.4 ms | corr 0.999997, SNR 53.55 dB | reject as a production split; keep as profiler |
+| per-stage split | 3s | stage0 CPU+ANE, others CPU+GPU | 28.5 ms | 61.9 ms | noise 12.6 ms, stage0 37.8 ms, stage1+tail 11.4 ms | corr 0.999981, SNR 44.66 dB | reject |
+| per-stage split | 3s | stage1+tail CPU+ANE, others CPU+GPU | 28.2 ms | 114.5 ms | noise 12.5 ms, stage0 9.1 ms, stage1+tail 93.1 ms | corr 0.999918, SNR 38.29 dB | reject |
+| per-stage split | 3s | noise CPU+ANE, stages CPU+GPU | 27.9 ms | 87.2 ms | noise 67.0 ms, stage0 9.7 ms, stage1+tail 11.0 ms | corr 0.999920, SNR 38.42 dB, max abs 0.0134 | reject |
+| per-stage split | 3s | noise/stage0/stage1 ALL | 28.4 ms | 32.6 ms | noise 12.4 ms, stage0 8.9 ms, stage1+tail 11.1 ms | corr 0.999997, SNR 52.39 dB | reject |
+| dual-output mean anchor | 3s | noise CPU+GPU, vocoder CPU+GPU, fp32 tail CPU+GPU | 28.9 ms | 33.0 ms | noise 11.7 ms, vocoder 19.7 ms, tail 1.4 ms | corr 0.999994, SNR 49.54 dB | reject |
+| dual-output mean anchor + cos Snake | 3s | noise CPU+GPU, vocoder CPU+GPU, fp32 tail CPU+GPU | 28.1 ms | 32.0 ms | noise 11.4 ms, vocoder 19.5 ms, tail 1.3 ms | corr 0.999994, SNR 49.54 dB | reject |
+| dual-output mean anchor + cos Snake | 3s | noise ALL, vocoder CPU+ANE, fp32 tail ALL | 29.3 ms | 249.8 ms | noise 11.7 ms, vocoder 236.7 ms, tail 1.8 ms | corr 0.999916, SNR 38.11 dB | reject |
+| dual-output audio anchor + cos Snake | 3s | noise ALL, vocoder CPU+ANE, fp32 tail ALL | 35.7 ms | 242.3 ms | noise 11.8 ms, vocoder 226.4 ms, tail 1.5 ms | corr 0.999916, SNR 38.11 dB | reject |
+| dual-output mean anchor + cos Snake + int8-pal vocoder | 3s | noise ALL, vocoder CPU+ANE, fp32 tail ALL | 32.9 ms | 252.3 ms | noise 11.9 ms, vocoder 238.5 ms, tail 2.0 ms | corr 0.999848, SNR 35.61 dB | reject |
+| dual-output mean anchor + cos Snake + int8-pal vocoder | 3s | noise CPU+GPU, vocoder CPU+GPU, fp32 tail CPU+GPU | 27.9 ms | 32.4 ms | noise 11.2 ms, vocoder 19.9 ms, tail 1.2 ms | corr 0.999933, SNR 39.10 dB | reject |
+
+The final-tail split is too small to matter; the tail costs only about 1-2 ms.
+The HAR-noise split is more informative: it proves the graph can be partitioned
+with exact output parity and reduces the body package itself, but total latency
+gets worse because the noise package plus extra dispatch cost outweighs the
+body reduction. Forcing the noise-split body to CPU+ANE is catastrophic on this
+local M2 Studio run.
+
+The laishere architecture is therefore not "split off the tail" in a generic
+sense. Its own README says tail split alone failed. The follow-up dual-output
+probe now ports the visible scheduler ingredients that were still missing from
+the earlier split tests: mean anchor output matching the public code, an
+audio-anchor variant matching the README prose, fp32 tail, optional cos-form
+Snake, and int8 palettization on the discarded-output vocoder. None of those
+variants recreate a fast CPU+ANE path for the current static HAR-post graph,
+and CPU+GPU remains slower than the fused package because extra package
+dispatch plus noise/tail stages outweigh the smaller vocoder body. The next
+viable performance work is therefore an operator-surface rewrite or a larger
+end-to-end graph reshaping, not more generator package-boundary experiments.
+
+The per-stage split proves there is no hidden ANE-friendly island inside the
+current generator body. Explicit CPU+ANE makes every stage slower: noise grows
+from `12.6 ms` to `67.0 ms`, stage0 grows from `9.0 ms` to `37.8 ms`, and
+stage1+tail grows from `11.3 ms` to `93.1 ms` on the local M2 Studio `3s` dump.
+The 3s MIL operation distribution is also broad, not a single isolated tail:
+fused generator `2207` ops, noise `562`, stage0 `807`, stage1+tail `856`. The
+next production candidate must remove work or change operator lowering within
+all three generator regions; merely moving a substage to ANE is not supported
+by the data.
+
+The same 3s predict-only stage packages were copied to the two machines where
+Config F still loses to laishere's chain-only short rows and run with
+`--skip-export` against the same dumped tensors. CPU+GPU parity passed on both
+hosts, and the stage distribution scales with each machine's known generator
+cost:
+
+| Machine | Placement | Pass | Fused median | Split median | Split stages | Parity vs fused |
+| --- | --- | --- | ---: | ---: | --- | --- |
+| m2-air | CPU+GPU | yes | 120.5 ms | 126.6 ms | noise 51.2 ms, stage0 31.2 ms, stage1+tail 44.1 ms | corr 0.999997, SNR 52.83 dB |
+| irvine-m1 | CPU+GPU | yes | 168.4 ms | 184.0 ms | noise 74.4 ms, stage0 44.9 ms, stage1+tail 64.6 ms | corr 0.999997, SNR 52.62 dB |
+| m2-air | stage0 CPU+ANE | no | 120.0 ms | 123.7 ms | noise 50.8 ms, stage0 28.3 ms, stage1+tail 44.5 ms | corr 0.403806, SNR 0.47 dB |
+| m2-air | stage1+tail CPU+ANE | no | 120.9 ms | 150.8 ms | noise 50.8 ms, stage0 31.0 ms, stage1+tail 69.3 ms | corr 0.120825, SNR 0.05 dB |
+| irvine-m1 | stage0 CPU+ANE | no | 167.5 ms | 197.4 ms | noise 73.4 ms, stage0 58.7 ms, stage1+tail 65.8 ms | corr 0.403829, SNR 0.47 dB |
+| irvine-m1 | stage1+tail CPU+ANE | no | 172.7 ms | 315.8 ms | noise 74.4 ms, stage0 44.7 ms, stage1+tail 196.2 ms | corr 0.121443, SNR 0.05 dB |
+
+This closes the per-stage ANE fallback hypothesis on the losing machines too.
+On M2 Air, stage0 CPU+ANE is superficially faster (`28.3 ms` vs `31.2 ms`) but
+the audio output is invalid, so it is not a candidate. On Irvine M1, CPU+ANE is
+both slower and invalid. The next speed work must target the CPU+GPU generator
+operator count and memory movement directly.
+
+#### Laishere stage profile
+
+`scripts/external_bakeoff/profile_laishere_stages.py` profiles the pinned
+`laishere/kokoro-coreml` seven-package chain with the same timing boundary as
+the external bakeoff adapter: phonemization and feed preparation are reported
+separately and excluded from the warm chain median. Results are ignored under
+`outputs/external_bakeoff/placement/results_laishere_stage_profile_*.json`.
+
+The profile keeps laishere's public compute-unit policy: Albert, post-Albert,
+alignment, prosody, and vocoder use `CPU_AND_NE`; noise and tail use `ALL`.
+Each value below is the N=5 median after three discarded warmups.
+
+| Machine | Input | Total chain | Upstream stages | Noise+vocoder+tail | Noise | Vocoder | Tail |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| m2-studio | 3s | 104.5 ms | 13.7 ms | 90.4 ms | 26.2 ms | 60.9 ms | 3.2 ms |
+| m2-studio | 7s | 192.7 ms | 24.8 ms | 168.0 ms | 37.6 ms | 125.7 ms | 4.8 ms |
+| m2-studio | 10s | 248.3 ms | 30.3 ms | 216.2 ms | 43.0 ms | 166.2 ms | 7.0 ms |
+| m2-studio | 15s | 339.5 ms | 42.8 ms | 298.8 ms | 55.7 ms | 234.8 ms | 8.2 ms |
+| m2-studio | 30s | 619.7 ms | 85.6 ms | 532.1 ms | 85.6 ms | 432.9 ms | 13.6 ms |
+| m2-air | 3s | 153.0 ms | 27.0 ms | 123.7 ms | 46.1 ms | 73.8 ms | 3.8 ms |
+| m2-air | 7s | 334.7 ms | 54.8 ms | 279.0 ms | 92.4 ms | 175.9 ms | 10.7 ms |
+| m2-air | 10s | 467.3 ms | 74.9 ms | 392.8 ms | 115.4 ms | 262.9 ms | 14.6 ms |
+| m2-air | 15s | 691.5 ms | 105.0 ms | 583.9 ms | 163.2 ms | 405.1 ms | 15.6 ms |
+| m2-air | 30s | 1527.0 ms | 228.2 ms | 1298.5 ms | 384.3 ms | 877.0 ms | 37.3 ms |
+| irvine-m1 | 3s | 195.0 ms | 49.4 ms | 145.1 ms | 57.9 ms | 82.8 ms | 4.4 ms |
+| irvine-m1 | 7s | 444.2 ms | 102.5 ms | 340.4 ms | 114.1 ms | 216.5 ms | 9.8 ms |
+| irvine-m1 | 10s | 644.9 ms | 142.9 ms | 492.7 ms | 157.4 ms | 322.1 ms | 13.2 ms |
+| irvine-m1 | 15s | 990.6 ms | 213.1 ms | 779.9 ms | 225.1 ms | 536.3 ms | 18.5 ms |
+| irvine-m1 | 30s | 2292.3 ms | 498.9 ms | 1799.7 ms | 490.5 ms | 1271.2 ms | 38.0 ms |
+
+The 3s/7s comparison against our generator-isolation measurements is useful,
+but it is not a pure same-boundary comparison. Source audit of
+`laishere/kokoro-coreml` shows `CoreMLVocoderDualOutput` includes
+`F0_conv`, `N_conv`, `decoder.encode`, `decoder.decode`, and the generator
+upsample/resblock body, then returns a discarded `anchor` plus `x_pre` for a
+separate fp32 tail. Therefore laishere's `noise+vocoder+tail` is a
+decoder-plus-generator body, while Config F's isolated generator starts after
+`decoder_pre` at `x_pre + ref_s + har`.
+
+| Machine | Input | Config F full | Config F generator | Laishere chain | Laishere noise+vocoder+tail | Interpretation |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| m2-studio | 3s | 60.2 ms | 27.2 ms | 104.5 ms | 90.4 ms | Config F wins decisively; laishere's split chain is slower here. |
+| m2-studio | 7s | 110.5 ms | 59.5 ms | 192.7 ms | 168.0 ms | Config F wins decisively; no laishere generator advantage. |
+| m2-air | 3s | 151.7 ms | 120.1 ms | 153.0 ms | 123.7 ms | Practical tie despite laishere's broader boundary. |
+| m2-air | 7s | 335.0 ms | 277.6 ms | 334.7 ms | 279.0 ms | Practical tie; old laishere lead was measurement-scale, not a clear graph win. |
+| irvine-m1 | 3s | 239.2 ms | 168.9 ms | 195.0 ms | 145.1 ms | Laishere wins; about half the gap is source/vocoder/tail and half upstream. |
+| irvine-m1 | 7s | 510.2 ms | 384.7 ms | 444.2 ms | 340.4 ms | Laishere wins; the M1 gap is real, but the split boundary is broader than our isolated generator. |
+
+This answers the "how is laishere/MLX faster?" question more narrowly. MLX is
+not faster after warmed Config F correction. Laishere is not faster on M2 Studio
+and is effectively tied on M2 Air when the stage-profile boundary is rerun. The
+remaining real loss is Irvine M1 short/medium. That loss is not explained by a
+simple Core ML compute-unit flip or by our already-tested split boundaries; the
+graph-surface inspection below checks whether laishere's visible
+`KokoroVocoder`/`KokoroNoise` operator choices explain it.
+The next boundary-level probe should recreate laishere's actual
+decoder-plus-generator body against the Swift dumps, not only the narrower
+HAR-post `GeneratorFromHar` boundary.
+
+#### Fused generator graph-surface probes
+
+`scripts/probe_generator_cos_snake.py` tests generator operator rewrites that
+can be applied without changing package boundaries. It exports a fused
+`GeneratorFromHar` package, then compares the temporary package to the shipping
+fused HAR-post package on the same Swift tensor dump. The patch hooks must
+target `export_synth.wrappers.kokoro_istftnet`, because the exporter loads
+Kokoro modules under dynamic names; patching `kokoro.istftnet` directly does
+not affect the traced generator used by this repo's exporter.
+
+`scripts/compare_coreml_graph_surface.py` records the MIL operation surface for
+each package. The result file for the table below is ignored under
+`outputs/graph_surface/laishere_vs_local_generator_3s.json`.
+
+Local M2 Studio 3s, CPU+GPU, N=10 median after three discarded warmups:
+
+| Probe | Spec | MIL ops | Key graph change | Fused median | Candidate median | Speedup vs fused | Parity vs fused | Decision |
+| --- | ---: | ---: | --- | ---: | ---: | ---: | --- | --- |
+| iOS17 target only | 8 | 2207 | no op-surface change vs shipping CoreML6 | 30.98 ms | 30.78 ms | +0.65% | corr 0.999997, SNR 53.17 dB | reject as noise-sized |
+| corrected cos-Snake | 8 | 2303 | `sin` 50 -> 2, `cos` 1 -> 49 | 30.77 ms | 30.72 ms | +0.16% | corr 0.999995, SNR 50.42 dB | reject |
+| corrected broadcast AdaIN | 8 | 2015 | `tile` 96 -> 0 | 30.92 ms | 30.93 ms | -0.03% | corr 0.999997, SNR 53.17 dB | reject |
+| native InstanceNorm AdaIN | 8 | 1731 | `reduce_mean` 88 -> 0, `instance_norm` 0 -> 44 | 31.00 ms | 30.93 ms | +0.24% | corr 0.999994, SNR 49.84 dB | reject |
+| native InstanceNorm + broadcast + cos | 8 | 1635 | no `tile`, native `instance_norm`, cos Snake | 30.08 ms | 30.68 ms | -2.02% | corr 0.999994, SNR 49.71 dB | reject |
+| native InstanceNorm + broadcast + cos + pal8 | 8 | 1635 | adds 101 `constexpr_lut_to_dense` ops; package `38M` -> `19M` | 29.64 ms | 31.31 ms | -5.65% | corr 0.999879, SNR 36.54 dB, max abs 0.01007 | reject; slower and misses max-abs gate |
+
+The strongest visible graph cleanup is the combined native InstanceNorm +
+broadcast + cos candidate: it drops the 3s fused graph from `2207` to `1635`
+ops and removes explicit `tile`, explicit reduction-based normalization, and
+nearly all Snake `sin` ops. That still does not improve local CPU+GPU runtime.
+The same candidate was copied to the two lower-end Macs and run predict-only
+against the existing 3s tensor dump:
+
+| Machine | Fused median | Candidate median | Speedup vs fused | Parity vs fused | Decision |
+| --- | ---: | ---: | ---: | --- | --- |
+| m2-air | 120.51 ms | 120.65 ms | -0.12% | corr 0.999994, SNR 49.96 dB | reject |
+| irvine-m1 | 167.83 ms | 167.60 ms | +0.14% | corr 0.999994, SNR 50.00 dB | reject as noise-sized |
+
+This closes the visible laishere graph-surface hypothesis for the current
+fused generator boundary. We can reproduce its obvious source-level ingredients
+inside our fused package, but they do not make Mac prediction faster. The
+remaining M1 loss is therefore likely below the visible MIL histogram: Core ML
+compute-plan/kernel selection, compiler/runtime/toolchain differences, or a
+larger pipeline boundary difference rather than a simple AdaIN/Snake source
+rewrite.
+
+The palettized fused-generator row is the direct check against laishere's
+`KokoroVocoder` metadata surface. `xcrun coremlcompiler metadata` reports
+laishere's vocoder as mixed FP16/FP32 plus 8-bit palettized weights with
+`101` `constexpr_lut_to_dense` ops; the local pal8 candidate reproduces that
+LUT count and halves package size. It does not reproduce a speedup. The
+candidate is slower and slightly fails the existing sample gate because its
+palettized output is the final waveform. That differs from laishere's public
+split: its palettized vocoder emits an intermediate audio anchor that is
+discarded, while a separate tail emits the listener-facing waveform. Do not
+ship or rank palettized fused-generator packages without a fresh quality gate.
+
+Linear weight quantization is also rejected for the final-waveform generator.
+`scripts/probe_generator_cos_snake.py --linear-quantize int8` compressed the
+plain fixed-shape 3s candidate from `39.7 MB` to `20.2 MB` without changing the
+visible MIL op histogram, but both macOS13 and iOS17 CPU+GPU runs crashed during
+runtime specialization with `MPSGraphExecutable.mm:5070: failed assertion
+'Error: MLIR pass manager failed'`. The saved package loads under CPU-only, but
+the CPU-only row is not shippable: `93.27 ms` vs `97.43 ms` fused CPU-only and
+fails parity (`corr 0.999051`, SNR `27.62 dB`, max abs `0.03387`). Compression
+can reduce bundle size, but it is not the missing lower-end Mac speed path for
+our final-waveform generator.
+
+The toolchain-only hypothesis is also rejected for the current fused generator.
+`scripts/probe_generator_cos_snake.py` now records `coremltools`, `torch`, and
+`numpy` versions in its JSON reports, so the CT8/CT9 comparison is reproducible.
+The CT9 package was generated with the same PyTorch 2.6 traced graph, same
+iOS17 target, same fixed tensor shapes, and no source-level operator rewrites.
+Its visible MIL surface is identical to the CT8 iOS17 package and shipping
+package: `2207` ops, `51` conv, `4` conv_transpose, `88` reduce_mean, `96`
+tile, `50` sin, and `1` cos.
+
+| Host | Bucket | Shipping fused | CT8.3 iOS17 plain | CT9.0 iOS17 plain | Decision |
+| --- | --- | ---: | ---: | ---: | --- |
+| m2-studio | 3s | 30.07 ms | 29.76 ms | 29.81 ms | tie; same-process N=30 |
+| m2-studio | 7s | 59.87 ms | not rerun | 60.49 ms | reject |
+| m2-air | 3s | 120.803 ms | not rerun | 120.816 ms | tie; remote N=30 |
+| irvine-m1 | 3s | 167.900 ms | not rerun | 167.947 ms | tie; remote N=30 |
+
+The initial CT9 3s export run looked modestly faster than fused (`29.74 ms` vs
+`30.39 ms`), but an alternating same-process timing pass showed CT8 iOS17,
+CT9 iOS17, and shipping fused within run noise. On M2 Air and Irvine M1, CT9
+was effectively identical to shipping fused. Therefore a coremltools 9
+conversion alone is not the reason laishere retains an M1 short-bucket lead.
+
+The flexible-shape hypothesis is rejected for the current fused generator
+boundary. Laishere's `KokoroVocoder` advertises bounded flexible input ranges,
+so `scripts/probe_generator_cos_snake.py` now has `--input-shape-mode range`.
+That mode marks `x_pre` as `1 x 512 x 1...2000` and `har` as
+`1 x 22 x 1...240001`, with the current dump dimensions as defaults. This
+successfully produces packages with `hasShapeFlexibility=1`, but prediction is
+not usable:
+
+| Probe | Toolchain | MIL ops | Fused median | Candidate median | Parity vs fused | Runtime signal | Decision |
+| --- | --- | ---: | ---: | ---: | --- | --- | --- |
+| plain RangeDim | CT8.3 / torch 2.6 | 3135 | 49.73 ms | 1561.07 ms | corr 0.999136, SNR 27.77 dB, max abs 0.03076 | `tile` shape-propagation failure | reject |
+| native+broadcast+cos RangeDim | CT8.3 / torch 2.6 | 1659 | 31.91 ms | 343.61 ms | corr 0.999135, SNR 27.76 dB, max abs 0.02783 | dynamic `add` broadcast failure | reject |
+| native+broadcast+cos RangeDim | CT9.0 / torch 2.6 | 1659 | 33.05 ms | 343.96 ms | corr 0.999135, SNR 27.76 dB, max abs 0.02783 | dynamic `add` broadcast failure | reject |
+
+The plain range package keeps explicit `tile`, and E5RT reports
+`All values of reps must be at least 1` during shape propagation. The
+tile-free native+broadcast graph removes that failure, but E5RT then reports
+`Shapes are not compatible for broadcasting` on dynamic `add`. CT9 does not
+change that outcome. Coremltools also refuses explicit output shapes for
+conversion outputs, so the dynamic output metadata cannot be fixed by simply
+declaring the traced waveform shape. This strongly suggests laishere's flexible
+inputs only work because its package boundary exposes different intermediate
+tensors and avoids the fused generator's dynamic broadcast surface; RangeDim is
+not a production path for our current final-waveform fused package.
+
+#### Style-specialized generator probe
+
+`scripts/probe_generator_style_specialization.py` tests a more aggressive
+voice-specialized graph: it bakes the `ref_s` vector from the tensor dump into
+the generator and replaces each `AdaIN1d` with fixed gamma/beta constants. The
+temporary package takes only `x_pre` and `har`, so it removes the per-inference
+style projection path. This is a benchmark/prototype tradeoff, not a drop-in
+production exporter, because it would require separate generator packages per
+voice/style.
+
+The graph does shrink materially. On the local 3s package, MIL ops dropped from
+`2207` to `1625`, removing all `linear`, `reshape`, `split`, and `tile` ops
+from the style path. Package size moved the wrong way, though: the specialized
+3s package is `315 MB` and the 7s package is `690 MB`, because the constants
+are baked into the package artifact.
+
+| Machine | Input | Fused median | Style-specialized median | Speedup vs fused | Parity vs fused | Decision |
+| --- | --- | ---: | ---: | ---: | --- | --- |
+| m2-studio | 3s | 31.3 ms | 31.9 ms | -1.98% | corr 0.999994, SNR 49.36 dB | reject |
+| m2-studio | 7s | 63.9 ms | 64.2 ms | -0.50% | corr 0.999995, SNR 50.65 dB | reject |
+| m2-air | 3s | 120.8 ms | 123.0 ms | -1.82% | corr 0.999994, SNR 49.73 dB | reject |
+| irvine-m1 | 3s | 167.8 ms | 170.8 ms | -1.79% | corr 0.999994, SNR 49.68 dB | reject |
+
+The result is important: deleting style-projection ops and tile ops from the
+MIL graph did not make prediction faster on any tested Mac, including the two
+machines where Config F still trails laishere's chain-only short rows. Core ML
+was apparently already handling the dynamic style path efficiently enough that
+constant-folding it is not a speed path. Do not pursue per-voice generator
+packages for performance without a new compiler/runtime reason.
+
+#### Laishere-style decoder+vocoder boundary probe
+
+`scripts/probe_decoder_vocoder_split.py` tests the broader boundary found in
+`laishere/kokoro-coreml`: a separate HAR-noise package, a dual-output body that
+includes decoder F0/N conv, decoder encode/decode, and the generator body, then
+a separate fp32 tail. The baseline is the same Swift tensor dump run through the
+checked-in `decoder_pre` package plus the checked-in fused HAR-post generator.
+
+Cross-machine `3s` results:
+
+| Candidate body units | Baseline median | Candidate median | Stage medians | Parity vs fused | Decision |
+| --- | ---: | ---: | --- | --- | --- |
+| m2-studio CPU+ANE | 32.9 ms | 119.5 ms | noise 12.0 ms, body 105.6 ms, tail 1.5 ms | corr 0.999917, SNR 38.19 dB | reject; ANE compiler failure emitted |
+| m2-studio CPU+GPU | 33.2 ms | 38.0 ms | noise 11.9 ms, body 24.7 ms, tail 1.4 ms | corr 0.999991, SNR 47.76 dB | reject |
+| m2-air CPU+ANE | n/a | n/a | n/a | n/a | reject; stopped after more than 110s in `ANECompilerService` |
+| m2-air CPU+GPU | 123.7 ms | 138.8 ms | noise 52.2 ms, body 84.4 ms, tail 2.1 ms | corr 0.999991, SNR 47.70 dB | reject |
+| irvine-m1 CPU+ANE | 176.3 ms | 314.6 ms | noise 75.2 ms, body 235.5 ms, tail 3.9 ms | corr 0.999907, SNR 37.69 dB | reject |
+| irvine-m1 CPU+GPU | 174.6 ms | 199.3 ms | noise 74.9 ms, body 119.8 ms, tail 4.8 ms | corr 0.999991, SNR 47.72 dB | reject |
+
+This closes the direct "copy laishere's decoder+vocoder split boundary" path for
+our current Swift dump contract on every tested Mac. The remaining laishere
+advantage on Irvine M1 short/medium rows is not explained by this boundary
+alone. It must come from laishere's full runtime/package details, a
+hardware-specific Core ML compile plan, or work reduction outside the reproduced
+boundary.
+
+#### F0-noise exact-shape reuse probe
+
+A one-off package-reuse probe fed the Swift tensor dumps into the pinned
+laishere `KokoroNoise`/`KokoroVocoder`/`KokoroTail` packages. This is not a
+drop-in implementation because it uses laishere's F0-driven noise source rather
+than our Swift HnSF/HAR tensor and the waveform is not numerically close to the
+current output. It is still useful because it tests the likely missing speed
+ingredient: delete the large HAR input and run exact dynamic `asr`/`F0` lengths.
+
+The shape effect is large. On local M2 Studio, feeding padded 3s tensors
+(`asr=120`, `F0=240`) made laishere's vocoder take `237.2 ms`; feeding natural
+`asr=112` dropped the vocoder to `58-64 ms`. On Irvine M1, padded 3s tensors
+took `245.1 ms` total for noise+vocoder+tail, while natural `asr=112` with
+`F0=240` took `135.4 ms`.
+
+Irvine M1 direct package-reuse timings:
+
+| Input | Shape | Noise+vocoder+tail | Current DecoderPre+HnSF+Generator stack | Estimated full Config F if substituted | Parity vs current dump | Decision |
+| --- | --- | ---: | ---: | ---: | --- | --- |
+| 3s | `asr=112`, `F0=240` | 135.4 ms | 199.3 ms | ~175.3 ms | corr 0.699830, SNR 0.56 dB | promising speed, not quality-safe |
+| 7s | `asr=270`, `F0=540` | 337.4 ms | 443.1 ms | ~404.5 ms | corr 0.701953, SNR 0.64 dB | promising speed, still trails laishere unless upstream also improves |
+
+The speed implication is concrete: replacing the M1 3s
+`DecoderPre + Swift HnSF + GeneratorFromHar` stack with an exact-shape
+F0-noise/vocoder/tail stack could put Config F roughly at the laishere 3s row.
+The quality implication is equally concrete: current correlation/SNR is far too
+low for a parity claim. The next optimization target should be a first-party
+F0-noise exact-shape probe with listening review and quality recovery, not more
+HAR-post repartitioning.
+
+#### First-party F0-noise exact-shape probe
+
+`scripts/probe_f0_noise_exact_shape.py` exports the F0-noise path from our own
+weights instead of reusing laishere packages. It keeps the checked-in
+`decoder_pre + GeneratorFromHar` packages as the baseline and compares them
+against first-party `F0_curve + style_timbre -> x_source_*`, decoder+generator
+body, and fp32 tail packages. The probe also records a PyTorch candidate
+reference so conversion drift can be separated from inherent path drift.
+
+The source-shape reduction is real: local `3s` natural-ASR export produces
+`x_source_0=[1,256,2240]` and `x_source_1=[1,128,13441]`, compared with the
+HAR-noise split's `x_source_0=[1,256,4800]` and `x_source_1=[1,128,28801]`.
+At `7s`, the natural-ASR export uses `x_source_0=[1,256,5400]` and
+`x_source_1=[1,128,32401]`; padded uses `x_source_0=[1,256,5600]` and
+`x_source_1=[1,128,33601]`.
+
+| Machine | Shape | Baseline median | Candidate median | Stage medians | Parity vs current dump | PyTorch candidate vs dump | Decision |
+| --- | --- | ---: | ---: | --- | --- | --- | --- |
+| m2-studio | natural `asr=112`, `F0=224` | 33.4 ms | 32.7 ms | noise 7.3 ms, body 23.5 ms, tail 2.1 ms | corr 0.814046, SNR 5.08 dB | corr 0.804153, SNR 4.54 dB | reject for quality; speed tie |
+| m2-studio | padded `asr=120`, `F0=240` | 33.5 ms | 33.7 ms | noise 7.6 ms, body 24.4 ms, tail 1.5 ms | corr 0.931896, SNR 9.19 dB | corr 0.939812, SNR 9.57 dB | reject; quality better but no speed |
+| irvine-m1 | natural `asr=112`, `F0=224` | 172.0 ms | 153.3 ms | noise 37.1 ms, body 111.4 ms, tail 4.6 ms | corr 0.814046, SNR 5.08 dB | corr 0.804153, SNR 4.54 dB | promising M1 speed, not quality-safe |
+| m2-studio | natural `asr=270`, `F0=540` | 63.1 ms | 56.5 ms | noise 12.8 ms, body 41.5 ms, tail 2.2 ms | corr 0.796791, SNR 4.77 dB | corr 0.795823, SNR 4.33 dB | faster, reject for quality |
+| m2-studio | padded `asr=280`, `F0=560` | 63.0 ms | 58.8 ms | noise 13.5 ms, body 43.0 ms, tail 2.3 ms | corr 0.962251, SNR 11.51 dB | corr 0.968596, SNR 12.51 dB | faster, quality closer but not parity |
+| irvine-m1 | natural `asr=270`, `F0=540` | 398.4 ms | 349.8 ms | noise 87.1 ms, body 255.3 ms, tail 8.0 ms | corr 0.796785, SNR 4.77 dB | corr 0.795823, SNR 4.33 dB | faster, reject for quality |
+| irvine-m1 | padded `asr=280`, `F0=560` | 390.8 ms | 358.9 ms | noise 89.6 ms, body 261.5 ms, tail 7.4 ms | corr 0.962306, SNR 11.52 dB | corr 0.968596, SNR 12.51 dB | faster, quality closer but not parity |
+| m2-studio | natural `asr=384`, `F0=768` | 86.0 ms | 76.4 ms | noise 18.2 ms, body 56.1 ms, tail 2.7 ms | corr 0.866976, SNR 6.55 dB | corr 0.843346, SNR 5.40 dB | faster, reject for quality |
+| m2-studio | padded `asr=400`, `F0=800` | 87.6 ms | 79.0 ms | noise 18.4 ms, body 57.8 ms, tail 2.8 ms | corr 0.955085, SNR 10.86 dB | corr 0.942765, SNR 9.78 dB | faster, quality closer but not parity |
+| irvine-m1 | natural `asr=384`, `F0=768` | 563.9 ms | 487.1 ms | noise 122.8 ms, body 353.5 ms, tail 10.2 ms | corr 0.867049, SNR 6.55 dB | not rerun | faster, reject for quality |
+| irvine-m1 | padded `asr=400`, `F0=800` | 565.7 ms | 509.0 ms | noise 127.5 ms, body 369.6 ms, tail 11.1 ms | corr 0.955223, SNR 10.87 dB | not rerun | faster, quality closer but not parity |
+| m2-studio | natural `asr=556`, `F0=1112` | 129.9 ms | 101.4 ms | noise 23.8 ms, body 74.5 ms, tail 3.2 ms | corr 0.838603, SNR 5.73 dB | corr 0.818057, SNR 4.78 dB | faster, reject for quality |
+| m2-studio | padded `asr=600`, `F0=1200` | 130.0 ms | 109.2 ms | noise 25.6 ms, body 79.5 ms, tail 3.6 ms | corr 0.956701, SNR 10.99 dB | corr 0.949135, SNR 10.29 dB | faster, quality closer but not parity |
+| m2-studio | natural `asr=1095`, `F0=2190` | 268.9 ms | 191.3 ms | noise 46.0 ms, body 139.6 ms, tail 5.6 ms | corr 0.794801, SNR 4.78 dB | corr 0.776711, SNR 3.98 dB | faster, reject for quality |
+| m2-studio | padded `asr=1200`, `F0=2400` | 269.9 ms | 211.4 ms | noise 50.5 ms, body 154.2 ms, tail 5.5 ms | corr 0.949790, SNR 10.40 dB | corr 0.943165, SNR 9.84 dB | faster, quality closer but not parity |
+
+This is a useful narrowing result. The first-party candidate reproduces the M1
+and `7s` speed opportunity without relying on external packages, but the PyTorch
+candidate itself diverges from the current HAR output. The `10s`, `15s`, and
+`30s` buckets keep the same pattern and complete the runtime bucket sweep:
+the F0-source path is faster, especially at natural shape, and the speedup grows
+with duration on local M2 Studio. The local PyTorch reference is already too far
+from the current dump, so the quality failure is inherent to the F0-noise/source
+formulation being tested, not a Core ML conversion bug. A shippable optimization
+must either make the F0-noise path match the current Swift HnSF/HAR source
+closely enough, or prove through listening review that the different source is
+acceptable. Until then, this is a research target rather than a production
+replacement.
+
+#### F0-source listening pack
+
+`scripts/create_f0_source_listening_pack.py` turns saved
+`probe_f0_noise_exact_shape.py` reports into reviewable WAV artifacts without
+re-exporting packages and without ASR/Whisper. It renders the Swift dump
+reference, checked-in baseline Core ML path, and F0-source candidate on the same
+tensor dump, then runs the repo's objective waveform-health gate and writes a
+fillable listening review.
+
+Local generated pack:
+
+```bash
+uv run --no-sync python scripts/create_f0_source_listening_pack.py \
+  --report \
+  outputs/f0_noise_exact_shape/3s_natural_asr_cos_rsqrt/report_f0_noise_exact_3s_local.json \
+  outputs/f0_noise_exact_shape/3s_cos_rsqrt/report_f0_noise_padded_3s_local.json \
+  outputs/f0_noise_exact_shape/7s_natural_asr_cos_rsqrt/report_f0_noise_exact_7s_local.json \
+  outputs/f0_noise_exact_shape/7s_cos_rsqrt/report_f0_noise_padded_7s_local.json \
+  --plots
+```
+
+Output index: `outputs/f0_source_listening/README.md`.
+
+| Candidate | Waveform health gate | Candidate vs baseline | Review WAV |
+| --- | --- | --- | --- |
+| natural `asr=112`, `F0=224` | `needs_listening` | corr 0.814034, SNR 5.08 dB, max 0.43998 | `outputs/f0_source_listening/3s_natural_asr_cos_rsqrt/wav/3s_natural_asr_cos_rsqrt_candidate.wav` |
+| padded `asr=120`, `F0=240` | `needs_listening` | corr 0.931895, SNR 9.19 dB, max 0.23766 | `outputs/f0_source_listening/3s_cos_rsqrt/wav/3s_cos_rsqrt_candidate.wav` |
+| natural `asr=270`, `F0=540` | `needs_listening` | corr 0.796791, SNR 4.77 dB, max 0.36303 | `outputs/f0_source_listening/7s_natural_asr_cos_rsqrt/wav/7s_natural_asr_cos_rsqrt_candidate.wav` |
+| padded `asr=280`, `F0=560` | `needs_listening` | corr 0.962251, SNR 11.51 dB, max 0.24742 | `outputs/f0_source_listening/7s_cos_rsqrt/wav/7s_cos_rsqrt_candidate.wav` |
+| natural `asr=384`, `F0=768` | `needs_listening` | corr 0.866976, SNR 6.55 dB, max 0.40681 | `outputs/f0_source_listening/10s_speed_branch/10s_natural_asr_cos_resblock_natural_asr_cos_rsqrt/wav/10s_natural_asr_cos_resblock_natural_asr_cos_rsqrt_candidate.wav` |
+| padded `asr=400`, `F0=800` | `needs_listening` | corr 0.955085, SNR 10.86 dB, max 0.27082 | `outputs/f0_source_listening/10s_speed_branch/10s_padded_cos_resblock_cos_rsqrt/wav/10s_padded_cos_resblock_cos_rsqrt_candidate.wav` |
+| natural `asr=556`, `F0=1112` | `needs_listening` | corr 0.838603, SNR 5.73 dB, max 0.34679 | `outputs/f0_source_listening/15s_speed_branch/15s_natural_asr_cos_resblock_natural_asr_cos_rsqrt/wav/15s_natural_asr_cos_resblock_natural_asr_cos_rsqrt_candidate.wav` |
+| padded `asr=600`, `F0=1200` | `needs_listening` | corr 0.956701, SNR 10.99 dB, max 0.31872 | `outputs/f0_source_listening/15s_speed_branch/15s_padded_cos_resblock_cos_rsqrt/wav/15s_padded_cos_resblock_cos_rsqrt_candidate.wav` |
+| natural `asr=1095`, `F0=2190` | `needs_listening` | corr 0.794801, SNR 4.78 dB, max 0.51957 | `outputs/f0_source_listening/30s_speed_branch/30s_natural_asr_cos_resblock_natural_asr_cos_rsqrt/wav/30s_natural_asr_cos_resblock_natural_asr_cos_rsqrt_candidate.wav` |
+| padded `asr=1200`, `F0=2400` | `needs_listening` | corr 0.949790, SNR 10.40 dB, max 0.28593 | `outputs/f0_source_listening/30s_speed_branch/30s_padded_cos_resblock_cos_rsqrt/wav/30s_padded_cos_resblock_cos_rsqrt_candidate.wav` |
+
+Interpretation: strict tensor parity still rejects both candidates, but the
+machine audio-health gate does not reject them as silence, clipping, or broken
+spectral content. The `7s` data keeps the speed-positive signal on both local
+M2 Studio and Irvine M1, and the `10s` data shows the same speed-positive,
+quality-negative pattern in the newly added runtime bucket. The `15s` and `30s`
+local probes complete the `3s`/`7s`/`10s`/`15s`/`30s` runtime bucket sweep and
+strengthen the trend: speedup grows with duration, while the same source quality
+gap remains. The padded source improves objective similarity while preserving
+some of that speed. The exact-shape F0-source path is now a human-listening
+question, not an automatic machine reject. It is still not production-approved
+until listening decisions accept the different source character or a
+quality-preserving source formulation closes the metric gap.
+
+#### F0/HAR source variant probes
+
+`scripts/probe_f0_source_variants.py` compares cheap PyTorch source/STFT
+variants against dumped Swift `har_source` and `har_padded` tensors before any
+Core ML export. The downsample approximation is not the quality culprit:
+`avg_pool` and linear interpolation are effectively tied at the source boundary
+(`3s` corr `0.93978`, `7s` corr `0.96731`). Recomputing STFT from the exact
+dumped Swift source gives exact magnitude but phase differs at the `+-pi`
+representation boundary; modulo `2*pi`, the phase error is tiny. Later
+debug-graph bisection supersedes the early waveform sensitivity check: once the
+same fused source graph is traced and inspected with intermediate outputs, the
+PyTorch `har_source -> waveform` path itself is only `3s` corr `0.987820` versus
+the Swift dump. So the compact source boundary has a real source/STFT convention
+gap even before Core ML scheduling enters.
+
+`scripts/probe_har_source_noise_split.py` exports a temporary
+`har_source + style -> x_source_*` package, then reuses the decoder-vocoder
+body/tail split. This tests a compact exact-source boundary without changing
+shipping packages.
+
+`scripts/probe_har_source_fused.py` tests the same compact exact-source
+boundary but keeps STFT, generator body, and iSTFT tail fused into one Core ML
+graph. This avoids the body/tail split drift, and is the better speed shape, but
+it still fails parity.
+
+`scripts/probe_coreml_stft_semantics.py` isolates the converted forward-STFT
+subgraph. It proves one concrete conversion bug: Core ML preserves the STFT
+`real`, `imag`, and `magnitude` tensors, but converted
+`torch.atan2(imag, real)` phase is wrong even with `compute_units=cpu_only`.
+`scripts/probe_har_source_fused_debug.py` then moves the bisection forward: with
+fp32 manual-atan phase, Core ML matches PyTorch through `har`, `x_source_*`,
+`pre_tail`, and `waveform`, but that PyTorch path still fails parity against the
+Swift dump.
+
+Local generated command examples:
+
+```bash
+uv run --no-sync python scripts/probe_f0_source_variants.py \
+  outputs/generator_isolation/dumps/3s \
+  outputs/generator_isolation/dumps/7s \
+  --output outputs/f0_source_variants/report_3s_7s.json
+
+uv run --no-sync python scripts/probe_har_source_noise_split.py \
+  outputs/generator_isolation/dumps/7s \
+  --decoder-pre-package coreml/kokoro_decoder_pre_7s.mlpackage \
+  --fused-package coreml/kokoro_decoder_har_post_7s.mlpackage \
+  --label 7s --warmup 2 --iterations 10
+
+uv run --no-sync python scripts/probe_har_source_fused.py \
+  outputs/generator_isolation/dumps/7s \
+  --fused-package coreml/kokoro_decoder_har_post_7s.mlpackage \
+  --label 7s --warmup 2 --iterations 10
+
+uv run --no-sync python scripts/probe_har_source_fused_debug.py \
+  outputs/generator_isolation/dumps/3s \
+  --label 3s_atan_manual_fp32 \
+  --phase-mode atan_manual \
+  --precision fp32 \
+  --compute-units cpu_only
+
+uv run --no-sync python scripts/probe_har_source_fused.py \
+  outputs/generator_isolation/dumps/3s \
+  --fused-package coreml/kokoro_decoder_har_post_3s.mlpackage \
+  --label 3s_atan_manual_fp32_padded \
+  --phase-mode atan_manual \
+  --precision fp32 \
+  --pad-har-to 28801 \
+  --warmup 2 --iterations 10
+```
+
+| Probe | Baseline median | Candidate median | Candidate vs dump | Decision |
+| --- | ---: | ---: | --- | --- |
+| `har_source` split, 3s padded | 35.2 ms | 36.5 ms | corr 0.980600, SNR 13.09 dB | reject: slower before source-generation cost and not parity |
+| `har_source` split, 7s padded | 67.4 ms | 62.8 ms | corr 0.979393, SNR 13.07 dB | reject/low priority: small speed before source-generation cost and not parity |
+| fused `har_source`, 3s fp16 | 30.3 ms | 26.4 ms | corr 0.980656, SNR 13.10 dB | speed-positive, blocked on Core ML parity |
+| fused `har_source`, 3s fp32 | 30.3 ms | 27.1 ms | corr 0.981718, SNR 13.19 dB | fp32 does not recover parity |
+| fused `har_source`, 3s `acos` phase | 29.5 ms | 25.5 ms | corr 0.987344, SNR 16.18 dB | better, still not parity |
+| fused `har_source`, 3s `atan_manual` phase | 31.1 ms | 27.2 ms | corr 0.987372, SNR 16.19 dB | better, still not parity |
+| fused `har_source`, 3s `atan_manual` fp32 | 31.4 ms | 27.1 ms | corr 0.987820, SNR 16.58 dB | Core ML matches PyTorch; PyTorch source boundary still not parity |
+| fused `har_source`, 3s `atan_manual` fp32 + HAR pad 28801 | 26.9 ms | 27.2 ms | corr 0.998808, SNR 26.44 dB | padding restores most quality but loses speed and still not strict parity |
+| fused `har_source`, 7s fp16 | 60.9 ms | 51.2 ms | corr 0.979271, SNR 13.06 dB | speed-positive, blocked on Core ML parity |
+
+Interpretation: exact dumped source improves quality over the F0-source path,
+but the Core ML/STFT source-boundary path still fails strict parity. The staged
+source split has too little speed margin once Swift source generation is
+counted. The fused source graph has enough package-level speed upside to remain
+a research target, but two separate blockers are now proven: native Core ML
+`atan2` conversion is broken, and even a Core ML-correct fp32 manual phase graph
+does not reproduce the current Swift HAR waveform closely enough.
+
+The STFT-only semantic probe gives the exact bisection:
+
+| STFT subgraph, 3s fp16 CPU-only | Core ML vs reference | Decision |
+| --- | --- | --- |
+| `real` | corr 1.000000, SNR 63.33 dB | good |
+| `imag` | corr 1.000000, SNR 62.97 dB | good |
+| `magnitude` | corr 1.000000, SNR 63.74 dB | good |
+| `atan2` phase | corr 0.818405 vs PyTorch, SNR 4.67 dB | broken conversion |
+| `acos` phase | wrapped mean abs 0.01285 rad | better modulo wrap, raw parity still bad |
+| `atan_manual` phase fp16 | wrapped mean abs 0.00369 rad | better modulo wrap, raw parity still bad |
+| `atan_manual` phase fp32 | corr 1.000000 vs PyTorch, SNR 152.00 dB | Core ML-safe replacement for `atan2` |
+
+The fused-debug probe then shows where the remaining error lives:
+
+| Fused debug, 3s `atan_manual` fp32 CPU-only | Core ML vs PyTorch | PyTorch/Core ML vs Swift dump |
+| --- | --- | --- |
+| `har` | corr 1.000000, SNR 152.03 dB | not the remaining Core ML drift |
+| `x_source_0` | corr 1.000000, SNR 87.04 dB | not the remaining Core ML drift |
+| `x_source_1` | corr 1.000000, SNR 79.55 dB | not the remaining Core ML drift |
+| `pre_tail` | corr 1.000000, SNR 86.21 dB | not the remaining Core ML drift |
+| `waveform` | corr 1.000000, SNR 72.24 dB | PyTorch/Core ML both corr 0.987820 vs Swift dump |
+
+Observed failure mode: converted `atan2` is quadrant-unsafe. For example, when
+`imag == 0` and `real < 0`, the Core ML phase can be `0` instead of `pi`. Manual
+`atan` in fp32 fixes that conversion bug. However, waveform parity remains below
+threshold because the compact source-boundary graph is not the same numerical
+contract as the current Swift HAR dump.
+
+Two contract details now matter:
+
+- The shipping `GeneratorFromHar` graph was traced against bucket-padded HAR
+  (`3s` input `[1,22,28801]`). Feeding the fused source graph's natural STFT
+  length (`3s` `[1,22,14401]`) changes the downstream noise-conv contract.
+  Padding the recomputed HAR back to `28801` restores most quality but removes
+  the speed edge and still misses strict parity.
+- The raw `+pi/-pi` branch mismatch is isolated to phase channel `10`
+  (Nyquist). Channels `0-9` match Swift essentially exactly. Replacing only the
+  Nyquist phase with the dumped Swift channel restores PyTorch waveform parity
+  to corr `0.999991`, SNR `47.76 dB`; setting it to `0`, `+pi`, or `-pi` is
+  worse. A production fused-source path therefore needs either the exact Swift
+  Nyquist convention in Core ML or a representation that removes raw Nyquist
+  phase as a learned feature.
+- Rebuilding the DFT basis with Swift-like `Float` trigonometry is not the
+  explanation. A Python scalar reproduction using float32 `2*pi*k*n/N`,
+  float32 Hann values, and float32 frame dot products keeps magnitude exact
+  (SNR `124.76 dB`) but makes Nyquist phase worse (`2871` raw `2*pi` branch
+  errors, channel-10 corr `0.139881`). The problem is the raw Nyquist branch
+  convention itself, not simply NumPy-double versus Swift-float basis constants.
+
+`scripts/probe_nyquist_phase_contribution.py` closes the tempting
+"neutralize/fold Nyquist phase" shortcut. The learned `noise_convs` do not put
+large raw weight mass on HAR channel `21` (Nyquist phase): conv0 uses about
+`0.71%` of absolute weight mass / `2.10%` of L2 mass, and conv1 uses about
+`0.70%` of absolute mass / `3.29%` of L2 mass. But the feature is still
+quality-sensitive because it is a time-varying learned input before residual
+conditioning.
+
+The probe also separates two effects that were easy to conflate:
+
+- At the compact natural HAR length, even exact dumped HAR is only about `3s`
+  corr `0.988453` / SNR `16.74 dB` and `7s` corr `0.985991` / SNR `16.01 dB`
+  against the Swift waveform. That confirms a natural-vs-padded generator
+  geometry loss independent of Nyquist branch choice.
+- At the padded shipping HAR length, dumped HAR recovers parity (`3s` corr
+  `0.9999909`, SNR `47.76 dB`; `7s` corr `0.9999955`, SNR `50.78 dB`), and
+  replacing only recomputed Nyquist with the dumped channel recovers essentially
+  the same result (`3s` corr `0.9999909`; `7s` corr `0.9999933`). But deployable
+  substitutes fail: zero Nyquist is only `3s` corr `0.998239` / SNR `24.82 dB`
+  and `7s` corr `0.998804` / SNR `26.43 dB`; mean Nyquist is `3s` corr
+  `0.998349` / SNR `25.25 dB` and `7s` corr `0.998915` / SNR `27.17 dB`;
+  constant `+pi`/`-pi` is worse.
+
+Decision: reject neutralizing, mean-folding, or constant-folding raw Nyquist
+phase as a production path. The fused-source speed path still needs either an
+exactly reproduced Swift Nyquist convention or a representation/model boundary
+that was trained or transformed to avoid raw phase discontinuities.
+
+#### Generator compute-unit ladder
+
+Swift generator-input isolation on local M2 Studio 3s confirms the current
+staged production placement is the right policy for this graph. Command shape:
+
+```bash
+swift/.build/release/kokoro-bench \
+  --models-dir coreml \
+  --inputs-dir outputs/swift_bench_inputs \
+  --hnsf-weights outputs/swift_bench_inputs/hnsf_weights.json \
+  --generator-input-dump outputs/generator_isolation/dumps/3s \
+  --compute-units cpuAndGPU \
+  --warmup 5 --iterations 20 \
+  --output outputs/generator_isolation/compute_units_3s_cpugpu.json
+```
+
+| Generator 3s compute units | Warm median predict |
+| --- | ---: |
+| `.all` | `28.071 ms` |
+| `cpuAndGPU` | `28.289 ms` |
+| `cpuOnly` | `99.673 ms` |
+| `cpuAndNeuralEngine` | `1517.266 ms` |
+
+The CPU+NE run printed
+`MILCompilerForANE error: failed to compile ANE model using ANEF`, then fell
+back to a very slow path. This rejects "just use ANE for the generator" as the
+M2 Air / Irvine M1 short-bucket fix. The remaining generator gap is a graph
+shape/export problem.
+
+#### Current laishere stage comparison
+
+The latest local stage comparison narrows what remains to beat on lower-end
+Macs. Against the corrected Config F HAR-direct-pad path:
+
+| Machine | Input | Config F wall | Config F generator | laishere total | laishere noise | laishere vocoder | laishere tail |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| m2-studio | 3s | 60.2 ms | 28.8 ms | 104.5 ms | 26.2 ms | 60.9 ms | 3.2 ms |
+| m2-studio | 7s | 110.5 ms | 58.3 ms | 192.7 ms | 37.6 ms | 125.7 ms | 4.8 ms |
+| m2-air | 3s | 151.7 ms | 120.6 ms | 153.0 ms | 46.1 ms | 73.8 ms | 3.8 ms |
+| m2-air | 7s | 335.0 ms | 277.6 ms | 334.7 ms | 92.4 ms | 175.9 ms | 10.7 ms |
+| irvine-m1 | 3s | 239.2 ms | 167.6 ms | 195.0 ms | 57.9 ms | 82.8 ms | 4.4 ms |
+| irvine-m1 | 7s | 510.2 ms | 387.6 ms | 444.2 ms | 114.1 ms | 216.5 ms | 9.8 ms |
+
+Interpretation: M2 Air is no longer a clear laishere loss once the corrected
+same-boundary stage profile is used; it is effectively tied at 3s/7s. Irvine M1
+still loses, and the loss is concentrated in the combined source/vocoder region:
+Config F HnSF+generator is `194.9 ms` at 3s and `434.7 ms` at 7s, versus
+laishere noise+vocoder+tail at `145.1 ms` and `340.4 ms`. Future lower-end Mac
+work should target that combined source/vocoder contract, not duration, F0,
+decoder-pre, compute-unit policy, or generic compression.
+
+#### Fused HnSF merge probe
+
+Rejected path: fusing the HnSF 9-to-1 linear merge into the harmonic loop
+slightly reduced the isolated HnSF stage in some local runs, but it did not
+improve warm full-pipeline inference. The probe kept the seeded Swift source
+contract, pre-generated the same Gaussian-noise layout, and accumulated each
+weighted harmonic directly into the merged source instead of materializing the
+`9 * L` sine/noise matrix for `vDSP_mmul`. The experimental runtime flag was
+removed after measurement to avoid carrying dead complexity.
+
+Local M2 Ultra, exact duration packages, staged compute units, N=10 warm median
+after three discarded preflight calls:
+
+| Input | Baseline wall | Fused wall | Wall delta | Baseline HnSF | Fused HnSF | Decision |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 3s | 56.42 ms | 60.16 ms | -3.74 ms | 10.86 ms | 9.65 ms | reject; wall slower |
+| 7s | 107.69 ms | 108.60 ms | -0.91 ms | 24.93 ms | 23.09 ms | reject; wall neutral/slower |
+
+Irvine M1, paired padded-duration artifact set available on that host, staged
+compute units, N=10 warm median after three discarded preflight calls:
+
+| Input | Baseline wall | Fused wall | Wall delta | Baseline HnSF | Fused HnSF | Baseline generator | Fused generator | Decision |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 3s | 295.94 ms | 299.34 ms | -3.40 ms | 11.24 ms | 10.72 ms | 166.59 ms | 166.27 ms | reject; wall slower |
+| 7s | 642.97 ms | 640.37 ms | +2.61 ms | 25.96 ms | 26.16 ms | 383.50 ms | 383.07 ms | reject; tiny, noisy wall win |
+
+The padded-duration M1 probe used a temporary checkout where `coreml` was a
+symlink. Swift `FileManager.contentsOfDirectory(at:)` did not enumerate exact
+duration packages through that symlink, even though direct package paths
+resolved. The discovery path now resolves the models directory symlink before
+enumeration; the fix was verified on Irvine with `--models-dir coreml`, where
+the benchmark discovered exact packages and selected `exact_t44`. A rerun with
+an absolute `--models-dir` selected `exact_t44` and `exact_t105` correctly:
+
+| Input | Exact-duration wall | Duration model | HnSF | Generator | Duration | F0Ntrain | DecoderPre |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 3s | 238.99 ms | exact_t44 | 19.12 ms | 166.02 ms | 23.07 ms | 10.21 ms | 3.17 ms |
+| 7s | 504.08 ms | exact_t105 | 27.76 ms | 383.08 ms | 40.64 ms | 11.57 ms | 5.72 ms |
+
+Conclusion: after the vDSP HnSF work, exact Swift HnSF is not large enough to
+close the lower-end Mac gap. On Irvine M1 with the exact-duration baseline,
+generator predict remains roughly `166 ms` for 3s and `383 ms` for 7s, while
+HnSF is `19 ms` and `28 ms`. The next quality-safe speed work should attack the
+generator/vocoder graph boundary, not further Swift source micro-optimizations.
+
+#### HAR input-trim probe
+
+`scripts/probe_generator_har_input_trim.py` tests a lower-risk variant of the
+exact-shape idea: keep the bucketed `x_pre` shape and current Swift HAR source,
+but export `GeneratorFromHar` with a shorter static `har` axis than the shipping
+`3s` package's `[1,22,28801]` input. This checks whether the zero-padded HAR tail
+can be removed without changing the source formulation.
+
+PyTorch sweep result: trimming to `har_time=27601` crosses `35 dB` SNR but still
+has a `0.027` max absolute waveform delta versus the full-HAR baseline.
+`har_time=28561` is the first strict local point with max error below `0.01`
+(`corr 0.999993`, SNR `49.25 dB`, max `0.00519` in PyTorch), but it only removes
+240 of 28,801 HAR frames.
+
+Core ML predict results:
+
+| Machine | HAR time | Baseline median | Candidate median | Speedup | Parity vs baseline | Decision |
+| --- | ---: | ---: | ---: | ---: | --- | --- |
+| m2-studio | 27601 | 30.22 ms | 29.90 ms | +1.07% | corr 0.999827, SNR 35.05 dB, max 0.02661 | reject; strict parity fail |
+| m2-studio | 28561 | 30.07 ms | 30.41 ms | -1.15% | corr 0.999983, SNR 45.13 dB, max 0.00737 | reject; quality-safe but slower |
+| irvine-m1 | 28561 | 168.36 ms | 167.64 ms | +0.43% | corr 0.999984, SNR 45.28 dB, max 0.00684 | reject; too small to close laishere gap |
+
+This closes the "just trim the HAR tail" path. It can recover less than one
+millisecond on M1 at strict parity, while the remaining laishere 3s gap is about
+`63 ms` at full-pipeline Config F and about `24 ms` at the generator-equivalent
+boundary. The speed target still requires a real source/vocoder formulation
+change, not a slightly shorter padded HAR input.
+
+#### HnSF vDSP optimization
+
+Current `main` vectorizes the Swift HnSF STFT path with cached 20-point DFT
+basis rows and `vDSP_desamp`, and vectorizes the harmonic 9-to-1 merge with
+`vDSP_mmul` + vForce `tanh`. This keeps the HnSF boundary in Swift/Accelerate
+but moves the hot sliding-dot-product loops out of scalar Swift.
+
+Measured HnSF stage speedup versus the earlier staged + exact run:
+
+| Machine | 3s | 7s | 10s | 15s | 30s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| m2-studio | 1.32x | 1.29x | 1.30x | 1.24x | 1.37x |
+| m2-air | 1.32x | 1.33x | 1.33x | 1.36x | 1.31x |
+| irvine-m1 | 1.37x | 1.23x | 1.29x | 1.27x | 1.31x |
+
+Measured total wall-clock speedup versus the earlier staged + exact run for
+the isolated vDSP change:
+
+| Machine | 3s | 7s | 10s | 15s | 30s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| m2-studio | 1.11x | 1.08x | 1.04x | 1.06x | 1.09x |
+| m2-air | 1.05x | 1.42x | 1.02x | 1.02x | 1.06x |
+| irvine-m1 | 1.05x | 1.05x | 1.02x | 1.02x | 1.02x |
+
+The local M2 Studio spot-check WAVs from the vDSP run passed the lightweight
+waveform-health probe against the previous staged + exact Config F outputs:
+duration, RMS, active fraction, zero-crossing rate, voiced-band energy, clipping,
+sample rate, and channel count stayed within the probe thresholds. This is a
+sanity check, not a new human-listening decision.
+
+### Hardware Placement Evidence
+
+This bakeoff records framework and compute-unit evidence. Local privileged
+`powermetrics` captures were added after the primary latency collection for
+Config F, MLX, Soniqo, and laishere placement context:
+
+- Config F's corrected paper-facing rows run the Swift `kokoro-bench` path over
+  Core ML packages with `--compute-units staged` and exact duration model
+  discovery. The result records include per-stage Core ML timings for Duration,
+  F0Ntrain, DecoderPre, generator, and Swift HnSF calls.
+- Local M2 Studio placement check: `powermetrics -i 500 -n 80 --samplers
+  cpu_power,gpu_power,ane_power` ran while a debug `kokoro-bench` process
+  executed a post-prime 3s Config F loop with five discarded preflight calls and
+  forty recorded warm calls. The recorded JSON is ignored at
+  `outputs/external_bakeoff/placement/results_config_f_reference_m2-studio_3s_warm_placement.json`.
+  The median warm call was `1.075376s` on a 2.8s output; this number is not used
+  in the paper table because it came from a debug binary and padded duration
+  artifacts. The placement signal was CPU/GPU-dominant: `ANE Power` had 80
+  samples with min/median/max `0/0/0 mW`, while `GPU HW active residency` had 80
+  samples with min/median/max `52.56/68.835/99.17%`. The last recorded call
+  spent `0.082838s` in Duration Core ML, `0.004875s` in F0Ntrain Core ML,
+  `0.004963s` in DecoderPre Core ML, `0.034667s` in generator Core ML, and
+  `0.915704s` in Swift HnSF.
+- MLX ran through the `mlx-audio` Python package and MLX model
+  `mlx-community/Kokoro-82M-bf16`; prior host setup recorded MLX default device
+  as `gpu` on M2 Air, and MLX routes array kernels through Metal on Apple
+  Silicon.
+- Local M2 Studio MLX placement check: the pinned `mlx-audio 0.4.3` adapter ran
+  a 7s input with thirty recorded warm calls while `powermetrics` sampled every
+  500 ms with `cpu_power,gpu_power,ane_power`. The recorded JSON is ignored at
+  `outputs/external_bakeoff/placement/results_mlx_audio_m2-studio_7s_warm_placement.json`.
+  Median warm time was `0.2207245s` for a 6.75s output. The placement signal was
+  MLX/Metal as expected: `ANE Power` had 114 samples with min/median/max
+  `0/0/0 mW`, while `GPU HW active residency` had 114 samples with
+  min/median/max `32.6/49.435/98.28%`.
+- Soniqo ran Swift `KokoroTTSModel.fromPretrained(computeUnits: .all)` and
+  loaded Core ML through `MLModel` via the public `speech-swift` KokoroTTS
+  surface.
+- Local M2 Studio Soniqo placement check: the generated Swift CLI rebuilt from
+  the pinned `speech-swift` checkout at
+  `0d09a2ed5464c7c94cf4545be59043c21f8775ea`, ran `computeUnits: .all`, and
+  synthesized the 3s input with thirty recorded warm calls while `powermetrics`
+  sampled every 500 ms with `cpu_power,gpu_power,ane_power`. The recorded JSON
+  is ignored at
+  `outputs/external_bakeoff/placement/results_soniqo_m2-studio_3s_warm_placement.json`.
+  Median warm time was `0.0690795s` for a 2.7s output. `ANE Power` had 120
+  samples with min/median/max `0/0/0 mW`, while `GPU HW active residency` had
+  120 samples with min/median/max `31.55/50.465/98.15%`.
+- laishere ran seven `.mlpackage` Core ML models converted from its public repo.
+  Its timed boundary is the Core ML chain only.
+- Local M2 Studio laishere placement check: the pinned
+  `laishere/kokoro-coreml` checkout at
+  `484907db6a8347a6afb6e7b86850ea2878c6a3fb` was reconverted under a disposable
+  Python venv. Conversion produced all seven `.mlpackage` files but its own
+  end-to-end validation failed in `KokoroPostAlbert` with a Core ML
+  dynamic-shape BNNS/Espresso error under this newer local stack. The generated
+  packages still ran through the bakeoff adapter on the 3s input, so a placement
+  trace was captured with thirty recorded warm calls while `powermetrics`
+  sampled every 500 ms. The recorded JSON is ignored at
+  `outputs/external_bakeoff/placement/results_laishere_m2-studio_3s_warm_placement.json`.
+  Median warm time was `0.091534s` for a 2.775s output. `ANE Power` had 97
+  samples with min/median/max `0/0/0 mW`, while `GPU HW active residency` had 97
+  samples with min/median/max `38.54/54.23/94.25%`.
+
+The historical Config F placement capture is not ANE-residency proof for the
+corrected paper thesis. It is the opposite for that captured local debug path:
+Core ML was allowed to use all compute units, but the measured M2 Studio loop
+showed no ANE power draw and substantial GPU activity. That matches the
+existing compute-unit ablation note: the staged runtime keeps the ANE-eligible
+decoder-pre island separate and deliberately keeps the ANE-hostile generator on
+CPU/GPU. The MLX capture is useful GPU evidence for the primary MLX competitor.
+The Soniqo capture proves the primary iOS/Core ML comparator was also not
+ANE-resident on this M2 Studio run despite `.all`. The laishere backup trace
+likewise showed no ANE power on this local M2 Studio 3s run, with the
+conversion-validation caveat above.
+
+### Quality Caveats
+
+Every successful cell wrote a mono 24 kHz spot-check WAV and passed the
+lightweight waveform sanity gate: duration, RMS, active fraction,
+zero-crossing rate, speech-band energy, clipping, sample rate, and channel
+count. Human listening is recorded in
+`outputs/external_bakeoff/listening/external_bakeoff_listening_decisions.csv`;
+the operator listened to all successful rows and marked all 57 successful audio
+rows `pass` because the audio was valid. The reproducible listening checklist
+can be generated with
+`python scripts/external_bakeoff/create_listening_review.py`; it writes
+Markdown, local HTML, and a fillable
+`external_bakeoff_listening_decisions.csv` under
+`outputs/external_bakeoff/listening/` using only the collected Kokoro TTS WAVs.
+The CSV intentionally leaves `human_decision` blank until the operator listens;
+regeneration preserves existing decisions by default.
+After filling the CSV, run
+`python scripts/external_bakeoff/validate_listening_decisions.py`; it must pass
+before any latency cell is interpreted as quality parity.
+The overall plan-completion check is
+`python scripts/external_bakeoff/verify_external_bakeoff_completion.py`; it
+passes with `result_record_count=65`, `ios_preflight_ok=true`, and
+`decisions={'pass': 57}`.
+
+Known caveats:
+
+- **MLX 3s:** every machine failed the shared 3s input with
+  `ValueError: [broadcast_shapes] Shapes (1,67200,1) and (1,67500,9) cannot be broadcast.`
+  This is recorded as public-implementation behavior for the current pinned
+  clone and manifest text.
+- **Soniqo long buckets:** the public Soniqo Kokoro artifact emits 5.0s audio
+  for the 7s, 10s, 15s, and 30s inputs because the upstream public Core ML repo
+  only publishes `kokoro_5s.mlmodelc`. These cells are implementation behavior,
+  not long-bucket quality-parity evidence.
+- **laishere boundary:** laishere is the long-bucket Core ML backup, but its
+  numbers exclude G2P and feed preparation.
+
+### Interpretation
+
+The corrected Mac data supports the narrower and stronger claim that Config F's
+staged + exact-duration Swift/Core ML path is faster than the pinned MLX
+implementation on every MLX-comparable warmed inference cell. MLX still fails
+the shared `3s` input, so there is no valid MLX `3s` comparison.
+
+The broad claim that Config F is the absolute fastest way to run Kokoro on
+every Apple device is not proven yet. laishere's Core ML chain remains faster on
+M2 Air `3s`/`7s`/`10s`/`15s` and M1 `3s`/`7s`/`10s`/`15s`, although it is not
+an equivalent end-to-end TTS boundary because G2P and feed preparation are
+excluded. Config F now beats laishere on every M2 Studio bucket, M2 Air `30s`,
+and M1 `30s`. Soniqo is a useful iOS/Core ML comparator, but its public artifact
+emits 5s audio for the long buckets, so its long-bucket latency cannot prove
+full-duration parity. The connected iPhone currently has Soniqo-on-device
+results only; Config F has not yet been ported and benchmarked on that iPhone.
+
+The next optimization target is clear: make the generator stage faster on M2 Air
+and M1, then rerun against laishere's chain-only boundary and an on-device
+iPhone Config F runner. HnSF is now materially faster and the redundant
+generator-input copies are gone, but generator prediction still dominates M2 Air
+and M1 wall time. Until that is done, the defensible paper claim is: faster than
+the pinned MLX implementation on warmed Mac inference, with remaining work to
+prove absolute fastest across every device and every comparator boundary.
+
 ## Method
 
 - Forced the synthesis path to `decoder_har_post_bucket_impl` only
@@ -1952,6 +3240,81 @@ Same corrected v5 harness as the M2 Air run (all audit bugs fixed: bucket parity
 ### Plan reference
 
 Bakeoff plan Phase 7: `README/Plans/kokoro-bakeoff-v2.md`
+
+---
+
+## External bakeoff follow-up: laishere fp16 vocoder interface probe
+
+**First collected:** 2026-06-06
+**Status:** Rejected as optimization path
+
+Source audit showed laishere's `KokoroVocoder` uses fp16 Core ML inputs,
+`CPU_AND_NE`, and int8-palettized weights, while our first-party split probes
+had declared the same body boundary as fp32. `scripts/probe_f0_noise_exact_shape.py`
+and `scripts/probe_decoder_vocoder_split.py` now expose `--body-input-dtype` so
+that interface contract can be reproduced explicitly.
+
+On local M2 Studio 3s, the F0-source split with fp16 body inputs is not a win:
+
+| Variant | Baseline total | Candidate total | Candidate noise | Candidate body | Candidate tail | Corr | SNR |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| fp16 body inputs | 34.37 ms | 223.14 ms | 7.28 ms | 213.99 ms | 1.97 ms | 0.931413 | 9.17 dB |
+| fp16 body inputs + body palettization | 32.69 ms | 223.07 ms | 6.66 ms | 214.56 ms | 1.74 ms | 0.930939 | 9.14 dB |
+
+Both variants fail the strict quality gate and are far slower than the current
+warm generator path. Package inspection shows the palettized body shrank from
+`97.8 MB` to `49.2 MB` and gained `101` LUT ops, but runtime stayed pinned at
+~`214 ms` for the body. This closes the "we missed laishere's fp16/palette
+vocoder contract" hypothesis for the current static 3s export.
+
+The same fp16-input + palettized-body probe converted with `--deployment-target
+ios17` was slower again: baseline `34.34 ms`, candidate `265.89 ms`, body
+`256.57 ms`, corr `0.930895`, SNR `9.13 dB`. Deployment target alone is not the
+missing laishere speed ingredient for this static-body probe.
+
+The laishere-style math rewrite remains speed-relevant: with `--cos-snake
+--patch-resblock-scale`, the same F0-source split is slightly faster at local
+3s (`30.63 ms` vs `30.88 ms`) and faster at local 7s (`57.03 ms` vs
+`61.26 ms`, +6.9%). It still fails strict waveform quality (`3s` corr
+`0.931895`, SNR `9.19 dB`; `7s` corr `0.962251`, SNR `11.51 dB`). This is the
+current best speed-positive source/vocoder research branch, but it is not
+production-eligible until source quality is recovered or a human listening gate
+accepts the drift.
+
+A 3s rerun with `--include-torch-reference` shows the quality loss is already
+present before Core ML: baseline vs dump is corr `0.999996`, SNR `51.60 dB`,
+while the PyTorch F0-source candidate vs dump is corr `0.939812`, SNR
+`9.57 dB`. The next optimization work should recover the source formulation or
+accept/reject the drift by listening review; more conversion flags are unlikely
+to solve this branch.
+
+Rendered a no-ASR listening pack for the 3s and 7s cos/residual speed branch at
+`outputs/f0_source_listening/cos_resblock_speed_branch/README.md`. Both
+candidates are `needs_listening` with no waveform-health reject reasons. This
+does not approve the branch; it creates the human review artifact the user
+requested after skipping Whisper/ASR.
+
+Phase-mode recovery was tested and rejected for the 3s cos/residual F0-source
+branch. `scripts/probe_f0_noise_exact_shape.py` now supports `--phase-mode`;
+`acos` gave the best alternate result (candidate `32.54 ms` vs baseline
+`32.79 ms`, corr `0.949566`, SNR `10.34 dB`) but still failed strict quality.
+`atan_swift` preserved speed but worsened quality (corr `0.915815`, SNR
+`7.44 dB`). The next step is source formulation or listening acceptance, not
+more phase branch tuning.
+
+The source formulation gap is now proven. `scripts/probe_f0_source_variants.py`
+has a `swift_like_seeded` variant that matches dumped Swift `har_source` at
+essentially perfect parity (`3s` SNR `138.15 dB`, `7s` SNR `139.65 dB`). The
+deterministic CoreML-friendly/laishere-style source stays at corr `0.93978`
+for 3s and `0.96731` for 7s. Laishere is faster partly because it moves this
+source work into a simplified Core ML graph; that is not strict-equivalent to
+our current seeded Double-accumulator Swift HnSF contract.
+
+Keeping exact Swift HAR and only splitting the laishere-style noise/body/tail
+is not a win locally. The exact-HAR cos/residual split passes quality, but is
+slower: 3s `36.76 ms` vs `32.07 ms`, and 7s `67.72 ms` vs `60.88 ms`. That path
+is rejected for production unless a lower-end remote device contradicts the
+local result.
 
 ---
 

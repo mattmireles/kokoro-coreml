@@ -133,6 +133,37 @@ final class MLMultiArrayBindingTests: XCTestCase {
         )
     }
 
+    func testZeroPad3DReusesExactShapeArray() throws {
+        let source = try makeFloatArray(shape: [1, 2, 3], values: [1, 2, 3, 4, 5, 6])
+        let padded = try zeroPad3D(source: source, channels: 2, targetTime: 3)
+
+        XCTAssertTrue(source === padded)
+        XCTAssertEqual(floatValues(from: padded), [1, 2, 3, 4, 5, 6])
+    }
+
+    func testZeroPad3DFromFlatChannelMajorValues() throws {
+        let padded = try zeroPad3D(
+            sourceValues: [1, 2, 3, 10, 20, 30],
+            channels: 2,
+            sourceTime: 3,
+            targetTime: 5
+        )
+
+        XCTAssertEqual(padded.shape.map { $0.intValue }, [1, 2, 5])
+        XCTAssertEqual(floatValues(from: padded), [1, 2, 3, 0, 0, 10, 20, 30, 0, 0])
+    }
+
+    func testZeroPad3DFromFlatRejectsMismatchedCount() throws {
+        XCTAssertThrowsError(
+            try zeroPad3D(
+                sourceValues: [1, 2, 3, 4, 5],
+                channels: 2,
+                sourceTime: 3,
+                targetTime: 5
+            )
+        )
+    }
+
     func testValidateDurationAgreementRejectsHalfLengthAudio() throws {
         XCTAssertThrowsError(
             try validateDurationAgreement(inputKey: "15s", canonical: 13.9, observed: 6.4)
@@ -143,6 +174,31 @@ final class MLMultiArrayBindingTests: XCTestCase {
         XCTAssertNoThrow(
             try validateDurationAgreement(inputKey: "15s", canonical: 13.9, observed: 13.7)
         )
+    }
+
+    func testPcmJoinerCrossfadesSyntheticDiscontinuity() {
+        let first = Array(repeating: Float(1.0), count: 240)
+        let second = Array(repeating: Float(-1.0), count: 240)
+
+        let joined = PcmJoiner.join(segments: [first, second], sampleRate: 24_000, crossfadeMs: 5)
+
+        XCTAssertLessThan(joined.count, first.count + second.count)
+        XCTAssertGreaterThan(joined[120], -1.0)
+        XCTAssertLessThan(joined[120], 1.0)
+    }
+
+    func testPcmJoinerDefaultCrossfadeMatchesProductionPolicy() {
+        XCTAssertEqual(PcmJoiner.defaultCrossfadeMs, 5.0)
+    }
+
+    func testPcmJoinerPreservesConcatenationWhenDisabled() {
+        let joined = PcmJoiner.join(
+            segments: [[1.0, 2.0], [], [3.0, 4.0]],
+            sampleRate: 24_000,
+            crossfadeMs: 0
+        )
+
+        XCTAssertEqual(joined, [1.0, 2.0, 3.0, 4.0])
     }
 
     func testTensorDumpWriterWritesManifestAndPayloads() throws {
