@@ -32,4 +32,4 @@ guides and link from a one-line comment in code.
 
 - `documentation` skill (`.claude/skills/documentation/`; `.cursor/skills` and
   `.agents/skills` symlink to `.claude/skills`)
-- [Kokoro-to-CoreML-conversion.md](../../Kokoro-to-CoreML-conversion.md)
+- [Kokoro-to-CoreML-conversion.md](../apple-silicon/Kokoro-to-CoreML-conversion.md)

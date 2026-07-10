@@ -39,4 +39,61 @@ final class BenchmarkTests: XCTestCase {
             )
         }
     }
+
+    func testHnsfTiming10sSourceOnly() {
+        // Measures the part still needed by a har_source -> Core ML fused package.
+        let f0 = [Float](repeating: 200.0, count: 800)
+        measure {
+            let f0Up = f0Upsample(f0)
+            let _ = sineGen(
+                f0Upsampled: f0Up,
+                linearWeights: linearWeights,
+                linearBias: linearBias,
+                seed: 42
+            )
+        }
+    }
+
+    func testHnsfTiming10sStftOnly() {
+        // Measures the part a har_source -> Core ML fused package removes from Swift.
+        let f0 = [Float](repeating: 200.0, count: 800)
+        let f0Up = f0Upsample(f0)
+        let source = sineGen(
+            f0Upsampled: f0Up,
+            linearWeights: linearWeights,
+            linearBias: linearBias,
+            seed: 42
+        )
+        measure {
+            let _ = stftTransform(source)
+        }
+    }
+
+    func testHnsfTiming30sSourceOnly() {
+        // 30s bucket: full_f0_len = 2400 (30 * 24000 / 300)
+        let f0 = [Float](repeating: 200.0, count: 2400)
+        measure {
+            let f0Up = f0Upsample(f0)
+            let _ = sineGen(
+                f0Upsampled: f0Up,
+                linearWeights: linearWeights,
+                linearBias: linearBias,
+                seed: 42
+            )
+        }
+    }
+
+    func testHnsfTiming30sStftOnly() {
+        let f0 = [Float](repeating: 200.0, count: 2400)
+        let f0Up = f0Upsample(f0)
+        let source = sineGen(
+            f0Upsampled: f0Up,
+            linearWeights: linearWeights,
+            linearBias: linearBias,
+            seed: 42
+        )
+        measure {
+            let _ = stftTransform(source)
+        }
+    }
 }

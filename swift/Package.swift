@@ -12,6 +12,7 @@ let package = Package(
     products: [
         .library(name: "KokoroPipeline", targets: ["KokoroPipeline"]),
         .executable(name: "kokoro-bench", targets: ["KokoroBenchmark"]),
+        .executable(name: "kokoro-hnsf-bench", targets: ["KokoroHnsfBenchmark"]),
     ],
     targets: [
         .target(
@@ -22,6 +23,11 @@ let package = Package(
             name: "KokoroBenchmark",
             dependencies: ["KokoroPipeline"],
             path: "Sources/KokoroBenchmark"
+        ),
+        .executableTarget(
+            name: "KokoroHnsfBenchmark",
+            dependencies: ["KokoroPipeline"],
+            path: "Sources/KokoroHnsfBenchmark"
         ),
         .testTarget(
             name: "KokoroPipelineTests",

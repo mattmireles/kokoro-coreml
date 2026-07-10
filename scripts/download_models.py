@@ -29,10 +29,13 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 HF_REPO_ID = "mattmireles/kokoro-coreml"
 
 # Patterns for each download group.  Matched against HF repo file paths.
+# The HF repo hosts only the curated runtime set under coreml/ (DecoderPre +
+# HAR-post buckets, F0Ntrain frame sizes, duration token sizes). Legacy
+# coreml_fp32/ and KokoroVocoder.mlpackage were removed from HF in June 2026;
+# the Swift runtime (swift/Sources/KokoroPipeline/KokoroPipeline.swift) never
+# loads them.
 COREML_PATTERNS = [
     "coreml/**",
-    "coreml_fp32/**",
-    "KokoroVocoder.mlpackage/**",
 ]
 VOICE_PATTERNS = [
     "kokoro.js/voices/*.bin",
@@ -207,7 +210,10 @@ def main() -> None:
 
     # Verify key artifacts exist and are complete (have Manifest.json).
     checks = [
-        ("coreml/kokoro_duration.mlpackage", "Duration model"),
+        ("coreml/kokoro_duration.mlpackage", "Duration model (legacy fallback)"),
+        ("coreml/kokoro_duration_t512.mlpackage", "Duration t512"),
+        ("coreml/kokoro_f0ntrain_t120.mlpackage", "F0Ntrain t120"),
+        ("coreml/kokoro_decoder_pre_3s.mlpackage", "DecoderPre 3s"),
         ("coreml/kokoro_decoder_har_post_3s.mlpackage", "HAR-post 3s"),
         ("coreml/kokoro_decoder_har_post_10s.mlpackage", "HAR-post 10s"),
     ]

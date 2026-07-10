@@ -10,6 +10,10 @@ April 14, 2026
 - **[Hugging Face Transformers on Apple Silicon](HF-transformers-MPS-guide.md)**: MPS-side Trainer and dtype pitfalls that surface again at export time.
 - **[PyTorch LSTM → Core ML (padding, EnumeratedShapes)](CoreML-LSTM-export-guide.md)**: BiLSTM padding, MIL `lstm` limits, `ct.EnumeratedShapes`, and ANE tradeoffs for recurrent exports.
 - **[LSTM enumerated shapes and ANE (deep dive)](CoreML-LSTM-Enumerated-Shapes.md)**: Flexible inputs, `RangeDim` vs enumerated lists, verification tooling, and Swift inference caveats.
+- **[Kokoro M1 vocoder boundary research brief](../../Notes/Kokoro-M1-vocoder-boundary-research-brief.md)**: Current Kokoro-specific lower-end Mac gap, falsified Core ML placement paths, and the exact research target for beating laishere without repeating failed `.all` or split-boundary probes.
+- **[Core ML vs MLX vocoder scheduling (ConvTranspose / iSTFT)](Core%20ML-MLX-Scheduling-1D-ConvTranspose-ISTFTNet-vocoders-guide.md)**: Fixed per-inference handoff cost, ISTFTNet boundary placement, dual-output ANE anchor, and why MLX short-bucket wins do not imply ANE is beatable.
+- **[Core ML ANE compiler failure triage](CoreML-ANE-compiler-failure-triage-guide.md)**: Execution-plan failures, compute-unit matrix discipline, and silent fallback separation.
+- **[iPhone Core ML device lab runbook](iPhone-CoreML-device-lab-runbook.md)**: Physical-device setup, foreground policy, and evidence capture for warmed iPhone Core ML rows.
 
 The landscape of on-device machine learning execution on Apple Silicon is defined by a delicate interplay between high-level software abstraction and rigid, heterogeneous hardware architecture. Core ML serves as the primary orchestration layer, designed to seamlessly distribute mathematical operations across the Central Processing Unit (CPU), Graphics Processing Unit (GPU), and the highly specialized Apple Neural Engine (ANE).1 However, beneath this polished abstraction lies a complex, opaque scheduling heuristic characterized by stringent hardware constraints, volatile graph partitioning logic, and a pervasive phenomenon known within the engineering community as "silent fallback".2
 

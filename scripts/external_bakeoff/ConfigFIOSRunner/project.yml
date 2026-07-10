@@ -1,0 +1,69 @@
+name: ConfigFIOSRunner
+options:
+  bundleIdPrefix: com.kokoro.externalbakeoff
+  deploymentTarget:
+    iOS: "18.0"
+
+targets:
+  ConfigFIOSRunner:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+      - path: ../../../swift/Sources/KokoroPipeline
+    postCompileScripts:
+      - name: Copy benchmark resources
+        script: |
+          set -euo pipefail
+          RESOURCE_DIR="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}"
+          REPO_ROOT="${PROJECT_DIR}/../../.."
+          mkdir -p "${RESOURCE_DIR}"
+
+          copy_item() {
+            local src="$1"
+            local name
+            name="$(basename "${src}")"
+            rm -rf "${RESOURCE_DIR}/${name}"
+            /usr/bin/ditto "${src}" "${RESOURCE_DIR}/${name}"
+          }
+
+          for name in \
+            kokoro_duration_exact_t44.mlpackage \
+            kokoro_duration_exact_t105.mlpackage \
+            kokoro_duration_exact_t156.mlpackage \
+            kokoro_duration_exact_t219.mlpackage \
+            kokoro_duration_exact_t476.mlpackage \
+            kokoro_f0ntrain_t120.mlpackage \
+            kokoro_f0ntrain_t280.mlpackage \
+            kokoro_f0ntrain_t400.mlpackage \
+            kokoro_f0ntrain_t600.mlpackage \
+            kokoro_f0ntrain_t1200.mlpackage \
+            kokoro_decoder_pre_3s.mlpackage \
+            kokoro_decoder_pre_7s.mlpackage \
+            kokoro_decoder_pre_10s.mlpackage \
+            kokoro_decoder_pre_15s.mlpackage \
+            kokoro_decoder_pre_30s.mlpackage \
+            kokoro_decoder_har_post_3s.mlpackage \
+            kokoro_decoder_har_post_7s.mlpackage \
+            kokoro_decoder_har_post_10s.mlpackage \
+            kokoro_decoder_har_post_15s.mlpackage \
+            kokoro_decoder_har_post_30s.mlpackage
+          do
+            copy_item "${REPO_ROOT}/coreml/${name}"
+          done
+
+          for name in 3s.json 7s.json 10s.json 15s.json 30s.json hnsf_weights.json
+          do
+            copy_item "${REPO_ROOT}/outputs/swift_bench_inputs/${name}"
+          done
+    info:
+      path: Sources/Info.plist
+      properties:
+        UILaunchScreen: {}
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.kokoro.externalbakeoff.ConfigFIOSRunner
+      CODE_SIGN_STYLE: Automatic
+      DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
+      SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+      SUPPORTS_MACCATALYST: NO
+      SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO

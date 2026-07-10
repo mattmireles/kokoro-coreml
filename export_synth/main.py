@@ -29,6 +29,11 @@ def main() -> None:
             "or 'full' (experimental full synthesizer)"
         ),
     )
+    parser.add_argument(
+        "--rewrite-ups-conv-transpose",
+        action="store_true",
+        help="For decoder-har exports, rewrite main generator ConvTranspose1d upsamples as zero-insert conv1d.",
+    )
     args = parser.parse_args()
 
     try:
@@ -40,6 +45,7 @@ def main() -> None:
             precision=args.precision,
             backend=args.backend,
             mode=args.mode,
+            rewrite_ups_conv_transpose=args.rewrite_ups_conv_transpose,
         )
         print("\n\n🎉 Synthesizer export complete. You're ready to ship.")
     except Exception as e:

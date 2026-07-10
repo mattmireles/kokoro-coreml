@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import statistics
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +45,47 @@ def _metrics(reference: np.ndarray, candidate: np.ndarray) -> dict[str, Any]:
     }
 
 
+def _compute_unit(coremltools: Any, name: str) -> Any:
+    mapping = {
+        "all": coremltools.ComputeUnit.ALL,
+        "cpuAndGPU": coremltools.ComputeUnit.CPU_AND_GPU,
+        "cpuAndNeuralEngine": coremltools.ComputeUnit.CPU_AND_NE,
+        "cpuOnly": coremltools.ComputeUnit.CPU_ONLY,
+    }
+    return mapping[name]
+
+
+def _timing_summary(times_s: list[float]) -> dict[str, Any]:
+    if not times_s:
+        return {
+            "iterations": 0,
+            "times_s": [],
+            "min_s": None,
+            "max_s": None,
+            "mean_s": None,
+            "median_s": None,
+            "p90_s": None,
+        }
+    sorted_times = sorted(times_s)
+    p90_index = min(len(sorted_times) - 1, int(round(0.9 * (len(sorted_times) - 1))))
+    return {
+        "iterations": len(times_s),
+        "times_s": times_s,
+        "min_s": float(min(times_s)),
+        "max_s": float(max(times_s)),
+        "mean_s": float(statistics.fmean(times_s)),
+        "median_s": float(statistics.median(times_s)),
+        "p90_s": float(sorted_times[p90_index]),
+    }
+
+
+def _timed_predict(model: Any, inputs: dict[str, np.ndarray]) -> tuple[dict[str, Any], float]:
+    start = time.perf_counter()
+    prediction = model.predict(inputs)
+    elapsed = time.perf_counter() - start
+    return prediction, elapsed
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     import coremltools as ct
 
@@ -52,14 +95,22 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if missing:
         raise SystemExit(f"tensor dump missing required tensors: {missing}")
 
-    model = ct.models.MLModel(str(args.package))
-    prediction = model.predict(
-        {
-            "x_pre": tensors["x_pre_padded"].astype(np.float32),
-            "ref_s": tensors["ref_s"].astype(np.float32),
-            "har": tensors["har_padded"].astype(np.float32),
-        }
-    )
+    inputs = {
+        "x_pre": tensors["x_pre_padded"].astype(np.float32),
+        "ref_s": tensors["ref_s"].astype(np.float32),
+        "har": tensors["har_padded"].astype(np.float32),
+    }
+    model = ct.models.MLModel(str(args.package), compute_units=_compute_unit(ct, args.compute_units))
+    prediction, first_prediction_time_s = _timed_predict(model, inputs)
+    warmup_times_s = []
+    for _ in range(args.warmup):
+        prediction, elapsed = _timed_predict(model, inputs)
+        warmup_times_s.append(float(elapsed))
+    iteration_times_s = []
+    for _ in range(args.iterations):
+        prediction, elapsed = _timed_predict(model, inputs)
+        iteration_times_s.append(float(elapsed))
+
     key = "waveform" if "waveform" in prediction else next(iter(prediction))
     waveform_full = np.asarray(prediction[key], dtype=np.float32)
     trim_len = int(manifest.get("metadata", {}).get("trim_len") or tensors["waveform"].size)
@@ -68,7 +119,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     report = {
         "tensor_dump": str(args.tensor_dump),
         "package": str(args.package),
+        "compute_units": args.compute_units,
         "prediction_key": key,
+        "first_prediction_time_s": float(first_prediction_time_s),
+        "warmup": _timing_summary(warmup_times_s),
+        "warmed": _timing_summary(iteration_times_s),
         "reference_metadata": manifest.get("metadata", {}),
         "waveform_full_metrics": _metrics(tensors["waveform_full"], waveform_full),
         "waveform_trimmed_metrics": _metrics(tensors["waveform"], waveform),
@@ -92,14 +147,29 @@ def main() -> None:
     parser.add_argument("--write-json", default=None)
     parser.add_argument("--min-corr", type=float, default=0.99)
     parser.add_argument("--min-snr", type=float, default=35.0)
+    parser.add_argument(
+        "--compute-units",
+        choices=["all", "cpuAndGPU", "cpuAndNeuralEngine", "cpuOnly"],
+        default="cpuAndGPU",
+    )
+    parser.add_argument("--warmup", type=int, default=3)
+    parser.add_argument("--iterations", type=int, default=10)
     parser.add_argument("--fail-on-difference", action="store_true")
     args = parser.parse_args()
+    if args.warmup < 0 or args.iterations < 0:
+        parser.error("--warmup and --iterations must be non-negative")
 
     report = run(args)
     trimmed = report["waveform_trimmed_metrics"]
+    warmed = report["warmed"]
+    warmed_median = "n/a"
+    if warmed["median_s"] is not None:
+        warmed_median = f"{warmed['median_s'] * 1000.0:.3f}"
     print(
         "coreml_generator_from_dump "
         f"passes={report['passes']} "
+        f"compute_units={report['compute_units']} "
+        f"warmed_median_ms={warmed_median} "
         f"corr={trimmed['correlation']} "
         f"snr_db={trimmed['snr_db']:.2f} "
         f"max_abs={trimmed['max_abs_error']:.6g}"

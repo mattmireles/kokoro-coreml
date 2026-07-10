@@ -182,10 +182,17 @@ swift/.build/
 
 # CoreML model packages — downloaded from HF Hub, not stored in git.
 # Run: python scripts/download_models.py
-coreml/
+/coreml/
 coreml_fp32/
 KokoroVocoder.mlpackage/
 .cache/
+
+# iPhone bench bundle resources — model artifacts, not stored in git.
+# Run: ios-bench/prepare_resources.sh (Core ML); MLX weights are manual.
+ios-bench/Resources/coreml/
+ios-bench/Resources/mlx/
+# XcodeGen output — regenerate with `xcodegen generate` in ios-bench/.
+ios-bench/KokoroIPhoneBench.xcodeproj/
 
 # Voice embeddings — downloaded from HF Hub.
 kokoro.js/voices/*.bin

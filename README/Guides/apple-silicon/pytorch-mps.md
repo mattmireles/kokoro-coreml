@@ -9,6 +9,7 @@ April 2, 2026
 - **[Hugging Face Transformers on Apple Silicon](HF-transformers-MPS-guide.md)**: Trainer, accelerate, Whisper generation configs, and seq2seq evaluation on MPS.
 - **[Core ML compute unit scheduling](CoreML-Compute-Unit-Scheduling-guide.md)**: `MLComputeUnits`, silent ANE fallback, powermetrics, Instruments/LLDB checks, and manual graph partitioning after export.
 - **[PyTorch LSTM → Core ML (BiLSTM padding)](CoreML-LSTM-export-guide.md)**: Right-padding, `pack_padded_sequence` lowering, `ct.EnumeratedShapes`, and when to force CPU vs ANE for RNNs.
+- **[Core ML vs MLX vocoder scheduling (ConvTranspose / iSTFT)](Core%20ML-MLX-Scheduling-1D-ConvTranspose-ISTFTNet-vocoders-guide.md)**: MLX graph-batching dispatch vs multi-stage Core ML handoffs for ISTFTNet vocoders; ANE-only shipping constraints.
 
 ## **Executive Summary**
 

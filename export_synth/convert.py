@@ -26,6 +26,7 @@ from .wrappers import (
     KModel,
     SynthesizerModel,
     remove_dropout,
+    rewrite_generator_ups_conv_transpose,
 )
 
 def prepare_pytorch_models(config_path, checkpoint_path):
@@ -38,7 +39,16 @@ def prepare_pytorch_models(config_path, checkpoint_path):
         return KModel(config=config_path, disable_complex=True)
     return KModel(config=config_path, model=checkpoint_path, disable_complex=True)
 
-def export_synthesizers(output_dir, buckets_str, debug=False, trace_length: int | None = None, precision: str | None = None, backend: str | None = None, mode: str = "full"):
+def export_synthesizers(
+    output_dir,
+    buckets_str,
+    debug=False,
+    trace_length: int | None = None,
+    precision: str | None = None,
+    backend: str | None = None,
+    mode: str = "full",
+    rewrite_ups_conv_transpose: bool = False,
+):
     """Execute the complete synthesizer export pipeline with intelligent bucketing and CoreML optimization.
 
     This function orchestrates the entire export process from PyTorch model loading through
@@ -346,6 +356,13 @@ def export_synthesizers(output_dir, buckets_str, debug=False, trace_length: int 
                     # different class — so their AdaIN1d(Linear) instances are live in
                     # this trace by design: Generator style conditioning is preserved.
                     gen_from_har = GeneratorFromHar(gen).eval()
+                    if rewrite_ups_conv_transpose:
+                        rewritten = rewrite_generator_ups_conv_transpose(gen_from_har.generator)
+                        print(
+                            "decoder-har graph rewrite: replaced "
+                            f"{rewritten} main ConvTranspose1d upsample layers "
+                            "with zero-insert conv1d"
+                        )
                     traced_model = torch.jit.trace(
                         gen_from_har,
                         (x_pre, ref_s_out, har_in),

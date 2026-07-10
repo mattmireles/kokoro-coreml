@@ -64,6 +64,61 @@ def _is_masked_bidirectional_lstm(module: nn.Module) -> bool:
     return isinstance(module, MaskedBidirectionalLSTM) or type(module).__name__ == "MaskedBidirectionalLSTM"
 
 
+def zero_insert_1d(x: torch.Tensor, stride: int, output_padding: int = 0) -> torch.Tensor:
+    """Return ``x`` with zeros inserted between adjacent time samples."""
+
+    if stride <= 1:
+        return x
+    expanded = F.pad(x.unsqueeze(-1), (0, stride - 1)).reshape(
+        x.shape[0],
+        x.shape[1],
+        x.shape[2] * stride,
+    )
+    target = (int(x.shape[2]) - 1) * stride + 1 + output_padding
+    if int(expanded.shape[2]) == target:
+        return expanded
+    if int(expanded.shape[2]) > target:
+        return expanded[:, :, :target]
+    return F.pad(expanded, (0, target - int(expanded.shape[2])))
+
+
+class ZeroInsertConvTranspose1d(nn.Module):
+    """ConvTranspose1d-equivalent wrapper using zero insertion plus conv1d.
+
+    This is an export-time graph shaping tool for Core ML. It preserves the
+    original loaded module and materialized weights while replacing the MIL
+    ``conv_transpose`` surface with ordinary ``conv`` after zero insertion.
+    """
+
+    def __init__(self, wrapped: nn.Module) -> None:
+        super().__init__()
+        if int(wrapped.groups) != 1:
+            raise ValueError("zero-insert rewrite currently supports groups=1 only")
+        self.wrapped = wrapped
+        self.stride_value = int(wrapped.stride[0])
+        self.padding_value = int(wrapped.padding[0])
+        self.output_padding_value = int(wrapped.output_padding[0])
+        self.kernel_value = int(wrapped.kernel_size[0])
+        self.conv_padding = self.kernel_value - 1 - self.padding_value
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        upsampled = zero_insert_1d(x, self.stride_value, self.output_padding_value)
+        weight = self.wrapped.weight.permute(1, 0, 2).flip(-1)
+        return F.conv1d(upsampled, weight, self.wrapped.bias, padding=self.conv_padding)
+
+
+def rewrite_generator_ups_conv_transpose(generator: nn.Module) -> int:
+    """Rewrite main generator ConvTranspose1d upsamples to zero-insert conv1d."""
+
+    rewritten = 0
+    for index, upsample in enumerate(generator.ups):
+        if isinstance(upsample, ZeroInsertConvTranspose1d):
+            continue
+        generator.ups[index] = ZeroInsertConvTranspose1d(upsample)
+        rewritten += 1
+    return rewritten
+
+
 class GeneratorFromHar(nn.Module):
     """Vocoder tail after hn-nsf harmonic features: same as ``Generator.forward`` once ``har`` exists.
 

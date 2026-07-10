@@ -82,13 +82,15 @@ public struct StageTimings {
     public var padding: Double = 0
     public var decoderPre: Double = 0
     public var hnsfSwift: Double = 0
+    public var decoderPreHnsfOverlap: Double = 0
     public var generatorCoreML: Double = 0
     public var trim: Double = 0
 
     /// Total pipeline wall time.
     public var total: Double {
         durationCoreML + alignment + matrixOps + f0ntrainCoreML +
-        padding + decoderPre + hnsfSwift + generatorCoreML + trim
+        padding + decoderPre + hnsfSwift - decoderPreHnsfOverlap +
+        generatorCoreML + trim
     }
 
     /// Pre-decoder overhead (everything before GeneratorFromHar predict).
@@ -141,6 +143,23 @@ public struct DurationModelChoice {
     public let packageURL: URL
     public let requiresAttentionMask: Bool
     public let allowsPadding: Bool
+
+    /// Public memberwise init so app integrators (e.g. ios-bench) can build
+    /// choices for precompiled .mlmodelc bundles instead of discovering
+    /// .mlpackage files on disk via ``discoverDurationChoices``.
+    public init(
+        cacheKey: String,
+        tokenLength: Int,
+        packageURL: URL,
+        requiresAttentionMask: Bool,
+        allowsPadding: Bool
+    ) {
+        self.cacheKey = cacheKey
+        self.tokenLength = tokenLength
+        self.packageURL = packageURL
+        self.requiresAttentionMask = requiresAttentionMask
+        self.allowsPadding = allowsPadding
+    }
 }
 
 // MARK: - Pipeline

@@ -80,13 +80,25 @@ bash scripts/setup_bakeoff.sh          # full setup (~10 min)
 bash scripts/setup_bakeoff.sh --skip-download  # skip HF download
 ```
 
-### 2. Identify the machine
+### 2. Identify the machine and quiet-host gate
+
+Read `README/Guides/apple-silicon/Apple-Silicon-warmed-inference-benchmark-hygiene-guide.md`
+first. Irvine M1 numbers are publishable only with warmed per-bucket timing and a
+quiet-host pass.
+
+For remote Irvine hosts, run the quiet gate before benchmarking:
+
+```bash
+uv run python scripts/external_bakeoff/check_remote_host_quiet.py \
+  --machine-id irvine_m1
+```
 
 Record:
 - Chip (e.g., M1 Mini, M2 Ultra, M2 MacBook Air)
 - RAM
 - macOS version
 - Any relevant config (plugged in vs battery, thermal state)
+- Quiet-host status JSON (when remote)
 
 Choose a `--machine-id` slug: `m1_mini`, `m2_ultra`, `m2_air`, etc.
 
