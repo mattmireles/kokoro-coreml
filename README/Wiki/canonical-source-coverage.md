@@ -60,6 +60,7 @@ This is a deterministic coverage index, not a current-belief page. It lists read
 - [README/Notes/bakeoff-results-v2.md](../Notes/bakeoff-results-v2.md)
 - [README/Notes/bakeoff-results.md](../Notes/bakeoff-results.md)
 - [README/Notes/chunk-stitch-listening-2026-06-10.md](../Notes/chunk-stitch-listening-2026-06-10.md)
+- [README/Notes/config-f-dispersion-run-2026-07-14.md](../Notes/config-f-dispersion-run-2026-07-14.md)
 - [README/Notes/coreml-compute-unit-ablation.md](../Notes/coreml-compute-unit-ablation.md)
 - [README/Notes/cs1-audio-quality-evaluation-2026-07-14.md](../Notes/cs1-audio-quality-evaluation-2026-07-14.md)
 - [README/Notes/debug-notes.md](../Notes/debug-notes.md)
