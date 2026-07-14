@@ -153,7 +153,10 @@ Per the audio-judge skill, the documented fallback
 (`scripts/gemini_audio_judge_direct.py`, direct Gemini upload, auto 16-bit
 conversion, RMS gain-match to baseline) was used for all verdicts below.
 **These are fallback-path reports.** Re-run on the primary path once the token
-scope is fixed.
+scope is fixed. *(Resolved later the same day: the staging worker's dedicated
+`WORKFLOW_CLIENT_AUDIO_JUDGE_TOKEN` secret now matches the local env and the
+primary path is healthy — see "Primary-path replication" at the end of this
+note.)*
 
 ## Objective waveform-health gate (pre-listening)
 
@@ -343,22 +346,27 @@ scoring, and exhibits single-run noise (the 7s labeled outlier); the protocol
 compensates with repeat blind votes. All verdicts here are from the documented
 fallback path (direct Gemini upload) because the primary llm-workflows path
 returned a 403 token-scope error; primary-path re-runs should replicate before
-the paper's camera-ready.
+the paper's camera-ready. *(Done: post-fix verdicts replicate on the primary
+path for all four buckets plus the control — see "Primary-path replication"
+at the end of this note.)*
 
 ## Follow-ups
 
-1. Fix the llm-workflows client token scope and replicate on the primary path.
-2. Investigate the duration-model pause elongation on the 15s bucket: compare
-   per-token predicted frames vs PyTorch durations for comma/period tokens at
-   the 256 padded size.
-3. Investigate the 30s spectral tilt: end-to-end (not matched-input per-stage)
-   numeric comparison of the 30s bucket, starting with the generator/vocoder
-   mid-band response and the harmonic/noise mix at padded_t512; check whether
-   the tilt reproduces under `cpuOnly` (FP16-vs-placement discrimination).
+1. ~~Fix the llm-workflows client token scope and replicate on the primary
+   path.~~ **Done** — token scope resolved server-side (dedicated
+   `WORKFLOW_CLIENT_AUDIO_JUDGE_TOKEN` staging secret); all post-fix verdicts
+   replicate on the primary path (see "Primary-path replication").
+2. ~~Investigate the duration-model pause elongation on the 15s bucket.~~
+   **Done** — duration model exonerated (per-token parity); real cause was
+   whitespace suppression (see "Root causes and fixes").
+3. ~~Investigate the 30s spectral tilt.~~ **Done** — one-sided iSTFT scaling
+   bug in `CustomSTFT.inverse`, present on every bucket, policy-independent
+   (cpuOnly discrimination run confirmed); fixed and re-exported (see "Root
+   causes and fixes").
 4. Add a 10s frozen input if the 10s bucket should be listening-covered.
-5. Consider crossfade/decay shaping at inter-phrase silence onsets in the
-   Swift pipeline if hard gating proves audible even with matched pause
-   lengths.
+5. ~~Consider crossfade/decay shaping at inter-phrase silence onsets.~~
+   Moot — with whitespace suppression removed, phrase-boundary audio matches
+   the reference; punctuation spans remain gated below audibility.
 
 ## Artifacts
 
@@ -503,9 +511,36 @@ New diagnostics: `scripts/probe_duration_pause_parity.py`,
 `scripts/analyze_punctuation_span_energy.py`,
 `scripts/analyze_raw_punct_spans.py`, `scripts/analyze_band_energy_ratio.py`.
 
-Residual follow-ups: replicate on the primary llm-workflows judge path once
-the client token scope is fixed (fallback-path verdicts throughout), and add a
-10s frozen listening input (unchanged from the original Follow-ups list).
+### Primary-path replication (2026-07-14, third session)
+
+The llm-workflows 403 (`Client token does not authorize this workflow
+request`) no longer reproduces: the staging worker now carries the dedicated
+`WORKFLOW_CLIENT_AUDIO_JUDGE_TOKEN` secret (per the ops-runbook per-client
+secret migration) and it matches `llm-workflows/.env`
+`WORKFLOW_RUNTIME_TOKEN` — verified by an auth probe
+(`GET /v1/clients/audio-judge/runs/<bogus>` returns 404 authorized, not 403)
+and by five completed runs. No server or env change was required.
+
+All post-fix verdicts replicate on the PRIMARY path
+(`node scripts/run-audio-judge.mjs`, workflow `audio_judge_v1`, artifacts
+under `llm-workflows/outputs/audio-judge/`):
+
+| Pair (pytorch vs Config F staged) | overallVerdict | `iphoneAcceptablyCloseToMlx` | clicks/dropouts | noise |
+| --- | --- | --- | --- | --- |
+| 3s  | pass | true | none | 0 |
+| 7s  | pass | true | none | 0 |
+| 15s | pass | true | none | 0 — "perceptually indistinguishable from the PyTorch baseline" |
+| 30s | pass | true | none | 0 |
+| control (pytorch vs known-bad static) | fail | — | — | 100 — "complete static", correctly rejected |
+
+Operational note: re-running the same clip label + same file within the
+FFmpeg worker's idempotency window 409s (`idempotency_conflict`) because each
+run mints a new uploadId under the same `audio-judge:<label>:<sha16>` key —
+use fresh labels (`pytorch_c=`, `control_v2=`) as the skill's failure table
+says.
+
+Residual follow-up: add a 10s frozen listening input (unchanged from the
+original Follow-ups list).
 
 ## For the paper (§7.5 rewrite or short §5 quality subsection)
 
