@@ -1,0 +1,8 @@
+.figvenv/
+*.aux
+*.log
+*.synctex.gz
+*.blg
+*.bbl
+*.out
+.preview/

@@ -1,0 +1,228 @@
+% References for "Surgical Inference" — keys match the markdown draft's [N] numbering.
+% [1]
+@misc{coremltools,
+  author = {{Apple}},
+  title = {Core ML Tools},
+  howpublished = {\url{https://github.com/apple/coremltools}},
+  note = {Software package and documentation for converting trained models to Core ML}
+}
+% [2]
+@misc{apple-ane-transformers,
+  author = {{Apple Machine Learning Research}},
+  title = {Deploying Transformers on the Apple Neural Engine},
+  year = {2022},
+  month = jun,
+  howpublished = {\url{https://machinelearning.apple.com/research/neural-engine-transformers}},
+  note = {Reference implementation: \url{https://github.com/apple/ml-ane-transformers}}
+}
+% [3]
+@misc{apple-stable-diffusion,
+  author = {{Apple}},
+  title = {Stable Diffusion with Core ML on Apple Silicon},
+  year = {2022},
+  howpublished = {\url{https://github.com/apple/ml-stable-diffusion}}
+}
+% [4]
+@misc{mlstate,
+  author = {{Apple}},
+  title = {{MLState} --- Core ML stateful models documentation},
+  year = {2024},
+  howpublished = {\url{https://developer.apple.com/documentation/coreml/mlstate}}
+}
+% [5]
+@misc{coremltools-pytorch,
+  author = {{Apple}},
+  title = {PyTorch Conversion Workflow},
+  howpublished = {\url{https://apple.github.io/coremltools/docs-guides/source/convert-pytorch-workflow.html}},
+  note = {Core ML Tools guide}
+}
+% [6]
+@misc{pytorch-mps-metal,
+  author = {{Apple Developer}},
+  title = {Accelerated PyTorch training on Mac},
+  howpublished = {\url{https://developer.apple.com/metal/pytorch/}},
+  note = {PyTorch MPS backend documentation}
+}
+% [7]
+@article{starpu,
+  author = {Augonnet, C{\'e}dric and Thibault, Samuel and Namyst, Raymond and Wacrenier, Pierre-Andr{\'e}},
+  title = {{StarPU}: A Unified Platform for Task Scheduling on Heterogeneous Multicore Architectures},
+  journal = {Concurrency and Computation: Practice and Experience},
+  volume = {23},
+  number = {2},
+  pages = {187--198},
+  year = {2011}
+}
+% [8]
+@inproceedings{legion,
+  author = {Bauer, Michael and Treichler, Sean and Slaughter, Elliott and Aiken, Alex},
+  title = {Legion: Expressing Locality and Independence with Logical Regions},
+  booktitle = {Proceedings of the International Conference on High Performance Computing, Networking, Storage and Analysis (SC)},
+  year = {2012}
+}
+% [9]
+@misc{mlx-audio,
+  author = {Blaizzy},
+  title = {mlx-audio},
+  howpublished = {\url{https://github.com/Blaizzy/mlx-audio}},
+  note = {MLX audio generation toolkit used for the MLX Kokoro baseline}
+}
+% [10]
+@misc{llamacpp,
+  author = {Gerganov, Georgi and contributors},
+  title = {llama.cpp},
+  howpublished = {\url{https://github.com/ggerganov/llama.cpp}},
+  note = {Software}
+}
+% [11]
+@misc{whispercpp,
+  author = {Gerganov, Georgi and contributors},
+  title = {whisper.cpp},
+  howpublished = {\url{https://github.com/ggerganov/whisper.cpp}},
+  note = {Software; includes a Core ML encoder path}
+}
+% [12]
+@misc{mlx,
+  author = {Hannun, Awni and Digani, Jagrit and Katharopoulos, Angelos and Collobert, Ronan},
+  title = {{MLX}: Efficient and flexible machine learning on Apple silicon},
+  year = {2023},
+  howpublished = {\url{https://github.com/ml-explore/mlx}},
+  note = {Software}
+}
+% [13]
+@misc{kokoro-model,
+  author = {hexgrad},
+  title = {Kokoro-82M},
+  howpublished = {\url{https://huggingface.co/hexgrad/Kokoro-82M}},
+  note = {Open-weight 82M-parameter text-to-speech model}
+}
+% [14]
+@misc{kokoro-lib,
+  author = {hexgrad},
+  title = {kokoro},
+  howpublished = {\url{https://github.com/hexgrad/kokoro}},
+  note = {Python inference library for Kokoro-82M}
+}
+% [15]
+@inproceedings{istftnet,
+  author = {Kaneko, Takuhiro and Tanaka, Kou and Kameoka, Hirokazu and Seki, Shogo},
+  title = {{iSTFTNet}: Fast and Lightweight Mel-Spectrogram Vocoder Incorporating Inverse Short-Time Fourier Transform},
+  booktitle = {ICASSP},
+  year = {2022},
+  note = {\url{https://arxiv.org/abs/2203.02395}}
+}
+% [16]
+@misc{orion,
+  author = {Kumaresan, Ramchand},
+  title = {Orion: Characterizing and Programming Apple's Neural Engine for {LLM} Training and Inference},
+  year = {2026},
+  eprint = {2603.06728},
+  archivePrefix = {arXiv},
+  howpublished = {\url{https://arxiv.org/abs/2603.06728}}
+}
+% [17]
+@misc{laishere,
+  author = {laishere},
+  title = {kokoro-coreml},
+  howpublished = {\url{https://github.com/laishere/kokoro-coreml}},
+  note = {Independent Core ML Kokoro implementation used as a comparison baseline}
+}
+% [18]
+@inproceedings{styletts2,
+  author = {Li, Yinghao Aaron and Han, Cong and Raghavan, Vinay S. and Mischler, Gavin and Mesgarani, Nima},
+  title = {{StyleTTS 2}: Towards Human-Level Text-to-Speech through Style Diffusion and Adversarial Training with Large Speech Language Models},
+  booktitle = {NeurIPS},
+  year = {2023},
+  note = {\url{https://arxiv.org/abs/2306.07691}}
+}
+% [19]
+@inproceedings{astar-sampling,
+  author = {Maddison, Chris J. and Tarlow, Daniel and Minka, Tom},
+  title = {{A*} Sampling},
+  booktitle = {NeurIPS},
+  year = {2014},
+  note = {\url{https://arxiv.org/abs/1411.0030}}
+}
+% [20]
+@misc{magenta-rt,
+  author = {{Magenta team, Google}},
+  title = {Magenta RealTime: An Open-Weights Live Music Model},
+  year = {2025},
+  eprint = {2506.20061},
+  archivePrefix = {arXiv},
+  howpublished = {\url{https://arxiv.org/abs/2506.20061}}
+}
+% [21]
+@misc{magenta-rt-repo,
+  author = {{Magenta team, Google}},
+  title = {magenta-realtime},
+  howpublished = {\url{https://github.com/magenta/magenta-realtime}},
+  note = {Open-weights live music model repository; upstream source for the second case study}
+}
+% [22]
+@misc{kokoro-ios,
+  author = {mlalma},
+  title = {kokoro-ios},
+  howpublished = {\url{https://github.com/mlalma/kokoro-ios}},
+  note = {MLX Swift Kokoro implementation used for iOS comparison}
+}
+% [23]
+@misc{melotts,
+  author = {{MyShell.ai}},
+  title = {{MeloTTS}},
+  howpublished = {\url{https://github.com/myshell-ai/MeloTTS}},
+  note = {Open-source multilingual text-to-speech system}
+}
+% [24]
+@misc{whisperkit,
+  author = {Orhon, Atila and others},
+  title = {{WhisperKit}: On-device Real-time {ASR} with Billion-Scale Transformers},
+  year = {2025},
+  eprint = {2507.10860},
+  archivePrefix = {arXiv},
+  howpublished = {\url{https://arxiv.org/abs/2507.10860}},
+  note = {Software: \url{https://github.com/argmaxinc/WhisperKit}}
+}
+% [25]
+@misc{piper,
+  author = {{Piper contributors}},
+  title = {Piper},
+  howpublished = {\url{https://github.com/rhasspy/piper}},
+  note = {Fast local neural text-to-speech system}
+}
+% [26]
+@misc{executorch,
+  author = {{PyTorch}},
+  title = {{ExecuTorch}},
+  howpublished = {\url{https://github.com/pytorch/executorch}},
+  note = {On-device inference runtime with delegate backends}
+}
+% [27]
+@misc{pytorch-mps-notes,
+  author = {{PyTorch}},
+  title = {{MPS} backend notes},
+  howpublished = {\url{https://pytorch.org/docs/stable/notes/mps.html}},
+  note = {Apple Silicon GPU backend documentation}
+}
+% [28]
+@misc{ane-field-guide,
+  author = {skyfallsin},
+  title = {Apple Neural Engine Reverse-Engineering Field Guide},
+  howpublished = {\url{https://github.com/skyfallsin/apple-neural-engine-field-guide}},
+  note = {Experiment-driven ANE notes and constraints}
+}
+% [29]
+@misc{speech-swift,
+  author = {soniqo},
+  title = {speech-swift},
+  howpublished = {\url{https://github.com/soniqo/speech-swift}},
+  note = {Independent Core ML Kokoro implementation used as a comparison baseline}
+}
+% [30]
+@article{soundstream,
+  author = {Zeghidour, Neil and Luebs, Alejandro and Omran, Ahmed and Skoglund, Jan and Tagliasacchi, Marco},
+  title = {{SoundStream}: An End-to-End Neural Audio Codec},
+  journal = {IEEE/ACM Transactions on Audio, Speech, and Language Processing},
+  year = {2021},
+  note = {\url{https://arxiv.org/abs/2107.03312}}
+}

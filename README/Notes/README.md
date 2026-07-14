@@ -11,6 +11,8 @@ top-level `README/*.md` files; link from notes instead of duplicating.
 
 ## Index
 
+- [CS1 audio-quality evaluation (2026-07-14)](cs1-audio-quality-evaluation-2026-07-14.md) - Formal perceptual evaluation for the paper: PyTorch reference vs Config F (staged policy) on the frozen bakeoff inputs, blind Gemini audio-judge lineups with a known-bad control; 3s/7s pass, 15s fails on duration-model pause elongation, 30s fails on mid-band spectral tilt.
+- [Monolithic Core ML control experiment](monolithic-coreml-control-experiment.md) - The paper's null-hypothesis control: whole-model Kokoro export fails conversion at the data-dependent `repeat_interleave` alignment (branch a, trace-baked), and the downstream fused decoder converts but collapses to corr ~0.27 on hn-nsf SineGen phase (branch b). Both failures land on the decomposition seams.
 - [iPhone performance notes](iphone-performance-notes.md) - Physical-iPhone warmed timings: Config F vs MLX Swift (kokoro-ios), per-device raw warm arrays, compute-policy disclosure.
 - [iPhone debug notes](iphone-debug-notes.md) - iPhone-domain failure modes: ANECCompile `.all` rejection, jetsam memory budget, dyld dynamic-framework abort, locked-device launch gate, host xcodebuild stall reaper.
 - [Core ML compute-unit ablation](coreml-compute-unit-ablation.md) - F/G/G-prime/G-double-prime benchmark logic for isolating `.all`, ANE, GPU, and CPU behavior in the Swift pipeline.
