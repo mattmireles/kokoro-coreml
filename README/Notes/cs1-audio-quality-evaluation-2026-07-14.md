@@ -533,11 +533,15 @@ under `llm-workflows/outputs/audio-judge/`):
 | 30s | pass | true | none | 0 |
 | control (pytorch vs known-bad static) | fail | — | — | 100 — "complete static", correctly rejected |
 
-Operational note: re-running the same clip label + same file within the
-FFmpeg worker's idempotency window 409s (`idempotency_conflict`) because each
-run mints a new uploadId under the same `audio-judge:<label>:<sha16>` key —
-use fresh labels (`pytorch_c=`, `control_v2=`) as the skill's failure table
-says.
+Operational note: re-running the same clip label + same file used to 409
+(`idempotency_conflict`) because `run-audio-judge.mjs` derived its
+idempotency keys from content only while the request bodies embed
+per-invocation values (fresh FFmpeg uploadId; per-run Gemini file URIs).
+Fixed 2026-07-14 in llm-workflows (`scripts/run-audio-judge.mjs`): the
+FFmpeg job key now includes the uploadId and the run key includes the
+invocation stamp, matching the other runner scripts. Verified by running the
+previously poisoned pytorch/control 3s lineup twice back-to-back — both
+completed, control correctly rejected both times (noise 100, ranked worst).
 
 Residual follow-up: add a 10s frozen listening input (unchanged from the
 original Follow-ups list).
