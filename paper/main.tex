@@ -13,7 +13,12 @@
 \usepackage{subcaption}
 \usepackage{enumitem}
 \usepackage[numbers,sort&compress]{natbib}
-\usepackage[colorlinks=true,linkcolor=blue!50!black,citecolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,citecolor=blue!50!black,urlcolor=blue!50!black,
+  pdftitle={Surgical Inference: Decomposing Generative Models for Heterogeneous On-Device SoC Inference},
+  pdfauthor={Matt Mireles},
+  pdfsubject={On-device generative model inference on Apple Silicon heterogeneous SoCs},
+  pdfkeywords={on-device inference, heterogeneous computing, Apple Silicon, Neural Engine, Core ML, model decomposition}
+]{hyperref}
 \usepackage{xcolor}
 \usepackage{tabularx}
 \usepackage{seqsplit}
@@ -293,7 +298,7 @@ The pipeline also pools and reuses input \code{MLMultiArray} buffers across call
 
 \subsection{Experimental Setup}\label{sec:cs1-setup}
 
-\textbf{Hardware.} Three Apple Silicon Macs spanning the consumer-to-workstation range, plus two iPhones (\S\ref{sec:cs1-iphone}):
+\textbf{Hardware.} Three Apple Silicon Macs spanning the consumer-to-workstation range (Table~\ref{tab:cs1-hw}), plus two iPhones (\S\ref{sec:cs1-iphone}):
 
 \begin{table}[h]
 \centering
@@ -331,7 +336,7 @@ Key & Audio duration & Bucket \\
 \end{tabular}
 \end{table}
 
-\textbf{Timing boundary.} From immediately before the synthesis call until full PCM audio is materialized in memory --- token IDs in, 24 kHz waveform out. Process startup, model download, and playback are excluded. All reported numbers are \emph{warm} medians: models preloaded and primed, first-use Core ML compile/cache effects discarded.
+\textbf{Timing boundary.} From immediately before the synthesis call until full PCM audio is materialized in memory --- token IDs in, 24 kHz waveform out (Table~\ref{tab:cs1-inputs} gives the five frozen inputs targeting these buckets; Appendix~\ref{app:boundaries} gives the exact boundary shared across all comparison implementations). Process startup, model download, and playback are excluded. All reported numbers are \emph{warm} medians: models preloaded and primed, first-use Core ML compile/cache effects discarded.
 
 \textbf{Configurations.}
 
@@ -424,7 +429,7 @@ The Surgical pipeline is faster on every bucket on every machine, by \textbf{1.6
 
 \subsection{vs PyTorch (April 2026 Ledger)}\label{sec:cs1-pytorch}
 
-Warm median wall time, milliseconds, counterbalanced A/D/E/F run. The Config F build in this ledger predates the June optimizations; its absolute times are higher than \S\ref{sec:cs1-headline} (e.g. 476 ms vs 379 ms for 30 s on M2 Ultra), so the speedups below are lower bounds for the current pipeline. The April canonical input set had four lengths; the 10 s bucket entered the frozen input set with the June bakeoff, so this ledger has no 10 s row.
+Warm median wall time, milliseconds, counterbalanced A/D/E/F run (Tables~\ref{tab:cs1-pt-ultra}--\ref{tab:cs1-pt-mini}). The Config F build in this ledger predates the June optimizations; its absolute times are higher than \S\ref{sec:cs1-headline} (e.g. 476 ms vs 379 ms for 30 s on M2 Ultra), so the speedups below are lower bounds for the current pipeline. The April canonical input set had four lengths; the 10 s bucket entered the frozen input set with the June bakeoff, so this ledger has no 10 s row.
 
 \begin{table}[h]
 \centering
@@ -771,7 +776,7 @@ An earlier draft of this work assumed the Dense-Static stages would run on the A
 \begin{itemize}[leftmargin=*]
 \item \textbf{The vocoder categorically exceeds ANE tensor limits.} GeneratorFromHar's harmonic input has a last-axis extent of 28,801--288,001 elements across the buckets and its waveform output 72,000--720,000 --- far beyond the $\approx$16,384 per-axis limit documented by the community and confirmed by our own compiler errors (\code{Tensor width goes beyond limit supported (16390 $>$ 16384)}).
 
-\item \textbf{Forcing it fails loudly on every machine; \code{.all} fails silently.} Loading the generator with \code{.cpuAndNeuralEngine} fails ANE compilation (\code{MILCompilerForANE ... ANECCompile() FAILED}) on every Mac tested, and the fallback execution runs $\approx$54$\times$ slower than CPU+GPU ($\approx$1517 ms vs $\approx$28 ms on M2 Ultra, 3 s bucket). Under \code{.all}, macOS silently reroutes the rejected subgraph --- the model ``works'' and the developer learns nothing. iOS is stricter: \code{.all} hard-fails at predict time on both test iPhones.
+\item \textbf{Forcing it fails loudly on every machine; \code{.all} fails silently.} Loading the generator with \code{.cpuAndNeuralEngine} fails ANE compilation (\code{MILCompilerForANE ... ANECCompile() FAILED}) on every Mac tested, and the fallback execution runs $\approx$54$\times$ slower than CPU+GPU ($\approx$1517 ms vs $\approx$28 ms on M2 Ultra, 3 s bucket --- an isolated single-model \code{predict()} benchmark used for this placement ablation, distinct from the $\approx$11 ms figure in \S\ref{sec:cs1-stages}, which is the generator's marginal share of full end-to-end wall time obtained by subtracting the other three models' costs from the observed pipeline total, not a second measurement of the same call). Under \code{.all}, macOS silently reroutes the rejected subgraph --- the model ``works'' and the developer learns nothing. iOS is stricter: \code{.all} hard-fails at predict time on both test iPhones.
 
 \item \textbf{The shipped policy is therefore explicit and staged}: DecoderPre on \code{.cpuAndNeuralEngine}; Duration, F0Ntrain, and GeneratorFromHar on \code{.cpuAndGPU}. The same policy runs on Mac and iPhone, which makes the cross-device numbers policy-matched.
 

@@ -19,6 +19,7 @@
 \definecolor{cmlgpu}{HTML}{CDE4F2}   % Core ML on CPU+GPU  (blue family)
 \definecolor{cmlane}{HTML}{C7E9C0}   % Core ML on CPU+ANE  (green family, the ANE stage)
 \definecolor{swiftc}{HTML}{FDE3C4}   % native Swift (CPU)  (orange family)
+\definecolor{padc}{HTML}{DCD6E8}     % host materialization (padding) -- not a named Swift stage; distinct from ioblk
 \definecolor{ioblk}{HTML}{E8E8E8}    % I/O endpoints
 \definecolor{edgec}{HTML}{444444}
 
@@ -36,6 +37,7 @@
   cmlgpu/.style={stage, fill=cmlgpu},
   cmlane/.style={stage, fill=cmlane, line width=1.1pt},
   swiftc/.style={stage, fill=swiftc, densely dashed},
+  padc/.style={stage, fill=padc, densely dotted, text width=52mm, minimum height=7mm},
   saned/.style={cmlane, text width=40mm, minimum height=13mm},
   sswift/.style={swiftc, text width=40mm, minimum height=13mm},
   ann/.style={font=\sffamily\scriptsize\itshape, text=edgec, align=left},
@@ -52,7 +54,7 @@
   {\textbf{Alignment}: token$\to$frame expansion\\(no alignment matrix materialized)};
 \node[cmlgpu, below=of align] (f0n)
   {\textbf{F0Ntrain model}\\small CNN: (en, s) $\to$ F0, N};
-\node[swiftc, below=of f0n] (pad)
+\node[padc, below=of f0n] (pad)
   {\textbf{Pad} to bucket geometry\\3s $\mid$ 7s $\mid$ 10s $\mid$ 15s $\mid$ 30s};
 
 % ---- concurrent branch ----
@@ -91,7 +93,7 @@
 \node[ann, right=4mm of dur.east]   {Core ML (CPU+GPU)\\Motif: Sequential-Dynamic\\(bucketed)};
 \node[ann, right=4mm of align.east] {Swift (CPU)\\Motif: Data-Dependent};
 \node[ann, right=4mm of f0n.east]   {Core ML (CPU+GPU)\\Motif: Dense-Static};
-\node[ann, right=4mm of pad.east]   {Swift (CPU)};
+\node[ann, right=4mm of pad.east]   {Host materialization\\(not a named Swift stage)};
 \node[ann, right=4mm of gen.east]   {Core ML (CPU+GPU)\\Motif: Dense-Static\\(ANE-rejected; see \S7.2)};
 \node[ann, right=4mm of trim.east]  {Swift (CPU)};
 
@@ -105,7 +107,8 @@
       at ($(align.west)+(-8mm,6mm)$) {%
   {\tikz\node[swatch,fill=cmlgpu]{};}~~Core ML (CPU+GPU)\\[2.5pt]
   {\tikz\node[swatch,fill=cmlane]{};}~~Core ML (CPU+ANE)\\[2.5pt]
-  {\tikz\node[swatch,fill=swiftc]{};}~~Native Swift (CPU)};
+  {\tikz\node[swatch,fill=swiftc]{};}~~Native Swift (CPU)\\[2.5pt]
+  {\tikz\node[swatch,fill=padc]{};}~~Host materialization (padding)};
 \node[ann, below=1.5mm of leg.south east, anchor=north east, align=right]
   {4 Core ML model families,\\3 native Swift stages,\\zero Python at inference.};
 \end{tikzpicture}
