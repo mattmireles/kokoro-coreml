@@ -9,6 +9,7 @@
 \usepackage{amsmath}
 \usepackage{booktabs}
 \usepackage{graphicx}
+\usepackage{float}
 \usepackage{caption}
 \usepackage{subcaption}
 \usepackage{enumitem}
@@ -247,7 +248,7 @@ The second case study escalates this from a performance concern to a correctness
 
 We apply the decomposition procedure from \S\ref{sec:procedure} to Kokoro-82M. The resulting pipeline is shown in Figure~\ref{fig:kokoro-pipeline}.
 
-\begin{figure}[t]
+\begin{figure}[H]
 \centering
 \IfFileExists{figures/fig-kokoro-pipeline.pdf}{\includegraphics[width=0.8\linewidth]{fig-kokoro-pipeline}}{\pendingfig{fig-kokoro-pipeline}}
 \caption{The decomposed Kokoro-82M pipeline: four Core ML model families and three native Swift stages, zero Python at inference time. Each stage is classified by computational motif and placed on the SoC engine that measurement selects (color = placement); only DecoderPre is admitted to the ANE, while the geometry-rejected GeneratorFromHar and the sequential Duration model run Core ML on CPU+GPU. The decomposition also exposes cross-unit parallelism a monolithic graph cannot express: DecoderPre (ANE) and the hn-nsf harmonic source (background CPU thread) execute concurrently.}
@@ -400,7 +401,7 @@ The M2 Ultra synthesizes 30 seconds of audio in 379 milliseconds. The M1 Mini --
 
 Same machines, same frozen inputs, same voice, same timing boundary, median of warm calls (Table~\ref{tab:cs1-mlx}); Figure~\ref{fig:cs1-latency} plots the same data:
 
-\begin{figure}[t]
+\begin{figure}[H]
 \centering
 \IfFileExists{figures/fig-cs1-latency.pdf}{\includegraphics[width=\linewidth]{fig-cs1-latency}}{\pendingfig{fig-cs1-latency}}
 \caption{Kokoro-82M end-to-end latency, the Surgical pipeline (Config F) vs.\ MLX, warm medians across three Macs and five input buckets (log axis; \S\ref{sec:cs1-mlx}). The Surgical pipeline is faster on every completed cell, by 1.6--2.3$\times$ (annotated), with the gap widest on the newest silicon. The pinned MLX build fails every 3 s input with a broadcast-shape error, so no 3 s comparison exists.}
@@ -629,7 +630,7 @@ One structural decision was made before any export and pays off throughout: \tex
 
 Per frame, the shipped pipeline runs: host conditioning assembly $\rightarrow$ Core ML temporal transformer step $\rightarrow$ Core ML depth rollout (samples all 12 RVQ levels in one prediction from host-supplied noise; \S\ref{sec:cs2-bandwidth}) $\rightarrow$ host RVQ codebook summation $\rightarrow$ Core ML codec decoder (overlapping 5- or 25-frame buckets) $\rightarrow$ host iSTFT/overlap-add $\rightarrow$ lock-free SPSC ring $\rightarrow$ \code{AVAudioSourceNode}. The pipeline is shown in Figure~\ref{fig:mrt2-pipeline}. The render callback makes one C call into the ring and never blocks on the model. Generation runs ahead of playback behind a PCM reservoir with high-watermark backpressure: the producer sleeps when the ring is full instead of generating unboundedly.
 
-\begin{figure}[t]
+\begin{figure}[H]
 \centering
 \IfFileExists{figures/fig-mrt2-pipeline.pdf}{\includegraphics[width=\linewidth]{fig-mrt2-pipeline}}{\pendingfig{fig-mrt2-pipeline}}
 \caption{The Magenta RealTime 2 per-frame streaming loop. Every frame must complete within the 40 ms (25 Hz) audio deadline, which never pauses. Audio-rate tensors never enter a Core ML graph --- the codec decoder stops at STFT-rate features and the host synthesizes PCM --- and the three Core ML stages ship on three different engines (temporal on GPU, depth rollout FP16 on CPU, NCHW codec decoder on ANE; per-stage p50 on A17 Pro shown). Generation runs ahead of playback through a lock-free SPSC ring feeding an \code{AVAudioSourceNode}; the render callback never blocks on the model.}
@@ -648,7 +649,7 @@ The obvious route is Core ML's mutable state (\code{MLState}) holding the K/V ca
 
 Instead of concluding, we ran a falsification ladder: strip the graph to one suspect mechanism, prove it on device, add the next suspect back. Each rung is a separate \code{.mlmodelc}, measured on the iPhone 12 Pro with \code{MLComputePlan} placement evidence (FP16, p99 over warmed runs), summarized in Table~\ref{tab:cs2-ladder} and Figure~\ref{fig:ane-ladder}:
 
-\begin{figure}[t]
+\begin{figure}[H]
 \centering
 \IfFileExists{figures/fig-ane-ladder.pdf}{\includegraphics[width=\linewidth]{fig-ane-ladder}}{\pendingfig{fig-ane-ladder}}
 \caption{The falsification ladder that located the ANE admission cliff for streaming transformers (p99 per frame, iPhone 12 Pro / A14, FP16; \S\ref{sec:cs2-state}). Every rung is ANE-clean (ANE cost share 1.000) and the ANE placement beats both CPU-only and CPU+GPU --- including the complete 12-layer stack with all 48 K/V caches read in and 48 one-token updates written out, at 15.0 ms. The one thing that must be absent is in-graph cache mutation: attention, softmax, concatenation, and update outputs are all admissible; the state write is the cliff.}
@@ -736,7 +737,7 @@ Case Study 1 stated ANE residency as policy intent (a limitation, \S\ref{sec:dis
 
 \textbf{Power.} Paired Power Profiler captures on the A14 --- identical graphs and workload, only the temporal stage's compute policy varied --- show the all-ANE policy at process \code{gpuImpact} 0.000 / \code{cpuImpact} 1.38 / 48.1 B CPU instructions over 60 s, against the temporal-GPU control at 2.23 / 2.63 / 110.3 B. The ANE policy removes process-attributed GPU impact entirely and cuts CPU instructions by 56\%. In the same comparison the producer's \emph{duty cycle} tells the thermal story: the ANE arm finished each second of audio fast enough to sleep 43\% of the run under backpressure; the GPU arm worked 93\% of wall-clock to deliver the same stream. (These captures predate the \S\ref{sec:cs2-host} correctness fixes; both arms ran the identical semantics, so the policy-controlled comparison stands, but the absolute throughput numbers do not transfer to the corrected pipeline.) On the A17 Pro, process-level power impact did \emph{not} separate the policies --- the Instruments residency trace was required to prove placement there, which is why the methodology treats power tables and residency traces as complementary rather than alternative evidence. Figure~\ref{fig:power} plots the paired power metrics.
 
-\begin{figure}[t]
+\begin{figure}[H]
 \centering
 \IfFileExists{figures/fig-power.pdf}{\includegraphics[width=\linewidth]{fig-power}}{\pendingfig{fig-power}}
 \caption{Paired power comparison on the A14 (iPhone 12 Pro), all-ANE temporal policy vs.\ a temporal-GPU control running identical graphs over 60 s (\S\ref{sec:cs2-power}). The ANE policy eliminates process-attributed GPU impact entirely (2.23 $\rightarrow$ 0.000) and cuts CPU instructions by 56\% (110.3 B $\rightarrow$ 48.1 B), while the producer's duty cycle drops from 93\% to 57\% --- it finishes each second of audio fast enough to sleep 43\% of the run under backpressure.}
