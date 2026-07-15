@@ -32,6 +32,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 FRAME_MS = 25.0  # 24 kHz audio, 600-sample hop -> 40 fps duration frames
 
+# Padded duration-model token buckets. Source of truth is the Swift runtime's
+# enumerated set, `PipelineConstants.durationTokenSizes` in
+# swift/Sources/KokoroPipeline/KokoroPipeline.swift — the probe must pick the
+# same bucket the shipped pipeline would, or arm C/D stops modeling production.
+# Every size here has a matching coreml/kokoro_duration_t{N}.mlpackage.
+# NOTE: coreml/ also ships kokoro_duration_t448.mlpackage, but the Swift
+# runtime never selects it, so it is intentionally excluded.
+PADDED_TOKEN_BUCKETS = (32, 64, 128, 256, 320, 384, 512)
+
 def load_input(key: str) -> dict:
     return json.loads((ROOT / "outputs" / "swift_bench_inputs" / f"{key}.json").read_text())
 
@@ -116,9 +125,11 @@ def main() -> None:
 
     if not args.skip_wrapper:
         import export_duration as ed
-        pad_to = next(s for s in [32, 64, 128, 256, 512] if s >= n)
+        pad_to = next(s for s in PADDED_TOKEN_BUCKETS if s >= n)
+        # Same HF weights as arm A above (the checkpoints/ symlinks are dead
+        # on this host, so the config/ckpt path form is unavailable).
         wrapper = ed._eval_export_model(ed.DurationModel(
-            KModel(config=str(cfg), model=str(ckpt), disable_complex=True)))
+            KModel(repo_id="hexgrad/Kokoro-82M", disable_complex=True)))
         ids = torch.zeros((1, pad_to), dtype=torch.long)
         ids[0, :n] = torch.LongTensor(input_ids)
         mask = torch.zeros((1, pad_to), dtype=torch.long)
@@ -127,7 +138,7 @@ def main() -> None:
             out = wrapper(ids, torch.from_numpy(ref_s), torch.tensor([speed]), mask)
         arms["B_wrapper_padded_fp32"] = out[0].squeeze().numpy()[:n]
 
-    pad_to = next(s for s in [32, 64, 128, 256, 512] if s >= n)
+    pad_to = next(s for s in PADDED_TOKEN_BUCKETS if s >= n)
     padded_pkg = ROOT / "coreml" / f"kokoro_duration_t{pad_to}.mlpackage"
     arms[f"C_coreml_padded_t{pad_to}_cpu"] = coreml_pred_dur(
         padded_pkg, input_ids, ref_s, speed, pad_to, ct.ComputeUnit.CPU_ONLY)

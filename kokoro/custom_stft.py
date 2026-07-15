@@ -187,12 +187,25 @@ class CustomSTFT(nn.Module):
 
         # Overlap-add normalization. torch.istft divides the overlap-added
         # signal by the window-power envelope sum_m(w^2[n - m*hop]). For a
-        # periodic Hann window whose length is a multiple of the hop, that
-        # envelope is a constant in steady state, so it can be folded into the
-        # conv_transpose weights (a per-sample division is not expressible as
-        # a conv_transpose). Only the first/last (n_fft - hop) samples sit
-        # below steady state, and the center trim in ``inverse`` removes
-        # n_fft/2 of those on each side.
+        # periodic Hann window that envelope is constant in steady state IFF
+        # n_fft is a multiple of the hop AND n_fft/hop >= 3. The >= 3 bound is
+        # not pedantry: w^2 for a periodic Hann contains a cos(4*pi*n/n_fft)
+        # term that only cancels across shifted copies when the overlap factor
+        # does not divide its harmonic index 2, so n_fft/hop = 2 leaves a
+        # +/-33% periodic ripple that this constant-scalar fold would bake
+        # into the audio. Every in-repo instantiation satisfies the condition
+        # with ratio 4: the Kokoro generator geometry n_fft=20/hop=5
+        # (kokoro/istftnet.py Generator, mirrored by the scripts/probe_*.py
+        # forensic scripts) and the 800/200 and n_fft//4 test geometries in
+        # tests/test_custom_stft.py. Only the first/last (n_fft - hop)
+        # samples sit below steady state, and the center trim in ``inverse``
+        # removes n_fft/2 of those on each side.
+        assert self.n_fft % self.hop_length == 0 and self.n_fft // self.hop_length >= 3, (
+            f"CustomSTFT constant-scalar OLA fold requires hop dividing n_fft "
+            f"with overlap factor >= 3 (got n_fft={self.n_fft}, "
+            f"hop={self.hop_length}); ratio 2 has a +/-33% window-power "
+            f"ripple that this fold would bake into the audio."
+        )
         win_np = window_tensor.numpy()
         window_power_sum = np.zeros(self.hop_length)
         for offset in range(0, self.n_fft, self.hop_length):

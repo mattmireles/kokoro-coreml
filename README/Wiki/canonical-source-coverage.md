@@ -1,6 +1,6 @@
 ---
 title: Canonical Source Coverage
-last_synced: 2026-07-14
+last_synced: 2026-07-15
 coverage_index: true
 ---
 
@@ -68,6 +68,7 @@ This is a deterministic coverage index, not a current-belief page. It lists read
 - [README/Notes/external-bakeoff-phase2-run-log.md](../Notes/external-bakeoff-phase2-run-log.md)
 - [README/Notes/fixed-cost-latency-fit.md](../Notes/fixed-cost-latency-fit.md)
 - [README/Notes/har-stft-phase-contract.md](../Notes/har-stft-phase-contract.md)
+- [README/Notes/hf-fixed-package-reupload-2026-07-14.md](../Notes/hf-fixed-package-reupload-2026-07-14.md)
 - [README/Notes/iphone-debug-notes.md](../Notes/iphone-debug-notes.md)
 - [README/Notes/iphone-performance-notes.md](../Notes/iphone-performance-notes.md)
 - [README/Notes/iphone-release-build-mlx-comparison.md](../Notes/iphone-release-build-mlx-comparison.md)
@@ -82,15 +83,7 @@ This is a deterministic coverage index, not a current-belief page. It lists read
 - [README/Notes/mrt2-public-repo-sync-2026-07-14.md](../Notes/mrt2-public-repo-sync-2026-07-14.md)
 - [README/Notes/performance-notes.md](../Notes/performance-notes.md)
 - [README/Notes/stage-compute-policy-ablation.md](../Notes/stage-compute-policy-ablation.md)
-- [README/Plans/kokoro-external-bakeoff-v1.md](../Plans/kokoro-external-bakeoff-v1.md)
 - [README/SDK.md](../SDK.md)
-- [README/Templates/ADR-template.md](../Templates/ADR-template.md)
-- [README/Templates/Notes-template.md](../Templates/Notes-template.md)
-- [README/Templates/Plans-template.md](../Templates/Plans-template.md)
-- [README/Wiki/README.md](README.md)
-- [README/Wiki/coreml-export.md](coreml-export.md)
-- [README/Wiki/external-bakeoff.md](external-bakeoff.md)
-- [README/Wiki/runtime-boundary.md](runtime-boundary.md)
 - [README/coreml-conversion-guide.md](../coreml-conversion-guide.md)
 - [README/hf-model-card.md](../hf-model-card.md)
 - [README/kokoro-generator-rebuild.md](../kokoro-generator-rebuild.md)

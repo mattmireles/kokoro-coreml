@@ -111,6 +111,71 @@ final class HarmonicSourceTests: XCTestCase {
         }
     }
 
+    /// Regression test for the SplitMix64 seed scrambler in `SeededRNG.init`
+    /// (HarmonicSource.swift, fixed 2026-07-14).
+    ///
+    /// Before the fix the xorshift64 state was seeded directly, and 0 is
+    /// xorshift64's absorbing state: every draw returned 0 forever. Through
+    /// Box-Muller that collapsed the "Gaussian" noise into a deterministic
+    /// two-value impulse train (~5.65, 0, 5.65, 0, ...) — pure DC + Nyquist,
+    /// no broadband noise — which is what the CS1 evaluation clips (rendered
+    /// with --seed 0) suffered from; see
+    /// README/Notes/cs1-audio-quality-evaluation-2026-07-14.md.
+    ///
+    /// `testGaussianNoiseMatchesScalarBoxMullerReference` cannot catch a
+    /// removed scrambler because both sides construct the same `SeededRNG`,
+    /// so a degenerate stream matches its own degenerate reference. This
+    /// test pins the OUTPUT distribution for the exact absorbing seed
+    /// instead: if the SplitMix64 finalizer is deleted, the pre-fix output
+    /// has mean ~2.82, variance ~7.97, and exactly 2 distinct values, so the
+    /// mean, variance, and distinct-count assertions below all fail (the
+    /// max-run check does not — alternating values have run length 1 — it
+    /// guards the separate constant-output degeneracy).
+    func testSeedZeroProducesBroadbandGaussianNoise() {
+        // Large enough that the statistical bands below are many sigma wide,
+        // small enough to stay instant. For a standard Gaussian at n = 4096
+        // the sample mean has sigma ~ 1/sqrt(n) = 0.016 and the sample
+        // variance has sigma ~ sqrt(2/n) = 0.022, so 0.15 / [0.7, 1.3] are
+        // ~10-sigma bands: they never flake, and fail hard on degeneracy.
+        let count = 4096
+        let absorbingSeed: UInt64 = 0  // pre-fix xorshift64 absorbing state
+        var noise = [Float](repeating: 0, count: count)
+        generateGaussianNoise(into: &noise, count: count, seed: absorbingSeed)
+
+        var sum = 0.0
+        for x in noise { sum += Double(x) }
+        let mean = sum / Double(count)
+        var sumSq = 0.0
+        for x in noise {
+            let d = Double(x) - mean
+            sumSq += d * d
+        }
+        let variance = sumSq / Double(count)
+
+        XCTAssertEqual(mean, 0.0, accuracy: 0.15,
+                       "seed-0 noise mean should be ~0 (pre-fix degenerate stream had mean ~2.82)")
+        XCTAssertGreaterThan(variance, 0.7,
+                             "seed-0 noise variance collapsed — RNG produced a near-constant stream")
+        XCTAssertLessThan(variance, 1.3,
+                          "seed-0 noise variance should be ~1.0 (pre-fix impulse train had variance ~7.97)")
+
+        // Broadband Gaussian floats are essentially all distinct; the
+        // pre-fix stream took exactly two values (the DC + Nyquist train).
+        let distinctValues = Set(noise).count
+        XCTAssertGreaterThan(distinctValues, count / 2,
+                             "seed-0 noise repeats values — degenerate periodic pattern, not broadband noise")
+
+        // No long run of identical samples (a constant/DC segment).
+        var maxRun = 1
+        var run = 1
+        for i in 1..<count {
+            run = noise[i] == noise[i - 1] ? run + 1 : 1
+            maxRun = max(maxRun, run)
+        }
+        XCTAssertLessThanOrEqual(maxRun, 3,
+                                 "seed-0 noise has a run of \(maxRun) identical samples — DC segment, not noise")
+    }
+
     // MARK: - Linear interpolation
 
     func testLinearInterpolateIdentity() {

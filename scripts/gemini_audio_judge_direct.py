@@ -275,10 +275,14 @@ def upload(key: str, path: Path, display_name: str) -> tuple[str, str]:
     """Upload one audio file to the Gemini Files API."""
     data = path.read_bytes()
     mime = "audio/wav" if path.suffix.lower() == ".wav" else "audio/mpeg"
+    # The API key travels in the x-goog-api-key header, never in the URL:
+    # query-string keys leak into shell history, process listings, proxy
+    # logs, and any error message that echoes the request URL.
     start = urllib.request.Request(
-        f"{BASE}/upload/v1beta/files?key={key}",
+        f"{BASE}/upload/v1beta/files",
         method="POST",
         headers={
+            "x-goog-api-key": key,
             "X-Goog-Upload-Protocol": "resumable",
             "X-Goog-Upload-Command": "start",
             "X-Goog-Upload-Header-Content-Length": str(len(data)),
@@ -294,6 +298,7 @@ def upload(key: str, path: Path, display_name: str) -> tuple[str, str]:
             upload_url,
             method="POST",
             headers={
+                "x-goog-api-key": key,
                 "X-Goog-Upload-Command": "upload, finalize",
                 "X-Goog-Upload-Offset": "0",
                 "Content-Length": str(len(data)),
@@ -308,8 +313,12 @@ def upload(key: str, path: Path, display_name: str) -> tuple[str, str]:
             if state != "PROCESSING":
                 break
             time.sleep(FILE_POLL_INTERVAL_SECONDS)
+            poll = urllib.request.Request(
+                f"{BASE}/v1beta/{name}",
+                headers={"x-goog-api-key": key},
+            )
             with urllib.request.urlopen(
-                f"{BASE}/v1beta/{name}?key={key}",
+                poll,
                 timeout=HTTP_TIMEOUT_SECONDS,
             ) as response:
                 info = json.load(response)
@@ -472,9 +481,12 @@ def main() -> int:
             },
         }
         request = urllib.request.Request(
-            f"{BASE}/v1beta/{args.model}:generateContent?key={key}",
+            f"{BASE}/v1beta/{args.model}:generateContent",
             method="POST",
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": key,
+            },
             data=json.dumps(body).encode(),
         )
         try:

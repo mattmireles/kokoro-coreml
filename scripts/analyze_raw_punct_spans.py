@@ -10,6 +10,16 @@ Core ML audio next to the PyTorch reference. Answers two questions:
    (peak inside punctuation spans >> neighboring speech floor -> clicks)
 2. How much real speech energy does the whitespace suppression delete?
 
+FORENSIC SCRIPT — INTENTIONALLY MODELS THE PRE-2026-07-14 BEHAVIOR. The
+``suppressed()`` predicate below includes punctuation-adjacent whitespace,
+matching the suppression logic that shipped BEFORE the 2026-07-14 fix. That
+whitespace suppression was the 15s pause-elongation root cause and was
+removed: shouldSuppressPunctuationSpan in
+swift/Sources/KokoroPipeline/WaveformPostProcess.swift now suppresses
+punctuation tokens only. Do not update this predicate — question 2 above is
+precisely about what the OLD logic deleted. See
+README/Notes/cs1-audio-quality-evaluation-2026-07-14.md for the fix.
+
 Usage:
   .venv/bin/python scripts/analyze_raw_punct_spans.py \
       --dump outputs/audio-parity/punct-debug/tensors --key 15s
@@ -71,6 +81,8 @@ def main() -> None:
     n = len(tokens)
     valid = [i for i in range(n) if not (tokens[i] == 0 and i > 0)]  # crude; report all nonzero-dur
 
+    # PRE-2026-07-14 suppression span definition (punctuation + adjacent
+    # whitespace) — intentionally NOT the current Swift logic; see docstring.
     def suppressed(i: int) -> bool:
         tid = int(tokens[i])
         if tid in SILENT_PUNCT_IDS:
