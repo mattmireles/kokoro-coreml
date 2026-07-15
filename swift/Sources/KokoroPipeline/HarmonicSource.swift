@@ -235,9 +235,13 @@ public func sineGen(
     // noise_amp = uv * noise_std + (1 - uv) * sine_amp / 3
 
     // Pre-compute voiced/unvoiced mask
+    let unvoicedNoiseAmp = sineAmp / 3.0
     var uvMask = [Float](repeating: 0, count: L)
+    var noiseAmp = [Float](repeating: 0, count: L)
     for t in 0..<L {
-        uvMask[t] = f0Upsampled[t] > threshold ? 1.0 : 0.0
+        let uv: Float = f0Upsampled[t] > threshold ? 1.0 : 0.0
+        uvMask[t] = uv
+        noiseAmp[t] = uv * noiseStd + (1.0 - uv) * unvoicedNoiseAmp
     }
 
     // Pre-generate all Gaussian noise at once (fast, vectorized approach)
@@ -247,14 +251,26 @@ public func sineGen(
     generateGaussianNoise(into: &gaussianNoise, count: totalNoise, seed: seed)
 
     // Apply voiced/unvoiced mask + noise to each harmonic
-    let unvoicedNoiseAmp = sineAmp / 3.0
-    for h in 0..<dim {
-        let sineOffset = h * L
-        let noiseOffset = h * L
-        for t in 0..<L {
-            let uv = uvMask[t]
-            let noiseAmp = uv * noiseStd + (1.0 - uv) * unvoicedNoiseAmp
-            sineWaves[sineOffset + t] = sineWaves[sineOffset + t] * uv + noiseAmp * gaussianNoise[noiseOffset + t]
+    var maskedSine = [Float](repeating: 0, count: L)
+    var scaledNoise = [Float](repeating: 0, count: L)
+    sineWaves.withUnsafeMutableBufferPointer { sinePtr in
+        gaussianNoise.withUnsafeBufferPointer { noisePtr in
+            uvMask.withUnsafeBufferPointer { uvPtr in
+                noiseAmp.withUnsafeBufferPointer { ampPtr in
+                    maskedSine.withUnsafeMutableBufferPointer { maskedPtr in
+                        scaledNoise.withUnsafeMutableBufferPointer { scaledPtr in
+                            for h in 0..<dim {
+                                let offset = h * L
+                                let sineBase = sinePtr.baseAddress!.advanced(by: offset)
+                                let noiseBase = noisePtr.baseAddress!.advanced(by: offset)
+                                vDSP_vmul(sineBase, 1, uvPtr.baseAddress!, 1, maskedPtr.baseAddress!, 1, vDSP_Length(L))
+                                vDSP_vmul(noiseBase, 1, ampPtr.baseAddress!, 1, scaledPtr.baseAddress!, 1, vDSP_Length(L))
+                                vDSP_vadd(maskedPtr.baseAddress!, 1, scaledPtr.baseAddress!, 1, sineBase, 1, vDSP_Length(L))
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -265,6 +281,136 @@ public func sineGen(
 
     // Compute weighted sum across harmonics:
     // merged[t] = tanh(bias + sum_h(sineWaves[h*L+t] * weights[h])).
+    var merged = [Float](repeating: 0, count: L)
+    linearWeights.withUnsafeBufferPointer { weightsPtr in
+        sineWaves.withUnsafeBufferPointer { sinePtr in
+            merged.withUnsafeMutableBufferPointer { mergedPtr in
+                vDSP_mmul(
+                    weightsPtr.baseAddress!, 1,
+                    sinePtr.baseAddress!, 1,
+                    mergedPtr.baseAddress!, 1,
+                    1,
+                    vDSP_Length(L),
+                    vDSP_Length(dim)
+                )
+            }
+        }
+    }
+    var bias = linearBias
+    vDSP_vsadd(merged, 1, &bias, &merged, 1, vDSP_Length(L))
+    var tanhCount = Int32(L)
+    vvtanhf(&merged, merged, &tanhCount)
+
+    return merged
+}
+
+/// Generate harmonic sine waves directly from bucket-frame F0 values.
+///
+/// ``buildHarComponents(f0Padded:linearWeights:linearBias:seed:)`` previously
+/// expanded F0 by 300x, then ``sineGen`` immediately downsampled phase
+/// increments back to one value per original F0 frame. For this exact
+/// nearest-neighbor geometry, the downsampled phase increment for frame `i` is
+/// the original `f0Padded[i] * harmonic / sampleRate`. This fast path preserves
+/// the old waveform while avoiding the redundant phase upsample/downsample
+/// work. The final sine/noise stream is still generated at audio-sample
+/// resolution because the downstream STFT consumes the full source waveform.
+public func sineGenFromF0Frames(
+    f0Frames: [Float],
+    linearWeights: [Float],
+    linearBias: Float,
+    seed: UInt64? = nil
+) -> [Float] {
+    let frameCount = f0Frames.count
+    let scale = HarmonicConstants.upsampleScale
+    let L = frameCount * scale
+    let dim = HarmonicConstants.harmonicDim
+    let sr = HarmonicConstants.sampleRate
+    let sineAmp = HarmonicConstants.sineAmp
+    let noiseStd = HarmonicConstants.noiseStd
+    let threshold = HarmonicConstants.voicedThreshold
+
+    guard frameCount > 0 else { return [] }
+
+    var radDS = [Double](repeating: 0, count: frameCount)
+    var cumPhase = [Double](repeating: 0, count: frameCount)
+    var phaseScaled = [Double](repeating: 0, count: frameCount)
+    var phaseUp = [Double](repeating: 0, count: L)
+    var sinResult = [Double](repeating: 0, count: L)
+    var floatSines = [Float](repeating: 0, count: L)
+    var sineWaves = [Float](repeating: 0, count: dim * L)
+    var rng: RandomNumberGenerator = seed.map { SeededRNG(seed: $0) as RandomNumberGenerator } ?? SystemRandomNumberGenerator()
+    let twoPiTimesScale = 2.0 * Double.pi * Double(scale)
+
+    for h in 0..<dim {
+        let invSr = Double(h + 1) / sr
+        for t in 0..<frameCount {
+            let r = (Double(f0Frames[t]) * invSr).truncatingRemainder(dividingBy: 1.0)
+            radDS[t] = r < 0 ? r + 1.0 : r
+        }
+        if h > 0 {
+            // Preserve the legacy RNG draw count. In the nearest-neighbor
+            // geometry, the old random phase perturbation lived at sample 0 and
+            // was not sampled by the align_corners=false downsample point.
+            _ = Double.random(in: 0..<1, using: &rng)
+        }
+
+        cumPhase[0] = radDS[0]
+        for t in 1..<frameCount {
+            cumPhase[t] = cumPhase[t - 1] + radDS[t]
+        }
+
+        vDSP_vsmulD(cumPhase, 1, [twoPiTimesScale], &phaseScaled, 1, vDSP_Length(frameCount))
+        linearInterpolateInto(from: phaseScaled, count: frameCount, into: &phaseUp, targetLen: L)
+
+        var n = Int32(L)
+        vvsin(&sinResult, phaseUp, &n)
+
+        vDSP_vdpsp(sinResult, 1, &floatSines, 1, vDSP_Length(L))
+        var ampScalar = sineAmp
+        vDSP_vsmul(floatSines, 1, &ampScalar, &sineWaves[h * L], 1, vDSP_Length(L))
+    }
+
+    let unvoicedNoiseAmp = sineAmp / 3.0
+    var uvMask = [Float](repeating: 0, count: L)
+    var noiseAmp = [Float](repeating: 0, count: L)
+    for (frame, f0) in f0Frames.enumerated() {
+        let uv: Float = f0 > threshold ? 1.0 : 0.0
+        let amp = uv * noiseStd + (1.0 - uv) * unvoicedNoiseAmp
+        let start = frame * scale
+        for j in 0..<scale {
+            uvMask[start + j] = uv
+            noiseAmp[start + j] = amp
+        }
+    }
+
+    let totalNoise = dim * L
+    var gaussianNoise = [Float](repeating: 0, count: totalNoise)
+    generateGaussianNoise(into: &gaussianNoise, count: totalNoise, seed: seed)
+
+    var maskedSine = [Float](repeating: 0, count: L)
+    var scaledNoise = [Float](repeating: 0, count: L)
+    sineWaves.withUnsafeMutableBufferPointer { sinePtr in
+        gaussianNoise.withUnsafeBufferPointer { noisePtr in
+            uvMask.withUnsafeBufferPointer { uvPtr in
+                noiseAmp.withUnsafeBufferPointer { ampPtr in
+                    maskedSine.withUnsafeMutableBufferPointer { maskedPtr in
+                        scaledNoise.withUnsafeMutableBufferPointer { scaledPtr in
+                            for h in 0..<dim {
+                                let offset = h * L
+                                let sineBase = sinePtr.baseAddress!.advanced(by: offset)
+                                let noiseBase = noisePtr.baseAddress!.advanced(by: offset)
+                                vDSP_vmul(sineBase, 1, uvPtr.baseAddress!, 1, maskedPtr.baseAddress!, 1, vDSP_Length(L))
+                                vDSP_vmul(noiseBase, 1, ampPtr.baseAddress!, 1, scaledPtr.baseAddress!, 1, vDSP_Length(L))
+                                vDSP_vadd(maskedPtr.baseAddress!, 1, scaledPtr.baseAddress!, 1, sineBase, 1, vDSP_Length(L))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert(linearWeights.count == dim, "Linear weights must have \(dim) elements")
     var merged = [Float](repeating: 0, count: L)
     linearWeights.withUnsafeBufferPointer { weightsPtr in
         sineWaves.withUnsafeBufferPointer { sinePtr in
@@ -426,23 +572,20 @@ public func buildHarComponents(
     linearBias: Float,
     seed: UInt64? = nil
 ) -> HarDebugComponents {
-    // 1. F0 upsample (nearest, x300)
-    let f0Up = f0Upsample(f0Padded)
-
-    // 2. SineGen + SourceModuleHnNSF merge
-    let harSource = sineGen(
-        f0Upsampled: f0Up,
+    // 1. SineGen + SourceModuleHnNSF merge.
+    let harSource = sineGenFromF0Frames(
+        f0Frames: f0Padded,
         linearWeights: linearWeights,
         linearBias: linearBias,
         seed: seed
     )
 
-    // 3. STFT transform
+    // 2. STFT transform
     let (mag, ph) = stftTransform(harSource)
     let freqBins = HarmonicConstants.stftFreqBins // 11
     let nFrames = mag.count / freqBins
 
-    // 4. Concatenate [magnitude, phase] along channel dim
+    // 3. Concatenate [magnitude, phase] along channel dim
     // Output layout: (22, nFrames) in channel-major order
     // First 11 channels = magnitude, next 11 = phase
     var har = [Float](repeating: 0, count: HarmonicConstants.harChannels * nFrames)
@@ -538,11 +681,24 @@ func linearInterpolateInto(from input: [Double], count srcCount: Int, into outpu
 // MARK: - Random Number Generation
 
 /// Seeded RNG for reproducible benchmarks.
+///
+/// The raw xorshift64 step has an absorbing zero state: seeding with 0 made
+/// every draw return 0 forever. Through Box-Muller that turned the HNSF
+/// "Gaussian" noise into a deterministic DC + Nyquist impulse train — no
+/// broadband noise at all — which is exactly what the CS1 perceptual
+/// evaluation clips (rendered with --seed 0) suffered from on 2026-07-14.
+/// SplitMix64 scrambles any seed, including 0 and other small values, into a
+/// well-distributed nonzero xorshift state.
 struct SeededRNG: RandomNumberGenerator {
     private var state: UInt64
 
     init(seed: UInt64) {
-        self.state = seed
+        // SplitMix64 finalizer (Steele et al., "Fast Splittable PRNGs").
+        var z = seed &+ 0x9E37_79B9_7F4A_7C15
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        z ^= z >> 31
+        self.state = z == 0 ? 0x9E37_79B9_7F4A_7C15 : z
     }
 
     mutating func next() -> UInt64 {

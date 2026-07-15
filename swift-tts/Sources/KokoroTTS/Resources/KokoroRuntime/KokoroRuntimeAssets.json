@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "resource_profile": "kokoro-tts-runtime-assets-v1",
+  "vocab": {
+    "path": "kokoro-vocab.json",
+    "sha256": "353ca94410fde4575cb091a0ba32b8e99077fde4f38fded506f4f041d22571a3",
+    "canonical_json_sha256": "c888d4ef5abac125fcd45201e54aa6bf512722bcc4213f76bb053edb056923de",
+    "entries": 114,
+    "provenance": {
+      "source": "Gist iOS app Resources/Kokoro/kokoro-vocab.json",
+      "source_sha256": "353ca94410fde4575cb091a0ba32b8e99077fde4f38fded506f4f041d22571a3",
+      "logical_repo_matches": [
+        "_kokoro_vocab.json",
+        "ios-bench/Vendor/kokoro-ios/Resources/config.json:vocab"
+      ]
+    }
+  },
+  "hnsf_weights": {
+    "path": "hnsf_weights.json",
+    "sha256": "de73b717732da77b31736f67a108d35c478ab116b0a188e9787019b0408c0226",
+    "weights_sha256": "25a471a6fc81fc9c5ff7c46e4be9d9ec3710dbbfea6e121a99fac75e4a97ad99",
+    "linear_weight_count": 9,
+    "provenance": {
+      "source": "ios-bench/Resources/bench_inputs/hnsf_weights.json",
+      "source_sha256": "de73b717732da77b31736f67a108d35c478ab116b0a188e9787019b0408c0226",
+      "repo_matches": [
+        "hnsf_weights.json",
+        "ios-bench/Resources/bench_inputs/hnsf_weights.json"
+      ]
+    }
+  }
+}

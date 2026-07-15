@@ -373,6 +373,11 @@ Mastering Core ML Compute Unit scheduling on Apple Silicon requires peeling back
 
 By combining powermetrics to detect zero-watt ANE utilization, structuring models to strictly adhere to the 64-byte hardware padding constraints, padding stateful tensors to 32-width boundaries to avoid OS bugs, and manually partitioning mixed-architecture graphs via discrete MLComputeUnits, engineers can successfully circumvent the scheduler's limitations. Deterministic, high-performance machine learning execution on Apple Silicon is not achieved by allowing the operating system to guess the optimal execution path, but by meticulously architecting the model geometry to leave the compiler with only one logical choice.
 
+For SSD-tier model-weight experiments, combine this placement guidance with the
+[Apple Silicon NVMe and energy measurement guide](apple-silicon-nvme-energy-measurement-guide.md);
+that guide covers `F_NOCACHE`, `fs_usage`, physical disk-read proof, and
+joules/token capture for storage-backed prefetch claims.
+
 #### **Works cited**
 
 1. Apple - CoreML | onnxruntime, accessed April 14, 2026, [https://onnxruntime.ai/docs/execution-providers/CoreML-ExecutionProvider.html](https://onnxruntime.ai/docs/execution-providers/CoreML-ExecutionProvider.html)  

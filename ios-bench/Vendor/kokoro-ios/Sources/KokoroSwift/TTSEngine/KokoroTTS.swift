@@ -227,6 +227,19 @@ public final class KokoroTTS {
     return (audio[0].asArray(Float.self), tokenArray)
   }
   
+  /// Bench-only patch (kokoro-coreml ios-bench, NOT upstream API): runs just
+  /// the G2P + language-update prefix of ``generateAudio`` so the harness can
+  /// measure the Misaki G2P cost in isolation. The MLX arm's published
+  /// timings include this pass (its API takes raw text); the Core ML arm's
+  /// exclude it (pre-tokenized inputs) — this method lets the comparison
+  /// bound that boundary asymmetry numerically. Returns the phonemized text
+  /// so the pass cannot be dead-code-eliminated.
+  public func phonemizeOnlyForBench(language: Language, text: String) throws -> String {
+    try updateLanguageIfNeeded(language)
+    let (phonemizedText, _) = try phonemizeText(text)
+    return phonemizedText
+  }
+
   /// Updates the G2P language if it differs from the current language.
   private func updateLanguageIfNeeded(_ language: Language) throws {
     guard chosenLanguage != language else { return }

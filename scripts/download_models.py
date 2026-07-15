@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Download CoreML models and voice files from Hugging Face Hub.
 
-Models are stored on HF instead of Git LFS to avoid storage costs.
-This script downloads them to the local paths the pipeline expects.
+Models are stored on Hugging Face, not in this git repo. This script downloads
+them to the local paths the pipeline expects.
 
 Usage::
 
@@ -19,8 +19,13 @@ The HF token is read from (in order):
 from __future__ import annotations
 
 import argparse
+import fnmatch
+import hashlib
+import json
 import os
 import sys
+from collections.abc import Iterable
+from datetime import datetime, timezone
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -40,6 +45,15 @@ COREML_PATTERNS = [
 VOICE_PATTERNS = [
     "kokoro.js/voices/*.bin",
 ]
+ENGLISH_VOICE_PATTERNS = [
+    "kokoro.js/voices/af_*.bin",
+    "kokoro.js/voices/am_*.bin",
+    "kokoro.js/voices/bf_*.bin",
+    "kokoro.js/voices/bm_*.bin",
+]
+STARTER_BUCKET_SECONDS = [15]
+SDK_DURATION_TOKEN_SIZES = [32, 64, 128, 256, 320, 384, 512]
+STARTER_VOICES = ["af_heart"]
 # Files to always skip (not model artifacts).
 # IMPORTANT: Do NOT add "*.json" here — it would exclude Manifest.json inside
 # .mlpackage directories, producing corrupt/incomplete packages.
@@ -99,13 +113,16 @@ def _load_token() -> str | None:
 def download(
     allow_patterns: list[str],
     token: str | None,
+    repo_id: str = HF_REPO_ID,
+    revision: str | None = None,
     force: bool = False,
 ) -> str:
     """Download matching files from the HF repo to the repo root."""
     from huggingface_hub import snapshot_download
 
     return snapshot_download(
-        repo_id=HF_REPO_ID,
+        repo_id=repo_id,
+        revision=revision,
         local_dir=str(_REPO_ROOT),
         allow_patterns=allow_patterns,
         ignore_patterns=IGNORE_PATTERNS,
@@ -114,7 +131,12 @@ def download(
     )
 
 
-def _repair_missing_manifests(token: str | None, force: bool = False) -> int:
+def _repair_missing_manifests(
+    token: str | None,
+    repo_id: str = HF_REPO_ID,
+    revision: str | None = None,
+    force: bool = False,
+) -> int:
     """Download any Manifest.json files that snapshot_download silently skipped.
 
     huggingface_hub.snapshot_download() has a known quirk where it can skip
@@ -144,8 +166,9 @@ def _repair_missing_manifests(token: str | None, force: bool = False) -> int:
         print(f"  Repairing {rel_path} — downloading missing Manifest.json ...")
         try:
             hf_hub_download(
-                HF_REPO_ID,
+                repo_id,
                 hf_file,
+                revision=revision,
                 token=token,
                 local_dir=str(_REPO_ROOT),
                 force_download=True,
@@ -154,6 +177,202 @@ def _repair_missing_manifests(token: str | None, force: bool = False) -> int:
         except Exception as exc:
             print(f"    WARNING: could not download {hf_file}: {exc}")
     return repaired
+
+
+def _split_csv(raw: str | None) -> list[str]:
+    """Split a comma-delimited CLI value into non-empty strings."""
+
+    if not raw:
+        return []
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _split_int_csv(raw: str | None) -> list[int]:
+    """Split a comma-delimited CLI value into positive integers."""
+
+    values: list[int] = []
+    for item in _split_csv(raw):
+        try:
+            value = int(item)
+        except ValueError as exc:
+            raise SystemExit(f"invalid integer in comma list: {item}") from exc
+        if value <= 0:
+            raise SystemExit(f"integer values must be positive: {item}")
+        values.append(value)
+    return values
+
+
+def _sdk_patterns(profile: str, voices: list[str], buckets: list[int]) -> list[str]:
+    """Return HF allow patterns for an SDK download profile."""
+
+    if profile == "full":
+        return COREML_PATTERNS + ENGLISH_VOICE_PATTERNS
+    if profile == "starter":
+        voices = voices or STARTER_VOICES
+        buckets = buckets or STARTER_BUCKET_SECONDS
+        duration_sizes = SDK_DURATION_TOKEN_SIZES
+    elif profile == "custom":
+        if not voices:
+            raise SystemExit("--sdk-profile custom requires --sdk-voices")
+        if not buckets:
+            raise SystemExit("--sdk-profile custom requires --sdk-buckets")
+        duration_sizes = SDK_DURATION_TOKEN_SIZES
+    else:
+        raise SystemExit(f"unknown SDK profile: {profile}")
+
+    patterns: list[str] = []
+    for size in duration_sizes:
+        patterns.append(f"coreml/kokoro_duration_t{size}.mlpackage/**")
+    for bucket in buckets:
+        t_frames = bucket * 40
+        patterns.extend([
+            f"coreml/kokoro_f0ntrain_t{t_frames}.mlpackage/**",
+            f"coreml/kokoro_decoder_pre_{bucket}s.mlpackage/**",
+            f"coreml/kokoro_decoder_har_post_{bucket}s.mlpackage/**",
+        ])
+    for voice in voices:
+        patterns.append(f"kokoro.js/voices/{voice}.bin")
+    return patterns
+
+
+def _sdk_required_packages(profile: str, voices: list[str], buckets: list[int]) -> list[str]:
+    """Return model package directories required by an SDK profile."""
+
+    if profile == "full":
+        return [
+            "coreml/kokoro_duration_t32.mlpackage",
+            "coreml/kokoro_duration_t64.mlpackage",
+            "coreml/kokoro_duration_t128.mlpackage",
+            "coreml/kokoro_duration_t256.mlpackage",
+            "coreml/kokoro_duration_t320.mlpackage",
+            "coreml/kokoro_duration_t384.mlpackage",
+            "coreml/kokoro_duration_t512.mlpackage",
+            "coreml/kokoro_f0ntrain_t120.mlpackage",
+            "coreml/kokoro_f0ntrain_t280.mlpackage",
+            "coreml/kokoro_f0ntrain_t400.mlpackage",
+            "coreml/kokoro_f0ntrain_t600.mlpackage",
+            "coreml/kokoro_f0ntrain_t1200.mlpackage",
+            "coreml/kokoro_decoder_pre_3s.mlpackage",
+            "coreml/kokoro_decoder_pre_7s.mlpackage",
+            "coreml/kokoro_decoder_pre_10s.mlpackage",
+            "coreml/kokoro_decoder_pre_15s.mlpackage",
+            "coreml/kokoro_decoder_pre_30s.mlpackage",
+            "coreml/kokoro_decoder_har_post_3s.mlpackage",
+            "coreml/kokoro_decoder_har_post_7s.mlpackage",
+            "coreml/kokoro_decoder_har_post_10s.mlpackage",
+            "coreml/kokoro_decoder_har_post_15s.mlpackage",
+            "coreml/kokoro_decoder_har_post_30s.mlpackage",
+        ]
+    if profile == "starter":
+        buckets = buckets or STARTER_BUCKET_SECONDS
+        duration_sizes = SDK_DURATION_TOKEN_SIZES
+    elif profile == "custom":
+        duration_sizes = SDK_DURATION_TOKEN_SIZES
+    else:
+        raise SystemExit(f"unknown SDK profile: {profile}")
+
+    packages: list[str] = []
+    for size in duration_sizes:
+        packages.append(f"coreml/kokoro_duration_t{size}.mlpackage")
+    for bucket in buckets:
+        packages.extend([
+            f"coreml/kokoro_f0ntrain_t{bucket * 40}.mlpackage",
+            f"coreml/kokoro_decoder_pre_{bucket}s.mlpackage",
+            f"coreml/kokoro_decoder_har_post_{bucket}s.mlpackage",
+        ])
+    return packages
+
+
+def _sha256_file(path: Path) -> str:
+    """Compute a SHA-256 digest for a regular file."""
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _matches_any(path: str, patterns: list[str]) -> bool:
+    """Return whether a repository-relative path matches any allow pattern."""
+
+    return any(fnmatch.fnmatch(path, pattern) for pattern in patterns)
+
+
+def _repo_files_for_patterns(repo_id: str, revision: str | None, patterns: list[str], token: str | None) -> list[dict]:
+    """Return HF file metadata for the exact repo files matched by allow patterns."""
+
+    from huggingface_hub import HfApi
+    from huggingface_hub.hf_api import RepoFile
+
+    api = HfApi(token=token)
+    files = []
+    for item in api.list_repo_tree(
+        repo_id=repo_id,
+        repo_type="model",
+        revision=revision,
+        recursive=True,
+        expand=True,
+    ):
+        # `list_repo_tree(recursive=True)` yields both file (blob) and folder
+        # (tree) nodes for nested paths like `*.mlpackage/Data/...`. Folder
+        # nodes carry no size/sha256 and are never themselves a download
+        # target, so they must be skipped here rather than treated as a
+        # missing-digest error below.
+        if not isinstance(item, RepoFile):
+            continue
+        path = getattr(item, "path", None)
+        if not isinstance(path, str):
+            continue
+        if not _matches_any(path, patterns) or _matches_any(path, IGNORE_PATTERNS):
+            continue
+        size = getattr(item, "size", None)
+        lfs = getattr(item, "lfs", None)
+        sha256 = None
+        if isinstance(lfs, dict):
+            sha256 = lfs.get("sha256")
+            size = size if size is not None else lfs.get("size")
+        elif lfs is not None:
+            sha256 = getattr(lfs, "sha256", None)
+            size = size if size is not None else getattr(lfs, "size", None)
+        if not sha256:
+            local = _REPO_ROOT / path
+            if local.is_file():
+                sha256 = _sha256_file(local)
+        if size is None:
+            local = _REPO_ROOT / path
+            if local.is_file():
+                size = local.stat().st_size
+        if size is None or not sha256:
+            raise SystemExit(f"could not determine HF digest metadata for {path}")
+        files.append({
+            "path": path,
+            "bytes": int(size),
+            "sha256": sha256,
+        })
+    return sorted(files, key=lambda item: item["path"])
+
+
+def _write_download_manifest(
+    manifest_path: Path,
+    repo_id: str,
+    revision: str | None,
+    patterns: list[str],
+    files: Iterable[dict],
+) -> None:
+    """Write a manifest for the exact HF files resolved by this download run."""
+
+    records = sorted(files, key=lambda item: item["path"])
+    manifest = {
+        "schema_version": 1,
+        "repo_id": repo_id,
+        "revision": revision,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "allow_patterns": patterns,
+        "files": records,
+    }
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def main() -> None:
@@ -172,6 +391,33 @@ def main() -> None:
         "--force", action="store_true",
         help="Re-download even if files already exist locally",
     )
+    parser.add_argument(
+        "--repo-id",
+        default=HF_REPO_ID,
+        help=f"Hugging Face repo ID (default: {HF_REPO_ID})",
+    )
+    parser.add_argument(
+        "--revision",
+        help="Pinned Hugging Face revision/commit to download",
+    )
+    parser.add_argument(
+        "--manifest-out",
+        type=Path,
+        help="Write a local file manifest for downloaded SDK artifacts",
+    )
+    parser.add_argument(
+        "--sdk-profile",
+        choices=["starter", "custom", "full"],
+        help="Download SDK-oriented artifact profile",
+    )
+    parser.add_argument(
+        "--sdk-voices",
+        help="Comma-delimited custom SDK voices, for example af_heart,af_bella",
+    )
+    parser.add_argument(
+        "--sdk-buckets",
+        help="Comma-delimited custom SDK bucket seconds, for example 3,15",
+    )
     args = parser.parse_args()
 
     token = _load_token()
@@ -181,7 +427,17 @@ def main() -> None:
         print("No HF_TOKEN found; using anonymous access (may fail for private repos).")
 
     # Determine which patterns to download.
-    if args.coreml and not args.voices:
+    sdk_voices = _split_csv(args.sdk_voices)
+    sdk_buckets = _split_int_csv(args.sdk_buckets)
+
+    if args.sdk_profile:
+        patterns = _sdk_patterns(
+            args.sdk_profile,
+            voices=sdk_voices,
+            buckets=sdk_buckets,
+        )
+        label = f"SDK {args.sdk_profile} profile"
+    elif args.coreml and not args.voices:
         patterns = COREML_PATTERNS
         label = "CoreML models"
     elif args.voices and not args.coreml:
@@ -191,32 +447,55 @@ def main() -> None:
         patterns = COREML_PATTERNS + VOICE_PATTERNS
         label = "all models and voices"
 
-    print(f"\nDownloading {label} from {HF_REPO_ID}...")
+    print(f"\nDownloading {label} from {args.repo_id}...")
+    if args.revision:
+        print(f"  Revision: {args.revision}")
     print(f"  Patterns: {patterns}")
     print(f"  Target:   {_REPO_ROOT}")
     print()
 
     try:
-        result_dir = download(patterns, token, force=args.force)
+        result_dir = download(
+            patterns,
+            token,
+            repo_id=args.repo_id,
+            revision=args.revision,
+            force=args.force,
+        )
         print(f"\nDownload complete: {result_dir}")
         # Repair any .mlpackage dirs where snapshot_download silently
         # skipped Manifest.json (known huggingface_hub quirk).
-        n_repaired = _repair_missing_manifests(token, force=args.force)
+        n_repaired = _repair_missing_manifests(
+            token,
+            repo_id=args.repo_id,
+            revision=args.revision,
+            force=args.force,
+        )
         if n_repaired:
             print(f"Repaired {n_repaired} package(s) with missing Manifest.json.")
+        if args.manifest_out:
+            files = _repo_files_for_patterns(args.repo_id, args.revision, patterns, token)
+            _write_download_manifest(args.manifest_out, args.repo_id, args.revision, patterns, files)
+            print(f"Wrote download manifest: {args.manifest_out}")
     except Exception as exc:
         print(f"\nDownload failed: {exc}", file=sys.stderr)
         sys.exit(1)
 
     # Verify key artifacts exist and are complete (have Manifest.json).
-    checks = [
-        ("coreml/kokoro_duration.mlpackage", "Duration model (legacy fallback)"),
-        ("coreml/kokoro_duration_t512.mlpackage", "Duration t512"),
-        ("coreml/kokoro_f0ntrain_t120.mlpackage", "F0Ntrain t120"),
-        ("coreml/kokoro_decoder_pre_3s.mlpackage", "DecoderPre 3s"),
-        ("coreml/kokoro_decoder_har_post_3s.mlpackage", "HAR-post 3s"),
-        ("coreml/kokoro_decoder_har_post_10s.mlpackage", "HAR-post 10s"),
-    ]
+    if args.sdk_profile:
+        checks = [
+            (rel_path, rel_path.removeprefix("coreml/").removesuffix(".mlpackage"))
+            for rel_path in _sdk_required_packages(args.sdk_profile, sdk_voices, sdk_buckets)
+        ]
+    else:
+        checks = [
+            ("coreml/kokoro_duration.mlpackage", "Duration model (legacy fallback)"),
+            ("coreml/kokoro_duration_t512.mlpackage", "Duration t512"),
+            ("coreml/kokoro_f0ntrain_t120.mlpackage", "F0Ntrain t120"),
+            ("coreml/kokoro_decoder_pre_3s.mlpackage", "DecoderPre 3s"),
+            ("coreml/kokoro_decoder_har_post_3s.mlpackage", "HAR-post 3s"),
+            ("coreml/kokoro_decoder_har_post_10s.mlpackage", "HAR-post 10s"),
+        ]
     all_ok = True
     for rel_path, label in checks:
         p = _REPO_ROOT / rel_path

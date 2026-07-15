@@ -9,7 +9,11 @@ import Foundation
 public enum KokoroVocabulary {
     /// BOS / EOS padding token.
     public static let bosEosTokenId: Int32 = 0
-    /// Whitespace token (``" "`` in vocab).
+    /// Whitespace token (``" "`` in vocab). NOT part of
+    /// ``silentPunctuationTokenIds``: whitespace spans — including whitespace
+    /// adjacent to punctuation — carry real speech (word onsets, phrase-final
+    /// decays at -11 to -22 dBFS in the PyTorch reference) and must never be
+    /// silenced. See ``suppressPunctuationTokenAudio`` (2026-07-14 CS1 fix).
     public static let whitespaceTokenId: Int32 = 16
 
     /// Punctuation tokens whose duration spans should be faded to silence in

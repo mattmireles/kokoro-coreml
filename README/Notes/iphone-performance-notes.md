@@ -9,6 +9,12 @@ iPhone debugging trails (failure modes, not timings) live in
 Newest entries first. Warmed inference only — first-load compile/cache effects
 are excluded from every table, per the runbook.
 
+**2026-07-14:** the v1 Config F vs MLX comparison below was Debug-vs-Debug;
+the Release-build re-run (both arms, plus a measured G2P bound and a thermal
+run-order caveat) lives in
+[iphone-release-build-mlx-comparison.md](iphone-release-build-mlx-comparison.md).
+Cite that note, not v1, for arm-vs-arm iPhone numbers.
+
 ## iPhone Bench v2: Release-build Config F ladder (supersedes v1 absolute timings)
 
 **Collected:** 2026-06-10

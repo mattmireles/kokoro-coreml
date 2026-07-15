@@ -6,10 +6,13 @@ Institutional memory for Kokoro PyTorch → Core ML (`mlprogram`) export, synthe
 
 ---
 
-## Issue: Core ML punctuation tokens clicked in reader audio — Active
+## Issue: Core ML punctuation tokens clicked in reader audio — Resolved
 
 **First spotted:** 2026-05-26
-**Status:** Active
+**Status:** Resolved (2026-07-14: suppression narrowed to punctuation tokens
+only after the whitespace rule was found to cut real speech; see the
+2026-07-14 log entry below and
+`README/Notes/cs1-audio-quality-evaluation-2026-07-14.md`)
 
 ### Summary
 
@@ -115,6 +118,28 @@ adjacent-space spans for `. (2023) —`, commas, and final period changed to
   then compared with PyTorch reference windows.
 - **Outcome:** Confirmed. PyTorch punctuation windows were near-silent, while
   Core ML output had impulses at several punctuation-owned spans.
+
+**2026-07-14 — suppression scope narrowed to punctuation tokens only**
+
+- The CS1 perceptual evaluation
+  (`README/Notes/cs1-audio-quality-evaluation-2026-07-14.md`) failed the 15s
+  bucket 3/3 on "abrupt dropouts / hard cuts to silence." Root cause was this
+  fix's whitespace-adjacency rule: punctuation-adjacent whitespace spans carry
+  real speech (word onsets / phrase-final decays at -11 to -22 dBFS in the
+  PyTorch reference, up to ~125 ms), and zeroing them cut audible speech at
+  every phrase boundary.
+- `scripts/analyze_raw_punct_spans.py` on a current `--dump-tensors` render
+  shows the PRE-suppression waveform is already click-free on the frozen 15s
+  input (raw punctuation-span peaks -24 to -50 dBFS, same order as the
+  reference). The original 2026-05-26 impulses may also have been aggravated
+  by the two bugs fixed the same day: the seed-0 `SeededRNG` degeneracy
+  (`HarmonicSource.swift`) and the one-sided iSTFT scaling error
+  (`kokoro/custom_stft.py`).
+- Change: `shouldSuppressPunctuationSpan` now matches punctuation token IDs
+  only; whitespace is never silenced. Punctuation-span fade-to-zero is
+  retained as click protection (reference is -38 to -85 dBFS there, below
+  audibility and below pause-measurement thresholds).
+- Post-fix, the 15s bucket passes blind paired lineups 2/2.
 
 ### If This Recurs
 

@@ -12,7 +12,11 @@ const EnumSizes = [32, 64, 128, 256, 320, 384, 512];
 const MaxCallerChunkTokens = 450;
 const VoiceEmbeddingDim = 256;
 const RepoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const DefaultRuntimeRoot = path.join(RepoRoot, 'packages/kokoro-coreml-runtime');
+const LegacyRuntimeRoot = path.join(RepoRoot, 'packages/kokoro-coreml-runtime');
+
+function hasRepoRuntimeAssets(root) {
+  return existsSync(path.join(root, 'kokoro.js/src/phonemize.js'));
+}
 
 function parseArgs(argv) {
   const args = new Map();
@@ -33,18 +37,25 @@ function parseArgs(argv) {
   return { args, flags };
 }
 
-function runtimeRoot() {
+function runtimeRoot(args) {
+  const argRoot = args.get('runtime-root')?.trim();
+  if (argRoot) {
+    return path.resolve(argRoot);
+  }
   const explicit = process.env.KOKORO_COREML_ROOT?.trim();
   if (explicit) {
-    return explicit;
+    return path.resolve(explicit);
   }
-  return DefaultRuntimeRoot;
+  if (hasRepoRuntimeAssets(RepoRoot)) {
+    return RepoRoot;
+  }
+  return LegacyRuntimeRoot;
 }
 
 async function loadPhonemizer(root) {
   const candidates = [
     path.join(root, 'kokoro.js/src/phonemize.js'),
-    path.join(DefaultRuntimeRoot, 'kokoro.js/src/phonemize.js')
+    path.join(LegacyRuntimeRoot, 'kokoro.js/src/phonemize.js')
   ];
   for (const candidate of candidates) {
     if (!existsSync(candidate)) {
@@ -60,9 +71,12 @@ async function loadPhonemizer(root) {
 
 async function loadVocab(root) {
   const candidates = [
+    path.join(root, '_kokoro_vocab.json'),
     path.join(root, 'outputs/hnsf_validation/config.json'),
     path.join(root, 'checkpoints/config.json'),
-    path.join(DefaultRuntimeRoot, 'outputs/hnsf_validation/config.json')
+    path.join(LegacyRuntimeRoot, '_kokoro_vocab.json'),
+    path.join(LegacyRuntimeRoot, 'outputs/hnsf_validation/config.json'),
+    path.join(LegacyRuntimeRoot, 'checkpoints/config.json')
   ];
   for (const candidate of candidates) {
     if (!existsSync(candidate)) {
@@ -79,7 +93,9 @@ async function loadVocab(root) {
 async function loadVoiceRows(root, voice) {
   const candidates = [
     path.join(root, 'kokoro.js/voices', `${voice}.bin`),
-    path.join(DefaultRuntimeRoot, 'kokoro.js/voices', `${voice}.bin`)
+    path.join(root, 'voices', `${voice}.bin`),
+    path.join(LegacyRuntimeRoot, 'kokoro.js/voices', `${voice}.bin`),
+    path.join(LegacyRuntimeRoot, 'voices', `${voice}.bin`)
   ];
   for (const candidate of candidates) {
     if (!existsSync(candidate)) {
@@ -150,8 +166,8 @@ async function prepareEntries({ texts, key, voice, speed, vocab, voiceRows, phon
   return entries;
 }
 
-async function runServe() {
-  const root = runtimeRoot();
+async function runServe(args) {
+  const root = runtimeRoot(args);
   const phonemize = await loadPhonemizer(root);
   const vocab = await loadVocab(root);
   const voices = new Map();
@@ -190,7 +206,7 @@ async function runServe() {
 }
 
 async function runOnce(args) {
-  const root = runtimeRoot();
+  const root = runtimeRoot(args);
   const textFile = args.get('text-file');
   const textListFile = args.get('text-list-file');
   const output = args.get('output');
@@ -213,7 +229,7 @@ async function runOnce(args) {
 const { args, flags } = parseArgs(process.argv.slice(2));
 try {
   if (flags.has('serve')) {
-    await runServe();
+    await runServe(args);
   } else {
     await runOnce(args);
   }

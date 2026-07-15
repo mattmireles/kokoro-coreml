@@ -1,0 +1,2 @@
+A battery powers a 12 watt device for 45 minutes. Compute the total energy in
+joules, then explain each unit conversion.

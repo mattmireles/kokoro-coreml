@@ -164,7 +164,7 @@ Switch back to the primary path once the worker is healthy.
 | `Unknown argument: --` | `pnpm run judge:audio --` | `node scripts/run-audio-judge.mjs` |
 | `FFMPEG_CLIENT_TOKEN is required` | missing from `.env` | Preflight 4 |
 | job fails at `probing` | float32 WAV | `afconvert -d LEI16`, retry |
-| `409 idempotency_conflict` | poisoned job key | new clip labels (`coreml_v2=...`) |
+| `409 idempotency_conflict` | stale `run-audio-judge.mjs` (keys were content-only; fixed 2026-07-14) | `git pull` llm-workflows; on old checkouts, new clip labels (`coreml_v2=...`) |
 | `Container start failed with HTTP 500` | worker down | fallback script |
 
 ## Output

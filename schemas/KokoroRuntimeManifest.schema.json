@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kokoro-coreml.local/schemas/KokoroRuntimeManifest.schema.json",
+  "title": "KokoroRuntimeManifest",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "sdk_commit",
+    "hf_repo_id",
+    "hf_revision",
+    "bundle_profile",
+    "minimum_platforms",
+    "supported_languages",
+    "buckets",
+    "duration_token_sizes",
+    "model_packages",
+    "voices",
+    "runtime_assets"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "sdk_commit": { "type": "string", "minLength": 7 },
+    "hf_repo_id": { "type": "string", "minLength": 1 },
+    "hf_revision": { "type": "string", "minLength": 7 },
+    "bundle_profile": { "enum": ["starter", "custom", "full"] },
+    "minimum_platforms": {
+      "type": "object",
+      "required": ["iOS", "macOS"],
+      "properties": {
+        "iOS": { "type": "string" },
+        "macOS": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "supported_languages": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    },
+    "buckets": {
+      "type": "array",
+      "items": { "type": "integer", "minimum": 1 },
+      "minItems": 1
+    },
+    "duration_token_sizes": {
+      "type": "array",
+      "items": { "type": "integer", "minimum": 1 },
+      "minItems": 1
+    },
+    "model_packages": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/modelPackage" },
+      "minItems": 1
+    },
+    "voices": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/fileDigest" },
+      "minItems": 1
+    },
+    "runtime_assets": {
+      "type": "object",
+      "required": ["vocab", "hnsf_weights"],
+      "properties": {
+        "vocab": { "$ref": "#/$defs/fileDigest" },
+        "hnsf_weights": { "$ref": "#/$defs/fileDigest" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "fileDigest": {
+      "type": "object",
+      "required": ["path", "bytes", "sha256"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      },
+      "additionalProperties": true
+    },
+    "modelPackage": {
+      "type": "object",
+      "required": ["path", "tree_sha256", "file_count", "bytes"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "tree_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "file_count": { "type": "integer", "minimum": 1 },
+        "bytes": { "type": "integer", "minimum": 1 },
+        "files": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/fileDigest" }
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
