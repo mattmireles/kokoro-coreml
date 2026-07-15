@@ -469,7 +469,7 @@ before this phase can be marked complete. The validator now passes with
 **Verification:** `performance-notes.md` contains enough information for a
 reader to reproduce the comparison from clean clones and pinned versions.
 Running `python scripts/external_bakeoff/verify_external_bakeoff_completion.py`
-is the final plan-completion gate; it now passes with `result_record_count=143`,
+is the final plan-completion gate; it now passes with `result_record_count=65`,
 `ios_preflight_ok=true`, and `decisions={'pass': 57}`.
 
 ## Success Criteria

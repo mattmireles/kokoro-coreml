@@ -33,39 +33,23 @@ class ConfigFBatchRunner:
         self,
         binary: Path,
         compute_units: str,
-        stage_compute_units: dict[str, str | None],
         models_dir: Path,
-        generator_models_dir: Path | None,
         inputs_dir: Path,
         hnsf_weights: Path,
         use_exact_duration_models: bool,
-        reuse_input_arrays: bool,
     ) -> None:
         env = os.environ.copy()
         if use_exact_duration_models:
             env["KOKORO_USE_EXACT_DURATION_MODELS"] = "1"
-        cmd = [
-            str(binary),
-            "--models-dir", str(models_dir),
-            "--inputs-dir", str(inputs_dir),
-            "--hnsf-weights", str(hnsf_weights),
-            "--batch",
-            "--compute-units", compute_units,
-        ]
-        if generator_models_dir is not None:
-            cmd.extend(["--generator-models-dir", str(generator_models_dir)])
-        if reuse_input_arrays:
-            cmd.append("--reuse-input-arrays")
-        for flag, value in (
-            ("--duration-compute-units", stage_compute_units.get("duration")),
-            ("--f0n-compute-units", stage_compute_units.get("f0n")),
-            ("--decoder-pre-compute-units", stage_compute_units.get("decoder_pre")),
-            ("--generator-compute-units", stage_compute_units.get("generator")),
-        ):
-            if value:
-                cmd.extend([flag, value])
         self.proc = subprocess.Popen(
-            cmd,
+            [
+                str(binary),
+                "--models-dir", str(models_dir),
+                "--inputs-dir", str(inputs_dir),
+                "--hnsf-weights", str(hnsf_weights),
+                "--batch",
+                "--compute-units", compute_units,
+            ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             text=True,
@@ -144,15 +128,6 @@ def main() -> None:
     parser.add_argument("--machine-id", required=True)
     parser.add_argument("--binary", type=Path, default=Path("swift/.build/release/kokoro-bench"))
     parser.add_argument("--models-dir", type=Path, default=Path("coreml"))
-    parser.add_argument(
-        "--generator-models-dir",
-        type=Path,
-        default=None,
-        help=(
-            "Optional directory containing kokoro_decoder_har_post_<bucket>s.mlpackage "
-            "generator packages. Other models still load from --models-dir."
-        ),
-    )
     parser.add_argument("--inputs-dir", type=Path, default=Path("outputs/swift_bench_inputs"))
     parser.add_argument(
         "--hnsf-weights",
@@ -169,10 +144,6 @@ def main() -> None:
             "single-policy bakeoff cells."
         ),
     )
-    parser.add_argument("--duration-compute-units", default=None)
-    parser.add_argument("--f0n-compute-units", default=None)
-    parser.add_argument("--decoder-pre-compute-units", default=None)
-    parser.add_argument("--generator-compute-units", default=None)
     parser.add_argument("--iterations", type=int, default=5)
     parser.add_argument(
         "--preflight-runs",
@@ -194,11 +165,6 @@ def main() -> None:
     )
     parser.add_argument("--input-key", action="append", default=None)
     parser.add_argument("--spotcheck-dir", type=Path, default=None)
-    parser.add_argument(
-        "--reuse-input-arrays",
-        action="store_true",
-        help="Pass --reuse-input-arrays to kokoro-bench to reuse zeroed MLMultiArray input buffers by shape.",
-    )
     args = parser.parse_args()
 
     if not args.binary.exists():
@@ -217,18 +183,10 @@ def main() -> None:
         runner = ConfigFBatchRunner(
             args.binary,
             args.compute_units,
-            {
-                "duration": args.duration_compute_units,
-                "f0n": args.f0n_compute_units,
-                "decoder_pre": args.decoder_pre_compute_units,
-                "generator": args.generator_compute_units,
-            },
             args.models_dir,
-            args.generator_models_dir,
             args.inputs_dir,
             args.hnsf_weights,
             args.use_exact_duration_models,
-            args.reuse_input_arrays,
         )
         for key in keys:
             item = manifest["inputs"][key]
@@ -260,20 +218,12 @@ def main() -> None:
                         provenance={
                             "binary": str(args.binary),
                             "models_dir": str(args.models_dir),
-                            "generator_models_dir": str(args.generator_models_dir) if args.generator_models_dir else None,
                             "inputs_dir": str(args.inputs_dir),
                             "hnsf_weights": str(args.hnsf_weights),
                             "compute_units": args.compute_units,
-                            "stage_compute_units": {
-                                "duration": args.duration_compute_units,
-                                "f0n": args.f0n_compute_units,
-                                "decoder_pre": args.decoder_pre_compute_units,
-                                "generator": args.generator_compute_units,
-                            },
                             "batch_mode": True,
                             "preflight_discarded_runs": args.preflight_runs,
                             "use_exact_duration_models": args.use_exact_duration_models,
-                            "reuse_input_arrays": args.reuse_input_arrays,
                             "raw_preflight_results": preflight,
                             "bucket_used": warm[-1].get("bucket_used"),
                             "spotcheck_wav": str(spotcheck_dir / f"{key}.wav"),
@@ -297,16 +247,9 @@ def main() -> None:
                         provenance={
                             "binary": str(args.binary),
                             "models_dir": str(args.models_dir),
-                            "generator_models_dir": str(args.generator_models_dir) if args.generator_models_dir else None,
                             "inputs_dir": str(args.inputs_dir),
                             "hnsf_weights": str(args.hnsf_weights),
                             "compute_units": args.compute_units,
-                            "stage_compute_units": {
-                                "duration": args.duration_compute_units,
-                                "f0n": args.f0n_compute_units,
-                                "decoder_pre": args.decoder_pre_compute_units,
-                                "generator": args.generator_compute_units,
-                            },
                             "batch_mode": True,
                             "preflight_discarded_runs": args.preflight_runs,
                             "use_exact_duration_models": args.use_exact_duration_models,
@@ -326,16 +269,9 @@ def main() -> None:
         provenance={
             "binary": str(args.binary),
             "models_dir": str(args.models_dir),
-            "generator_models_dir": str(args.generator_models_dir) if args.generator_models_dir else None,
             "inputs_dir": str(args.inputs_dir),
             "hnsf_weights": str(args.hnsf_weights),
             "compute_units": args.compute_units,
-            "stage_compute_units": {
-                "duration": args.duration_compute_units,
-                "f0n": args.f0n_compute_units,
-                "decoder_pre": args.decoder_pre_compute_units,
-                "generator": args.generator_compute_units,
-            },
             "batch_mode": True,
             "preflight_discarded_runs": args.preflight_runs,
             "use_exact_duration_models": args.use_exact_duration_models,

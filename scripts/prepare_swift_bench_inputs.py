@@ -83,13 +83,8 @@ def main():
     print(f"Saved hn-nsf weights: {len(linear_w)} weights, bias={linear_b:.6f}")
 
     runtime_manifest = _ROOT / "outputs" / "external_bakeoff" / "runtime_input_manifest.json"
-    manifest_inputs_by_text = {}
     if runtime_manifest.exists():
         manifest = json.loads(runtime_manifest.read_text())
-        manifest_inputs_by_text = {
-            value["text"]: value
-            for value in manifest.get("inputs", {}).values()
-        }
         bakeoff_inputs = {
             key: value["text"]
             for key, value in manifest.get("inputs", {}).items()
@@ -129,9 +124,6 @@ def main():
         # Compute canonical duration via extract_vocoder_inputs (ground truth).
         # Try the bakeoff input manifest first to avoid loading all CoreML models.
         canonical_dur = None
-        manifest_entry = manifest_inputs_by_text.get(text)
-        if manifest_entry is not None:
-            canonical_dur = manifest_entry.get("canonical_duration_s")
         manifest_path = _ROOT / "outputs" / "bakeoff" / "input_manifest.json"
         if manifest_path.exists():
             import json as _json
@@ -156,7 +148,6 @@ def main():
         entry = {
             "key": key,
             "text": text,
-            "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
             "voice": VOICE,
             "speed": SPEED,
             "phonemes": phonemes,

@@ -160,47 +160,11 @@ def _patch_native_instance_norm_adain(broadcast_adain: bool) -> None:
     AdaIN1d.forward = _native_instance_norm_forward
 
 
-def _trim_or_pad_last_dim(array: np.ndarray, length: int | None) -> np.ndarray:
-    """Return ``array`` with its last dimension cropped or zero-padded."""
-
-    arr = np.asarray(array, dtype=np.float32)
-    if length is None:
-        return np.ascontiguousarray(arr)
-    if length <= 0:
-        raise ValueError(f"length must be positive, got {length}")
-    current = int(arr.shape[-1])
-    if current == length:
-        return np.ascontiguousarray(arr)
-    if current > length:
-        return np.ascontiguousarray(arr[..., :length])
-    out_shape = list(arr.shape)
-    out_shape[-1] = length
-    out = np.zeros(out_shape, dtype=np.float32)
-    out[..., :current] = arr
-    return out
-
-
-def _np_dtype(name: str) -> type[np.floating[Any]]:
-    """Return a NumPy floating dtype from a stable CLI label."""
-
-    value = name.strip().lower()
-    if value in {"fp16", "float16"}:
-        return np.float16
-    if value in {"fp32", "float32"}:
-        return np.float32
-    raise ValueError(f"unsupported dtype {name!r}")
-
-
-def _predict_inputs(
-    tensors: dict[str, np.ndarray],
-    har_time: int | None = None,
-    *,
-    dtype: type[np.floating[Any]] = np.float32,
-) -> dict[str, np.ndarray]:
+def _predict_inputs(tensors: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     return {
-        "x_pre": tensors["x_pre_padded"].astype(dtype),
-        "ref_s": tensors["ref_s"].astype(dtype),
-        "har": _trim_or_pad_last_dim(tensors["har_padded"], har_time).astype(dtype),
+        "x_pre": tensors["x_pre_padded"].astype(np.float32),
+        "ref_s": tensors["ref_s"].astype(np.float32),
+        "har": tensors["har_padded"].astype(np.float32),
     }
 
 
@@ -237,7 +201,6 @@ def _input_tensor_types(
     ref_s_shape: tuple[int, ...],
     har_shape: tuple[int, ...],
     shape_mode: str,
-    dtype: type[np.floating[Any]],
 ) -> list[Any]:
     """Return TensorType declarations for the generator package export."""
 
@@ -245,17 +208,17 @@ def _input_tensor_types(
         ct.TensorType(
             name="x_pre",
             shape=_input_shape(ct, "x_pre", x_pre_shape, shape_mode),
-            dtype=dtype,
+            dtype=np.float32,
         ),
         ct.TensorType(
             name="ref_s",
             shape=_input_shape(ct, "ref_s", ref_s_shape, shape_mode),
-            dtype=dtype,
+            dtype=np.float32,
         ),
         ct.TensorType(
             name="har",
             shape=_input_shape(ct, "har", har_shape, shape_mode),
-            dtype=dtype,
+            dtype=np.float32,
         ),
     ]
 
@@ -271,14 +234,11 @@ def _export_package(
     palettize: bool,
     linear_quantize: str | None,
     input_shape_mode: str,
-    input_dtype: str,
-    har_time: int | None,
-    rewrite_ups_conv_transpose: bool,
 ) -> dict[str, Any]:
     import coremltools as ct
     import torch
 
-    from export_synth.wrappers import GeneratorFromHar, remove_dropout, rewrite_generator_ups_conv_transpose
+    from export_synth.wrappers import GeneratorFromHar, remove_dropout
 
     if cos_snake:
         _patch_cos_snake()
@@ -289,14 +249,10 @@ def _export_package(
 
     ref_s_shape = tuple(int(v) for v in tensors["ref_s"].shape)
     x_pre_shape = tuple(int(v) for v in tensors["x_pre_padded"].shape)
-    har_shape = tuple(int(v) for v in _trim_or_pad_last_dim(tensors["har_padded"], har_time).shape)
-    tensor_dtype = _np_dtype(input_dtype)
+    har_shape = tuple(int(v) for v in tensors["har_padded"].shape)
 
     kmodel = _load_kmodel()
     gen_from_har = GeneratorFromHar(kmodel.decoder.generator).eval()
-    rewritten_ups = 0
-    if rewrite_ups_conv_transpose:
-        rewritten_ups = rewrite_generator_ups_conv_transpose(gen_from_har.generator)
     removed_dropouts = remove_dropout(gen_from_har)
 
     x_pre = torch.zeros(x_pre_shape, dtype=torch.float32)
@@ -314,7 +270,7 @@ def _export_package(
 
     mlmodel = ct.convert(
         traced,
-        inputs=_input_tensor_types(ct, x_pre_shape, ref_s_shape, har_shape, input_shape_mode, tensor_dtype),
+        inputs=_input_tensor_types(ct, x_pre_shape, ref_s_shape, har_shape, input_shape_mode),
         outputs=[ct.TensorType(name="waveform")],
         convert_to="mlprogram",
         minimum_deployment_target=_deployment_target(ct, deployment_target),
@@ -337,15 +293,11 @@ def _export_package(
         "palettize": bool(palettize),
         "linear_quantize": linear_quantize,
         "input_shape_mode": input_shape_mode,
-        "input_dtype": input_dtype,
-        "har_time": har_time,
         "removed_dropouts": removed_dropouts,
         "traced_samples": traced_samples,
         "x_pre_shape": list(x_pre_shape),
         "ref_s_shape": list(ref_s_shape),
         "har_shape": list(har_shape),
-        "rewrite_ups_conv_transpose": bool(rewrite_ups_conv_transpose),
-        "rewritten_ups_conv_transpose": rewritten_ups,
     }
 
 
@@ -364,9 +316,7 @@ def _benchmark(
 ) -> dict[str, Any]:
     import coremltools as ct
 
-    fused_inputs = _predict_inputs(tensors)
-    candidate_input_dtype = _np_dtype(args.input_dtype)
-    candidate_inputs = _predict_inputs(tensors, args.har_time, dtype=candidate_input_dtype)
+    inputs = _predict_inputs(tensors)
     fused = ct.models.MLModel(
         str(args.fused_package),
         compute_units=_compute_units(ct, args.compute_units),
@@ -376,20 +326,20 @@ def _benchmark(
         compute_units=_compute_units(ct, args.compute_units),
     )
 
-    fused_first, fused_first_ms = _predict(fused, fused_inputs)
-    cos_first, cos_first_ms = _predict(cos_model, candidate_inputs)
+    fused_first, fused_first_ms = _predict(fused, inputs)
+    cos_first, cos_first_ms = _predict(cos_model, inputs)
 
     for _ in range(max(0, args.warmup)):
-        _predict(fused, fused_inputs)
-        _predict(cos_model, candidate_inputs)
+        _predict(fused, inputs)
+        _predict(cos_model, inputs)
 
     fused_times: list[float] = []
     cos_times: list[float] = []
     last_fused = fused_first
     last_cos = cos_first
     for _ in range(max(1, args.iterations)):
-        last_fused, fused_ms = _predict(fused, fused_inputs)
-        last_cos, cos_ms = _predict(cos_model, candidate_inputs)
+        last_fused, fused_ms = _predict(fused, inputs)
+        last_cos, cos_ms = _predict(cos_model, inputs)
         fused_times.append(fused_ms)
         cos_times.append(cos_ms)
 
@@ -451,14 +401,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         label = f"{label}_w{args.linear_quantize}"
     if args.input_shape_mode != "fixed":
         label = f"{label}_{args.input_shape_mode}_inputs"
-    if args.input_dtype.lower() not in {"fp32", "float32"}:
-        label = f"{label}_{args.input_dtype.lower()}_inputs"
-    if args.rewrite_ups_conv_transpose:
-        label = f"{label}_ups_as_conv"
     if args.deployment_target.lower() != "macos13":
         label = f"{label}_{args.deployment_target.lower()}"
-    if args.har_time is not None:
-        label = f"{label}_har{args.har_time}"
     work_dir = args.output_dir / label
     cos_package = work_dir / f"kokoro_generator_cos_snake_{label}.mlpackage"
     report_name = Path(args.report_name)
@@ -482,9 +426,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             args.palettize,
             args.linear_quantize,
             args.input_shape_mode,
-            args.input_dtype,
-            args.har_time,
-            args.rewrite_ups_conv_transpose,
         )
 
     benchmark = _benchmark(args, tensors, cos_package)
@@ -510,9 +451,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "palettize": bool(args.palettize),
         "linear_quantize": args.linear_quantize,
         "input_shape_mode": args.input_shape_mode,
-        "input_dtype": args.input_dtype,
-        "har_time": args.har_time,
-        "rewrite_ups_conv_transpose": bool(args.rewrite_ups_conv_transpose),
         "export": export_report,
         "benchmark": benchmark,
         "thresholds": {
@@ -579,23 +517,6 @@ def main() -> None:
         choices=("fixed", "range"),
         default="fixed",
         help="Input shape contract for x_pre/har. 'range' uses bounded RangeDim time axes.",
-    )
-    parser.add_argument(
-        "--input-dtype",
-        default="fp32",
-        choices=("fp32", "float32", "fp16", "float16"),
-        help="Candidate Core ML input dtype for x_pre/ref_s/har. Baseline remains the fused package dtype.",
-    )
-    parser.add_argument(
-        "--har-time",
-        type=int,
-        default=None,
-        help="Optional candidate HAR axis length. Baseline still uses the full shipping HAR input.",
-    )
-    parser.add_argument(
-        "--rewrite-ups-conv-transpose",
-        action="store_true",
-        help="Rewrite main generator ConvTranspose1d upsamples as zero insertion plus conv1d before export.",
     )
     parser.add_argument(
         "--precision",

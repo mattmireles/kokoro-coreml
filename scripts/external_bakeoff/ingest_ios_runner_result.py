@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ingest JSON rendered by the physical-device Kokoro iOS runners."""
+"""Ingest JSON rendered by the Soniqo Kokoro iOS runner."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ DEFAULT_INPUT = DEFAULT_OUTPUT_DIR / "ios_runner_payload_latest.json"
 DEFAULT_MANIFEST = DEFAULT_OUTPUT_DIR / "runtime_input_manifest.json"
 DEFAULT_MACHINE_ID = "iphone-12-pro"
 DEFAULT_DEVICE_MODEL = "iPhone 12 Pro (iPhone13,3)"
-DEFAULT_VERSION = "physical-device iOS runner; see runner provenance"
+DEFAULT_VERSION = "soniqo/speech-swift pinned clone; see runner provenance"
 
 
 def _impl_slug(value: str) -> str:
@@ -45,14 +45,6 @@ def _require_list(record: dict[str, Any], field: str) -> list[float]:
     if not isinstance(values, list) or not values:
         raise ValueError(f"{record.get('input_key', '<unknown>')} missing non-empty list field {field}")
     return [float(value) for value in values]
-
-
-def _cold_wall_time_s(record: dict[str, Any]) -> float:
-    """Return the runner's cold marker using either supported payload schema."""
-
-    if record.get("cold_wall_time_s") is not None:
-        return _require_number(record, "cold_wall_time_s")
-    return _require_number(record, "post_preflight_cold_wall_time_s")
 
 
 def _ingest_records(
@@ -113,25 +105,6 @@ def _ingest_records(
             raise ValueError(f"{key} observed_audio_duration_s must be positive")
         rtf_observed = [round(value / observed_duration, 6) for value in warm_times]
 
-        provenance: dict[str, Any] = {
-            "source": "iOS runner rendered JSON",
-            "source_path": str(source_path),
-            "compute_units": compute_units,
-            "expected_bucket_s": expected_bucket,
-            "sample_count": int(raw.get("sample_count") or 0),
-            "sample_rate": int(raw.get("sample_rate") or 0),
-            "output_sha256_unavailable": True,
-            "spotcheck_wav_unavailable": True,
-        }
-        if "stage_medians_s" in raw:
-            provenance["stage_medians_s"] = raw["stage_medians_s"]
-        if "raw_warm_stage_timings_s" in raw:
-            provenance["raw_warm_stage_timings_s"] = raw["raw_warm_stage_timings_s"]
-        if "duration_model" in raw:
-            provenance["duration_model"] = raw["duration_model"]
-        if "bucket_used" in raw:
-            provenance["bucket_used"] = raw["bucket_used"]
-
         records.append(
             {
                 "impl": impl,
@@ -142,7 +115,7 @@ def _ingest_records(
                 "input_key": key,
                 "text_sha256": str(raw["text_sha256"]),
                 "voice": voice,
-                "cold_wall_time_s": round(_cold_wall_time_s(raw), 6),
+                "cold_wall_time_s": round(_require_number(raw, "cold_wall_time_s"), 6),
                 "warm_wall_times_s": [round(value, 6) for value in warm_times],
                 "canonical_audio_duration_s": round(canonical_duration, 6),
                 "observed_audio_duration_s": round(observed_duration, 6),
@@ -150,7 +123,16 @@ def _ingest_records(
                 "output_sha256": "",
                 "status": "ok",
                 "error": None,
-                "provenance": provenance,
+                "provenance": {
+                    "source": "SoniqoKokoroIOSRunner rendered JSON",
+                    "source_path": str(source_path),
+                    "compute_units": compute_units,
+                    "expected_bucket_s": expected_bucket,
+                    "sample_count": int(raw.get("sample_count") or 0),
+                    "sample_rate": int(raw.get("sample_rate") or 0),
+                    "output_sha256_unavailable": True,
+                    "spotcheck_wav_unavailable": True,
+                },
             }
         )
 
@@ -189,11 +171,11 @@ def main() -> None:
         "machine": {
             "machine_id": args.machine_id,
             "device_model": args.device_model,
-            "source": "iOS runner rendered JSON",
+            "source": "SoniqoKokoroIOSRunner rendered JSON",
         },
         "records": records,
         "provenance": {
-            "source": "iOS runner rendered JSON",
+            "source": "SoniqoKokoroIOSRunner rendered JSON",
             "source_path": str(args.input),
             "manifest": str(args.manifest),
             "version": args.version,

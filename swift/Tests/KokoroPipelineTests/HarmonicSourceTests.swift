@@ -98,29 +98,6 @@ final class HarmonicSourceTests: XCTestCase {
         XCTAssertEqual(components.har, direct.har)
     }
 
-    func testFrameBasedSineGenMatchesLegacyUpsamplePath() {
-        let f0: [Float] = [0.0, 120.0, 200.0, 75.0, 0.0, 310.0]
-        let weights: [Float] = [-0.08, -0.19, -0.18, -0.18, -0.10, 0.08, 0.09, -0.39, -0.55]
-        let bias: Float = -0.03
-        let legacy = sineGen(
-            f0Upsampled: f0Upsample(f0),
-            linearWeights: weights,
-            linearBias: bias,
-            seed: 42
-        )
-        let candidate = sineGenFromF0Frames(
-            f0Frames: f0,
-            linearWeights: weights,
-            linearBias: bias,
-            seed: 42
-        )
-
-        XCTAssertEqual(candidate.count, legacy.count)
-        for index in 0..<legacy.count {
-            XCTAssertEqual(candidate[index], legacy[index], accuracy: 2e-6, "source sample \(index)")
-        }
-    }
-
     func testGaussianNoiseMatchesScalarBoxMullerReference() {
         let count = 1025
         let seed: UInt64 = 42

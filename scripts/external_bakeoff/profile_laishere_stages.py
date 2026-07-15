@@ -23,7 +23,6 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from scripts.external_bakeoff.run_laishere_kokoro_coreml import (  # noqa: E402
-    DEFAULT_COMPUTE_UNITS,
     MODEL_NAMES,
     SR,
     LaishereCoreMLChain,
@@ -183,9 +182,6 @@ def main() -> None:
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--input-key", action="append", default=None)
     parser.add_argument("--max-frames", type=int, default=2000)
-    parser.add_argument("--noise-compute-units", default=DEFAULT_COMPUTE_UNITS["noise"])
-    parser.add_argument("--vocoder-compute-units", default=DEFAULT_COMPUTE_UNITS["vocoder"])
-    parser.add_argument("--tail-compute-units", default=DEFAULT_COMPUTE_UNITS["tail"])
     args = parser.parse_args()
 
     manifest = load_json(args.manifest)
@@ -202,20 +198,7 @@ def main() -> None:
         raise SystemExit(f"missing laishere Core ML packages: {', '.join(missing)}")
     sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
 
-    compute_units = dict(DEFAULT_COMPUTE_UNITS)
-    compute_units.update(
-        {
-            "noise": args.noise_compute_units,
-            "vocoder": args.vocoder_compute_units,
-            "tail": args.tail_compute_units,
-        }
-    )
-    chain = LaishereCoreMLChain(
-        models_dir=models_dir,
-        voice=args.voice,
-        max_frames=args.max_frames,
-        compute_units=compute_units,
-    )
+    chain = LaishereCoreMLChain(models_dir=models_dir, voice=args.voice, max_frames=args.max_frames)
     records: list[dict[str, Any]] = []
     for key in keys:
         item = manifest["inputs"][key]
@@ -251,7 +234,15 @@ def main() -> None:
                     "t_enc": prepared["t_enc"],
                     "phoneme_count": len(prepared["phonemes"]),
                     "timing_boundary": "Laishere seven Core ML stage chain; prepare_wall_time_s is reported but excluded from warm_median_s.",
-                    "compute_units": compute_units,
+                    "compute_units": {
+                        "albert": "CPU_AND_NE",
+                        "post_albert": "CPU_AND_NE",
+                        "alignment": "CPU_AND_NE",
+                        "prosody": "CPU_AND_NE",
+                        "noise": "ALL",
+                        "vocoder": "CPU_AND_NE",
+                        "tail": "ALL",
+                    },
                 },
             }
         )
@@ -268,7 +259,6 @@ def main() -> None:
             "iterations": args.iterations,
             "warmup": args.warmup,
             "profile_stages": STAGES,
-            "compute_units": compute_units,
         },
     }
     output = args.output or (

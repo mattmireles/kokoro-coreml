@@ -13,12 +13,10 @@ public protocol KokoroModelProvider {
     func decoderPreModel(bucketSec: Int) throws -> MLModel
     func generatorModel(bucketSec: Int) throws -> MLModel
     func prepareForBucket(bucketSec: Int, tFrames: Int) throws
-    func reusableFloatArray(name: String, shape: [Int]) throws -> MLMultiArray?
 }
 
 public extension KokoroModelProvider {
     func prepareForBucket(bucketSec: Int, tFrames: Int) throws {}
-    func reusableFloatArray(name: String, shape: [Int]) throws -> MLMultiArray? { nil }
 }
 
 /// Pre-tokenized synthesis request for the shared Swift/Core ML pipeline.
@@ -62,22 +60,6 @@ private struct DurationProbe {
     let bucketSec: Int
     let tFrames: Int
     let fullF0Len: Int
-}
-
-private struct TimedHarBuildResult {
-    let harFlat: [Float]
-    let harFrames: Int
-    let harDebug: HarDebugComponents?
-    let startedAt: CFAbsoluteTime
-    let endedAt: CFAbsoluteTime
-
-    var elapsed: Double {
-        endedAt - startedAt
-    }
-}
-
-private final class TimedHarBuildResultBox {
-    var result: TimedHarBuildResult?
 }
 
 /// Run the Core ML Kokoro pipeline once.
@@ -259,34 +241,14 @@ public func executeKokoroSynthesis(
     try tensorDump?.writeFloatArray(name: "n_padded", values: nPadded, shape: [1, fullF0Len])
     try tensorDump?.writeMLMultiArray(name: "asr_padded", array: asrPadded)
 
-    let overlapDecoderPreAndHnsf =
-        ProcessInfo.processInfo.environment["KOKORO_DISABLE_DECODER_HNSF_OVERLAP"] != "1"
-    let captureHarDebug = tensorDump != nil
-    let hnsfGroup = overlapDecoderPreAndHnsf ? DispatchGroup() : nil
-    let hnsfBox = TimedHarBuildResultBox()
-    if let hnsfGroup {
-        hnsfGroup.enter()
-        DispatchQueue.global(qos: .userInitiated).async {
-            hnsfBox.result = buildTimedHar(
-                f0Padded: f0Padded,
-                linearWeights: linearWeights,
-                linearBias: linearBias,
-                seed: request.seed,
-                captureDebug: captureHarDebug
-            )
-            hnsfGroup.leave()
-        }
-    }
-
-    // Stage 6: DecoderPre Core ML. When enabled, Stage 7 starts above because
-    // HnSF depends only on padded F0 and can overlap this Core ML prediction.
+    // Stage 6: DecoderPre Core ML.
     let t10 = CFAbsoluteTimeGetCurrent()
     let decPreModel = try modelProvider.decoderPreModel(bucketSec: bucketSec)
-    let f0Array3D = try makeZeroArray3D(modelProvider: modelProvider, name: "decoder_pre.f0", channels: 1, time: fullF0Len)
+    let f0Array3D = try makeZeroArray3D(channels: 1, time: fullF0Len)
     copyInto(array: f0Array3D, from: f0Padded)
-    let nArray3D = try makeZeroArray3D(modelProvider: modelProvider, name: "decoder_pre.n_input", channels: 1, time: fullF0Len)
+    let nArray3D = try makeZeroArray3D(channels: 1, time: fullF0Len)
     copyInto(array: nArray3D, from: nPadded)
-    let decRefS = try makeZeroArray2D(modelProvider: modelProvider, name: "decoder_pre.ref_s", dim: PipelineConstants.voiceEmbeddingDim)
+    let decRefS = try makeZeroArray2D(dim: PipelineConstants.voiceEmbeddingDim)
     copyInto(array: decRefS, from: request.refS)
 
     let decPreInput = try MLDictionaryFeatureProvider(dictionary: [
@@ -302,32 +264,34 @@ public func executeKokoroSynthesis(
 
     try tensorDump?.writeMLMultiArray(name: "x_pre", array: xPre)
 
-    // Stage 7: hn-nsf Swift DSP, overlapped with DecoderPre when possible.
-    let harBuild: TimedHarBuildResult
-    if let hnsfGroup {
-        hnsfGroup.wait()
-        harBuild = hnsfBox.result!
-    } else {
-        harBuild = buildTimedHar(
+    // Stage 7: hn-nsf Swift DSP.
+    let t12 = CFAbsoluteTimeGetCurrent()
+    let harFlat: [Float]
+    let harFrames: Int
+    let harDebug: HarDebugComponents?
+    if tensorDump != nil {
+        let components = buildHarComponents(
             f0Padded: f0Padded,
             linearWeights: linearWeights,
             linearBias: linearBias,
-            seed: request.seed,
-            captureDebug: captureHarDebug
+            seed: request.seed
         )
+        harFlat = components.har
+        harFrames = components.nFrames
+        harDebug = components
+    } else {
+        let built = buildHar(
+            f0Padded: f0Padded,
+            linearWeights: linearWeights,
+            linearBias: linearBias,
+            seed: request.seed
+        )
+        harFlat = built.har
+        harFrames = built.nFrames
+        harDebug = nil
     }
-    let harFlat = harBuild.harFlat
-    let harFrames = harBuild.harFrames
-    let harDebug = harBuild.harDebug
-    timings.hnsfSwift = harBuild.elapsed
-    timings.decoderPreHnsfOverlap = hnsfGroup == nil
-        ? 0
-        : overlapSeconds(
-            firstStart: t10,
-            firstEnd: t11,
-            secondStart: harBuild.startedAt,
-            secondEnd: harBuild.endedAt
-        )
+    let t13 = CFAbsoluteTimeGetCurrent()
+    timings.hnsfSwift = t13 - t12
 
     if let harDebug {
         try tensorDump?.writeFloatArray(
@@ -351,22 +315,18 @@ public func executeKokoroSynthesis(
     // Stage 8: GeneratorFromHar Core ML.
     let t14 = CFAbsoluteTimeGetCurrent()
     let genModel = try modelProvider.generatorModel(bucketSec: bucketSec)
-    let genRefS = try makeZeroArray2D(modelProvider: modelProvider, name: "generator.ref_s", dim: PipelineConstants.voiceEmbeddingDim)
+    let genRefS = try makeZeroArray2D(dim: PipelineConstants.voiceEmbeddingDim)
     copyInto(array: genRefS, from: request.refS)
 
     let genShapes = inputShapes(from: genModel)
     let xPreExpectedTime = genShapes["x_pre"]?.last ?? xPre.shape.last!.intValue
     let harExpectedTime = genShapes["har"]?.last ?? harFrames
     let xPrePadded = try zeroPad3D(
-        modelProvider: modelProvider,
-        name: "generator.x_pre",
         source: xPre,
         channels: xPre.shape[1].intValue,
         targetTime: xPreExpectedTime
     )
     let harPadded = try zeroPad3D(
-        modelProvider: modelProvider,
-        name: "generator.har",
         sourceValues: harFlat,
         channels: HarmonicConstants.harChannels,
         sourceTime: harFrames,
@@ -618,187 +578,4 @@ private func warmModels(
 
 private func decoderPreFrameCount(fullF0Len: Int) -> Int {
     (fullF0Len - 1) / 2 + 1
-}
-
-private func makeZeroArray3D(
-    modelProvider: KokoroModelProvider,
-    name: String,
-    channels: Int,
-    time: Int
-) throws -> MLMultiArray {
-    if let array = try modelProvider.reusableFloatArray(name: name, shape: [1, channels, time]) {
-        zero(array)
-        return array
-    }
-    return try makeZeroArray3D(channels: channels, time: time)
-}
-
-private func makeZeroArray2D(
-    modelProvider: KokoroModelProvider,
-    name: String,
-    dim: Int
-) throws -> MLMultiArray {
-    if let array = try modelProvider.reusableFloatArray(name: name, shape: [1, dim]) {
-        zero(array)
-        return array
-    }
-    return try makeZeroArray2D(dim: dim)
-}
-
-private func zero(_ array: MLMultiArray) {
-    let byteCount: Int
-    switch array.dataType {
-    case .float32:
-        byteCount = array.count * MemoryLayout<Float>.size
-    case .float16:
-        byteCount = array.count * MemoryLayout<Float16>.size
-    case .double:
-        byteCount = array.count * MemoryLayout<Double>.size
-    case .int32:
-        byteCount = array.count * MemoryLayout<Int32>.size
-    case .int8:
-        byteCount = array.count * MemoryLayout<Int8>.size
-    @unknown default:
-        for i in 0..<array.count {
-            array[localMultiIndex(offset: i, shape: array.shape.map { $0.intValue })] = 0
-        }
-        return
-    }
-    memset(array.dataPointer, 0, byteCount)
-}
-
-private func localMultiIndex(offset: Int, shape: [Int]) -> [NSNumber] {
-    guard !shape.isEmpty else { return [] }
-    var remainder = offset
-    var result = [Int](repeating: 0, count: shape.count)
-    for dimIndex in stride(from: shape.count - 1, through: 0, by: -1) {
-        let dim = max(1, shape[dimIndex])
-        result[dimIndex] = remainder % dim
-        remainder /= dim
-    }
-    return result.map { NSNumber(value: $0) }
-}
-
-private func zeroPad3D(
-    modelProvider: KokoroModelProvider,
-    name: String,
-    source: MLMultiArray,
-    channels: Int,
-    targetTime: Int
-) throws -> MLMultiArray {
-    if let array = try modelProvider.reusableFloatArray(name: name, shape: [1, channels, targetTime]) {
-        zero(array)
-        let sourceShape = source.shape.map { $0.intValue }
-        let sourceTime = sourceShape.count >= 3 ? sourceShape[2] : targetTime
-        let copyTime = min(sourceTime, targetTime)
-        let dstPtr = array.dataPointer.assumingMemoryBound(to: Float.self)
-        let srcStrides = source.strides.map { $0.intValue }
-        if source.dataType == .float32,
-           srcStrides.count >= 3,
-           srcStrides[2] == 1,
-           srcStrides[1] == sourceTime {
-            let srcPtr = source.dataPointer.assumingMemoryBound(to: Float.self)
-            for c in 0..<channels {
-                memcpy(
-                    dstPtr + c * targetTime,
-                    srcPtr + c * sourceTime,
-                    copyTime * MemoryLayout<Float>.size
-                )
-            }
-        } else {
-            for c in 0..<channels {
-                for t in 0..<copyTime {
-                    dstPtr[c * targetTime + t] = source[[0, c, t] as [NSNumber]].floatValue
-                }
-            }
-        }
-        return array
-    }
-    return try zeroPad3D(source: source, channels: channels, targetTime: targetTime)
-}
-
-private func zeroPad3D(
-    modelProvider: KokoroModelProvider,
-    name: String,
-    sourceValues: [Float],
-    channels: Int,
-    sourceTime: Int,
-    targetTime: Int
-) throws -> MLMultiArray {
-    if let array = try modelProvider.reusableFloatArray(name: name, shape: [1, channels, targetTime]) {
-        zero(array)
-        let copyTime = max(0, min(sourceTime, targetTime))
-        if copyTime > 0 {
-            let dstPtr = array.dataPointer.assumingMemoryBound(to: Float.self)
-            sourceValues.withUnsafeBufferPointer { srcBuf in
-                guard let srcBase = srcBuf.baseAddress else { return }
-                for c in 0..<channels {
-                    memcpy(
-                        dstPtr + c * targetTime,
-                        srcBase + c * sourceTime,
-                        copyTime * MemoryLayout<Float>.size
-                    )
-                }
-            }
-        }
-        return array
-    }
-    return try zeroPad3D(
-        sourceValues: sourceValues,
-        channels: channels,
-        sourceTime: sourceTime,
-        targetTime: targetTime
-    )
-}
-
-private func buildTimedHar(
-    f0Padded: [Float],
-    linearWeights: [Float],
-    linearBias: Float,
-    seed: UInt64,
-    captureDebug: Bool
-) -> TimedHarBuildResult {
-    let startedAt = CFAbsoluteTimeGetCurrent()
-    let harFlat: [Float]
-    let harFrames: Int
-    let harDebug: HarDebugComponents?
-
-    if captureDebug {
-        let components = buildHarComponents(
-            f0Padded: f0Padded,
-            linearWeights: linearWeights,
-            linearBias: linearBias,
-            seed: seed
-        )
-        harFlat = components.har
-        harFrames = components.nFrames
-        harDebug = components
-    } else {
-        let built = buildHar(
-            f0Padded: f0Padded,
-            linearWeights: linearWeights,
-            linearBias: linearBias,
-            seed: seed
-        )
-        harFlat = built.har
-        harFrames = built.nFrames
-        harDebug = nil
-    }
-
-    return TimedHarBuildResult(
-        harFlat: harFlat,
-        harFrames: harFrames,
-        harDebug: harDebug,
-        startedAt: startedAt,
-        endedAt: CFAbsoluteTimeGetCurrent()
-    )
-}
-
-private func overlapSeconds(
-    firstStart: CFAbsoluteTime,
-    firstEnd: CFAbsoluteTime,
-    secondStart: CFAbsoluteTime,
-    secondEnd: CFAbsoluteTime
-) -> Double {
-    max(0, min(firstEnd, secondEnd) - max(firstStart, secondStart))
 }

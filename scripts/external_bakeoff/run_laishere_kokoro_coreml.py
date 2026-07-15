@@ -37,31 +37,6 @@ MODEL_NAMES = (
     "KokoroTail.mlpackage",
 )
 
-DEFAULT_COMPUTE_UNITS = {
-    "albert": "cpuAndNeuralEngine",
-    "post_albert": "cpuAndNeuralEngine",
-    "alignment": "cpuAndNeuralEngine",
-    "prosody": "cpuAndNeuralEngine",
-    "noise": "all",
-    "vocoder": "cpuAndNeuralEngine",
-    "tail": "all",
-}
-
-
-def _compute_units(ct, value: str):
-    normalized = value.strip().lower().replace("_", "").replace("-", "")
-    choices = {
-        "all": ct.ComputeUnit.ALL,
-        "cpuandgpu": ct.ComputeUnit.CPU_AND_GPU,
-        "cpuandneuralengine": ct.ComputeUnit.CPU_AND_NE,
-        "cpuandne": ct.ComputeUnit.CPU_AND_NE,
-        "cpuonly": ct.ComputeUnit.CPU_ONLY,
-    }
-    try:
-        return choices[normalized]
-    except KeyError as exc:
-        raise ValueError(f"unsupported compute units: {value}") from exc
-
 
 def _phonemize(pipe, text: str) -> str:
     _, tokens = pipe.g2p(text)
@@ -82,14 +57,7 @@ def _encode_phonemes(model, phonemes: str):
 
 
 class LaishereCoreMLChain:
-    def __init__(
-        self,
-        *,
-        models_dir: Path,
-        voice: str,
-        max_frames: int,
-        compute_units: dict[str, str] | None = None,
-    ) -> None:
+    def __init__(self, *, models_dir: Path, voice: str, max_frames: int) -> None:
         import coremltools as ct
         from kokoro import KModel
         from kokoro.pipeline import KPipeline
@@ -105,38 +73,16 @@ class LaishereCoreMLChain:
         self.model.eval()
         self.pipe = KPipeline(lang_code="a", model=self.model)
         self.voice_pack = self.pipe.load_voice(voice)
-        self.compute_units = dict(DEFAULT_COMPUTE_UNITS)
-        if compute_units:
-            self.compute_units.update(compute_units)
 
-        self.m_albert = ct.models.MLModel(
-            str(models_dir / "KokoroAlbert.mlpackage"),
-            compute_units=_compute_units(ct, self.compute_units["albert"]),
-        )
-        self.m_post = ct.models.MLModel(
-            str(models_dir / "KokoroPostAlbert.mlpackage"),
-            compute_units=_compute_units(ct, self.compute_units["post_albert"]),
-        )
-        self.m_align = ct.models.MLModel(
-            str(models_dir / "KokoroAlignment.mlpackage"),
-            compute_units=_compute_units(ct, self.compute_units["alignment"]),
-        )
-        self.m_pros = ct.models.MLModel(
-            str(models_dir / "KokoroProsody.mlpackage"),
-            compute_units=_compute_units(ct, self.compute_units["prosody"]),
-        )
-        self.m_noise = ct.models.MLModel(
-            str(models_dir / "KokoroNoise.mlpackage"),
-            compute_units=_compute_units(ct, self.compute_units["noise"]),
-        )
-        self.m_voc = ct.models.MLModel(
-            str(models_dir / "KokoroVocoder.mlpackage"),
-            compute_units=_compute_units(ct, self.compute_units["vocoder"]),
-        )
-        self.m_tail = ct.models.MLModel(
-            str(models_dir / "KokoroTail.mlpackage"),
-            compute_units=_compute_units(ct, self.compute_units["tail"]),
-        )
+        cu_ne = ct.ComputeUnit.CPU_AND_NE
+        cu_all = ct.ComputeUnit.ALL
+        self.m_albert = ct.models.MLModel(str(models_dir / "KokoroAlbert.mlpackage"), compute_units=cu_ne)
+        self.m_post = ct.models.MLModel(str(models_dir / "KokoroPostAlbert.mlpackage"), compute_units=cu_ne)
+        self.m_align = ct.models.MLModel(str(models_dir / "KokoroAlignment.mlpackage"), compute_units=cu_ne)
+        self.m_pros = ct.models.MLModel(str(models_dir / "KokoroProsody.mlpackage"), compute_units=cu_ne)
+        self.m_noise = ct.models.MLModel(str(models_dir / "KokoroNoise.mlpackage"), compute_units=cu_all)
+        self.m_voc = ct.models.MLModel(str(models_dir / "KokoroVocoder.mlpackage"), compute_units=cu_ne)
+        self.m_tail = ct.models.MLModel(str(models_dir / "KokoroTail.mlpackage"), compute_units=cu_all)
 
     def prepare(self, text: str) -> dict:
         import torch
@@ -273,7 +219,6 @@ def main() -> None:
                         "t_a": last_t_a,
                         "phoneme_count": len(prepared["phonemes"]),
                         "timing_boundary": "Core ML chain only; G2P and feed preparation are outside timed calls, matching laishere benchmark.py.",
-                        "compute_units": chain.compute_units,
                     },
                 )
             )
@@ -308,7 +253,6 @@ def main() -> None:
             "models_dir": str(models_dir),
             "spotcheck_dir": str(spotcheck_dir),
             "max_frames": args.max_frames,
-            "compute_units": chain.compute_units,
         },
     )
     validate_result_payload(payload)
