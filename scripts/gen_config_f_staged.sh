@@ -9,7 +9,9 @@
 #
 # Output: outputs/bakeoff/listen/staged/config_f_staged_{key}.wav (+ .json)
 set -euo pipefail
-ROOT="/Users/mm/Documents/GitHub/kokoro-coreml"
+# Self-locate the repo root from this script's path (scripts/ -> repo root)
+# so the wrapper works on any checkout, not just one hardcoded machine.
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BENCH="$ROOT/swift/.build/release/kokoro-bench"
 MODELS="$ROOT/coreml"
 INPUTS="$ROOT/outputs/swift_bench_inputs"

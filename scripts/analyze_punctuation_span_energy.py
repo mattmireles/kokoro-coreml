@@ -5,10 +5,19 @@ Companion to scripts/probe_duration_pause_parity.py. That probe showed the
 Core ML duration model matches PyTorch pred_dur to within one frame on the 15s
 input, so the 40-110 ms pause elongation reported in
 README/Notes/cs1-audio-quality-evaluation-2026-07-14.md cannot come from
-duration frames. The suspect is Swift's suppressPunctuationTokenAudio
-(swift/Sources/KokoroPipeline/WaveformPostProcess.swift), which hard-zeros
-punctuation-owned spans (+adjacent whitespace) with a 5 ms fade, while the
-PyTorch reference renders those spans as natural low-level decay.
+duration frames. The suspect was Swift's suppressPunctuationTokenAudio
+(swift/Sources/KokoroPipeline/WaveformPostProcess.swift), which at the time
+hard-zeroed punctuation-owned spans (+adjacent whitespace) with a 5 ms fade,
+while the PyTorch reference renders those spans as natural low-level decay.
+
+FORENSIC SCRIPT — INTENTIONALLY MODELS THE PRE-2026-07-14 BEHAVIOR. The
+whitespace-adjacency suppression modeled by ``suppressed()`` below was
+identified as the 15s root cause and removed the same day: the shipped Swift
+code (shouldSuppressPunctuationSpan in WaveformPostProcess.swift) now
+suppresses punctuation tokens ONLY, never whitespace. Do not "sync" this
+script to the current Swift logic — its recorded results, and any re-run
+against pre-fix WAVs, depend on the old span definition. See
+README/Notes/cs1-audio-quality-evaluation-2026-07-14.md for the fix.
 
 This script builds token->sample spans from PyTorch pred_dur and reports the
 RMS (dBFS, after peak normalization) inside each punctuation-owned span for
@@ -77,8 +86,10 @@ def main() -> None:
     cml_wav = read_wav(cml_path)
     print(f"ref={len(ref_wav)} samples, coreml={len(cml_wav)} samples ({cml_path.name})")
 
-    # Token spans owned by punctuation or punctuation-adjacent whitespace
-    # (mirrors shouldSuppressPunctuationSpan in WaveformPostProcess.swift).
+    # Token spans owned by punctuation or punctuation-adjacent whitespace.
+    # This mirrors the PRE-2026-07-14 shouldSuppressPunctuationSpan in
+    # WaveformPostProcess.swift; the shipped Swift code now suppresses
+    # punctuation only (see module docstring). Kept as-is for forensics.
     def suppressed(i: int) -> bool:
         tid = input_ids[i]
         if tid in SILENT_PUNCT_IDS:
