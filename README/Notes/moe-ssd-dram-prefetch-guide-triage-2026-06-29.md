@@ -20,7 +20,7 @@ depends on them.
 
 ## Related Guides
 
-- [MoE SSD/DRAM expert prefetch experiment plan](../Plans/moe-ssd-dram-prefetch-v1.md)
+- [MoE SSD/DRAM expert prefetch experiment plan](../Plans/009-moe-ssd-dram-prefetch-plan.md)
 - [MoE expert offload and prefetch prior art](../Guides/moe-expert-offload-prefetch-prior-art-guide.md)
 - [Apple Silicon NVMe and energy measurement](../Guides/apple-silicon/apple-silicon-nvme-energy-measurement-guide.md)
 - [Apple Silicon warmed-inference benchmark hygiene](../Guides/apple-silicon/Apple-Silicon-warmed-inference-benchmark-hygiene-guide.md)

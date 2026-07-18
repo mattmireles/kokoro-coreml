@@ -1861,7 +1861,7 @@ All four listen samples recorded `quality_pass=true` and
 ### Plan reference
 
 Audio parity recovery plan Phase 7:
-`README/Plans/kokoro-audio-parity-recovery-v1.md`
+`README/Plans/005-kokoro-audio-parity-recovery-plan.md`
 
 ## End-to-end latency
 
@@ -2043,7 +2043,7 @@ This +8-9ms penalty is consistent across inputs and dwarfs the Core ML predict d
 
 ### Plan reference
 
-Full experiment design: `README/Plans/ane-optimization-v1.md`
+Full experiment design: `README/Plans/002-ane-optimization-plan.md`
 
 ---
 
@@ -2157,7 +2157,7 @@ The +12–15% gap vs HF baseline packages reported earlier is **not re-tested** 
 
 ### Plan reference
 
-Full experiment design: `README/Plans/kokoro-bakeoff-v2.md`
+Full experiment design: `README/Plans/003-kokoro-bakeoff-plan.md`
 
 ---
 
@@ -2258,7 +2258,7 @@ The AdaIN export risk did NOT materialize. DecoderPre (F0_conv + N_conv + encode
 
 ### Plan reference
 
-Full plan: `README/Plans/swift-prefix-rewrite-v1.md`
+Full plan: `README/Plans/004-swift-prefix-rewrite-plan.md`
 
 ---
 
@@ -2325,8 +2325,8 @@ Controlled counterbalanced comparison of the Swift+CoreML pipeline (Config F) ag
 
 ### Plan reference
 
-Bakeoff plan Phase 6: `README/Plans/kokoro-bakeoff-v2.md`
-Swift pipeline plan: `README/Plans/swift-prefix-rewrite-v1.md`
+Bakeoff plan Phase 6: `README/Plans/003-kokoro-bakeoff-plan.md`
+Swift pipeline plan: `README/Plans/004-swift-prefix-rewrite-plan.md`
 
 ---
 
@@ -2842,7 +2842,7 @@ Config A on M1 Mini is 1.5–2.2x slower than M2 Ultra and surprisingly close to
 
 ### Plan reference
 
-Full experiment design: `README/Plans/kokoro-bakeoff-v2.md`
+Full experiment design: `README/Plans/003-kokoro-bakeoff-plan.md`
 
 ---
 
@@ -2953,7 +2953,7 @@ One outlier was excluded: `medium` on iteration 0 spiked to `2101 ms` predict (v
 
 ### Plan reference
 
-Full experiment design: `README/Plans/kokoro-bakeoff-v2.md`
+Full experiment design: `README/Plans/003-kokoro-bakeoff-plan.md`
 
 ---
 
@@ -3239,7 +3239,7 @@ Same corrected v5 harness as the M2 Air run (all audit bugs fixed: bucket parity
 
 ### Plan reference
 
-Bakeoff plan Phase 7: `README/Plans/kokoro-bakeoff-v2.md`
+Bakeoff plan Phase 7: `README/Plans/003-kokoro-bakeoff-plan.md`
 
 ---
 
@@ -3393,4 +3393,4 @@ CPU** across the corrected duration range.
 
 ### Plan reference
 
-Bakeoff plan Phase 7: `README/Plans/kokoro-bakeoff-v2.md`
+Bakeoff plan Phase 7: `README/Plans/003-kokoro-bakeoff-plan.md`

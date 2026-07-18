@@ -68,7 +68,7 @@ struct HnsfWeights: Decodable {
 /// predict with ANECCompile error -9, so the ladder runner walks a fallback
 /// ladder per bucket and records which policy actually produced the timings.
 /// Matrix mode instead flips one stage at a time to attribute the rejection
-/// (see README/Plans/kokoro-iphone-performance-v1.md, Phase 1-2).
+/// (see README/Plans/007-kokoro-iphone-performance-plan.md, Phase 1-2).
 struct StagePolicy {
     let name: String
     let duration: MLComputeUnits

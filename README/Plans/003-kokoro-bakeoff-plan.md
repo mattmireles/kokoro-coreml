@@ -3,7 +3,7 @@
 **Date:** 2026-04-14
 **Status:** Implemented (M1 Mini data and powermetrics telemetry deferred; Phase 6–7 added for Swift pipeline comparison)
 
-> Research design lives in `README/Plans/kokoro-bakeoff-experiment-v1.md`. This
+> Research design lives in `README/Plans/001-kokoro-bakeoff-experiment-plan.md`. This
 > plan covers what to build and run to produce reproducible benchmark data for
 > the current repo state.
 
@@ -699,7 +699,7 @@ timing anecdotes.
 
 ### Phase 6: Add Swift Pipeline as Config F
 
-**Goal:** Add the Swift prefix rewrite pipeline (``README/Plans/swift-prefix-rewrite-v1.md``) as Config F to the bakeoff harness, producing a direct controlled comparison against all existing configs.
+**Goal:** Add the Swift prefix rewrite pipeline (``README/Plans/004-swift-prefix-rewrite-plan.md``) as Config F to the bakeoff harness, producing a direct controlled comparison against all existing configs.
 
 **Context:** The Swift pipeline replaces Python orchestration with 5 CoreML models + Swift DSP. Per-stage measurements (``README/Notes/performance-notes.md``, "Swift prefix rewrite" section) show 2.1–2.9x speedup on M2 Ultra vs Python Config A. But these are per-stage estimates, not end-to-end counterbalanced measurements. Config F puts the Swift pipeline through the same methodology as A–E.
 
@@ -817,7 +817,7 @@ timing anecdotes.
 
 ### Internal
 
-- [Bakeoff Experiment Design](kokoro-bakeoff-experiment-v1.md)
+- [Bakeoff Experiment Design](001-kokoro-bakeoff-experiment-plan.md)
 - [Debug Notes](../Notes/debug-notes.md)
 - [Learnings](../learnings.md)
 - [CoreML Compute Unit Scheduling Guide](../Guides/apple-silicon/CoreML-Compute-Unit-Scheduling-guide.md)
@@ -868,7 +868,7 @@ timing anecdotes.
 
 | File | Change Type | Notes |
 | --- | --- | --- |
-| `README/Plans/kokoro-bakeoff-v2.md` | Update | This revised implementation-ready plan |
+| `README/Plans/003-kokoro-bakeoff-plan.md` | Update | This revised implementation-ready plan |
 | `scripts/bakeoff_harness.py` | Create / Modify | Unified benchmark harness; Phase 6 adds Config F |
 | `scripts/bakeoff_summarize.py` | Modify | Phase 6 adds Config F tables and Gate 6 |
 | `requirements-bakeoff.txt` | Create | Pinned benchmark environment |

@@ -4,7 +4,7 @@
 **Status:** Implemented (MIL + waveform gates; harness timing deferred)  
 **Plan audit:** 2026-04-14 — revised after multi-agent audits: bakeoff schema (`t_coreml_predict_s`), export mutation semantics, MIL depth, hook API, Pearson + secondary metric, `3s`/`10s` shipping set. Second audit pass: Conv1d/Conv2d MIL gate, hook round-trip test, op-count script requirement, bias docs, rollback procedure, reproducible validation inputs, fallback scope note.
 
-> **Prerequisite (baseline numbers):** Prefer completing [Bakeoff Plan](kokoro-bakeoff-v2.md) so `scripts/bakeoff_harness.py` exists and Config A results (manifest + stage timings) are reproducible. Compare Phase 3 against the **bakeoff v2 schema** — e.g. `t_coreml_predict_s` for the Core ML predict stage in Config A (see `kokoro-bakeoff-v2.md` results JSON example), not the informal `t_ane_predict` name from older notes. **If the harness is not in-tree yet,** use [§ Benchmark fallback (pre-harness)](#benchmark-fallback-pre-harness) — do not block Phase 1–2 on the harness.
+> **Prerequisite (baseline numbers):** Prefer completing [Bakeoff Plan](003-kokoro-bakeoff-plan.md) so `scripts/bakeoff_harness.py` exists and Config A results (manifest + stage timings) are reproducible. Compare Phase 3 against the **bakeoff v2 schema** — e.g. `t_coreml_predict_s` for the Core ML predict stage in Config A (see `003-kokoro-bakeoff-plan.md` results JSON example), not the informal `t_ane_predict` name from older notes. **If the harness is not in-tree yet,** use [§ Benchmark fallback (pre-harness)](#benchmark-fallback-pre-harness) — do not block Phase 1–2 on the harness.
 
 ## Executive Summary
 
@@ -48,7 +48,7 @@ Cross-referencing the [CoreML Compute Unit Scheduling Guide](../Guides/apple-sil
 ## Scope and Constraints
 
 - **Scope:** `AdaIN1d` in `kokoro/istftnet.py`, checkpoint hook, tests, re-export `coreml/kokoro_decoder_har_post_{3s,10s}.mlpackage`, benchmark log.
-- **Shipping buckets:** Aligned with [kokoro-bakeoff-v2.md](kokoro-bakeoff-v2.md): checked-in HAR-post artifacts are **`3s` and `10s` only**. The exporter accepts any `--buckets` list — **3s/10s is policy**, not an enforced code gate. Optional additional buckets (e.g. `5s` for [Hugging Face distribution](https://huggingface.co/mattmireles/kokoro-coreml)) are **out of scope for bakeoff Config A** unless repo policy changes — if exported, document them separately from “shipping Config A.”
+- **Shipping buckets:** Aligned with [003-kokoro-bakeoff-plan.md](003-kokoro-bakeoff-plan.md): checked-in HAR-post artifacts are **`3s` and `10s` only**. The exporter accepts any `--buckets` list — **3s/10s is policy**, not an enforced code gate. Optional additional buckets (e.g. `5s` for [Hugging Face distribution](https://huggingface.co/mattmireles/kokoro-coreml)) are **out of scope for bakeoff Config A** unless repo policy changes — if exported, document them separately from “shipping Config A.”
 - **Guardrails:** Perceptual quality preserved. **Package-level:** Pearson **r > 0.99** on **comparable** runs (same bucket, same frozen inputs, same `waveform` length / crop rules). Use **real** `x_pre` / `har` / `ref_s` from PyTorch. **Secondary gates (hard):** After casting both waveforms to **float32** for the metric only — **SNR ≥ 40 dB** (signal = reference waveform) **and** **max absolute sample delta ≤ 1e-2**. **Near-silent reference** (RMS < **1e-4** on float32 waveform): skip Pearson; require max abs Δ only + optional listen. **Gate order:** export/smoke finiteness → Pearson (unless skipped) → SNR/delta → merge rule. **Unit:** `torch.allclose` on `AdaIN1d` outputs with tight atol/rtol as in new test.
 
 ## Ground Truth Contracts (Do Not Violate)
@@ -161,7 +161,7 @@ Verify the callback arity against PyTorch docs for the **pinned** export stack (
 
 **Tasks (harness path — preferred once landed):**
 
-- [ ] Run [kokoro-bakeoff-v2.md](kokoro-bakeoff-v2.md) harness Config A when `scripts/bakeoff_harness.py` exists; compare **`t_coreml_predict_s`** to baseline manifest.
+- [ ] Run [003-kokoro-bakeoff-plan.md](003-kokoro-bakeoff-plan.md) harness Config A when `scripts/bakeoff_harness.py` exists; compare **`t_coreml_predict_s`** to baseline manifest.
 - [x] Re-run Phase 0 MIL tally on **new** `3s` package: **2353** ops, **`linear` 0**, **`conv` 99** (baseline was 2207 ops, linear 48, conv 51).
 - [x] `outputs/bakeoff/ane_optimization_results.json` written (gitignored) with MIL + waveform metrics + `placement_evidence: unavailable`.
 - [x] **Results log** table below updated in-repo.
@@ -222,7 +222,7 @@ Use until `scripts/bakeoff_harness.py` exists:
 ### Internal
 
 - [CoreML Compute Unit Scheduling Guide](../Guides/apple-silicon/CoreML-Compute-Unit-Scheduling-guide.md)
-- [Bakeoff Plan](kokoro-bakeoff-v2.md)
+- [Bakeoff Plan](003-kokoro-bakeoff-plan.md)
 - [Debug Notes](../Notes/debug-notes.md)
 - [Learnings](../learnings.md)
 

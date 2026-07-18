@@ -984,8 +984,8 @@ evidence, and must be rerun before remote HF publication.
 - [Runtime boundary wiki](../Wiki/runtime-boundary.md)
 - [CoreML export wiki](../Wiki/coreml-export.md)
 - [Runtime boundary note](../Notes/kokoro-runtime-boundary.md)
-- [Swift prefix rewrite plan](swift-prefix-rewrite-v1.md)
-- [iPhone performance plan](kokoro-iphone-performance-v1.md)
+- [Swift prefix rewrite plan](004-swift-prefix-rewrite-plan.md)
+- [iPhone performance plan](007-kokoro-iphone-performance-plan.md)
 - [Model card draft](../hf-model-card.md)
 - `swift/Package.swift`
 - `swift-tts/Package.swift`
@@ -1251,7 +1251,7 @@ packaging before public API, add a separate `swift-tts/` package/provider
 boundary, promote checked runtime assets, require pinned HF revisions and
 per-package digests, make physical-device iPhone smoke a release gate, and add
 drift/provenance checks.
-**Files:** `README/Plans/kokoro-drop-in-sdk-v1.md`
+**Files:** `README/Plans/008-kokoro-drop-in-sdk-plan.md`
 
 ---
 
@@ -1268,7 +1268,7 @@ iOS product precedent.
 Botnet JS/eSpeak as drift oracle only, Gist-style voice table/chunking/model
 store, hosted-manifest downloads, staged compute defaults, and explicit
 platform-floor documentation.
-**Files:** `README/Plans/kokoro-drop-in-sdk-v1.md`
+**Files:** `README/Plans/008-kokoro-drop-in-sdk-plan.md`
 
 ---
 
@@ -1282,7 +1282,7 @@ risk, even though the desired boundary is already clear.
 prepared-input package; `swift-tts/` depends on `../swift`, owns MisakiSwift,
 resources, hosted-manifest download/cache, public raw-text APIs, and its own
 platform floor.
-**Files:** `README/Plans/kokoro-drop-in-sdk-v1.md`
+**Files:** `README/Plans/008-kokoro-drop-in-sdk-plan.md`
 
 ---
 
@@ -1296,7 +1296,7 @@ and release/documentation skills.
 **Fix:** Added a required skills section under `Implementation Phases` and a
 `Required skills` line to every phase, with side-effect boundaries for
 `execute-plan-hardcore`, `deploy`, `git-commit`, and `git-push`.
-**Files:** `README/Plans/kokoro-drop-in-sdk-v1.md`
+**Files:** `README/Plans/008-kokoro-drop-in-sdk-plan.md`
 
 ---
 

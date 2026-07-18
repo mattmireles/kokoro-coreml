@@ -19,11 +19,11 @@ Paths are **repo-root relative** (open from the `kokoro-coreml` checkout root).
 - `README/Guides/apple-silicon/pytorch-mps.md`
 - `README/Guides/apple-silicon/HF-transformers-MPS-guide.md`
 - `README/Notes/performance-notes.md`
-- `README/Plans/ane-optimization-v1.md`
+- `README/Plans/002-ane-optimization-plan.md`
 
 ## Experiments and comparisons
 
-- `README/Plans/kokoro-bakeoff-v2.md`
+- `README/Plans/003-kokoro-bakeoff-plan.md`
 - Other plans under `README/Plans/` as needed
 
 ## Repo process (plan-driven work)

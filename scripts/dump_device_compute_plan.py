@@ -1,7 +1,7 @@
 """Dump a Core ML compute plan — per-op device placement — host-side or ON a
 connected development iPhone.
 
-Phase 2 instrument of README/Plans/kokoro-iphone-performance-v1.md: settles
+Phase 2 instrument of README/Plans/007-kokoro-iphone-performance-plan.md: settles
 whether decoder-pre's `.cpuAndNeuralEngine` pin is real on the phone and which
 generator ops a CPU+GPU plan maps to CPU (the 6.8x-vs-M1 anomaly suspects).
 Background: README/Guides/apple-silicon/Kokoro-A14-iPhone-generator-execution-guide.md

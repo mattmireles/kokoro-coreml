@@ -61,4 +61,4 @@ the row as a background-path experiment.
 - [Apple Silicon warmed-inference benchmark hygiene](Apple-Silicon-warmed-inference-benchmark-hygiene-guide.md)
 - [Core ML ANE compiler failure triage](CoreML-ANE-compiler-failure-triage-guide.md)
 - [Core ML compute unit scheduling](CoreML-Compute-Unit-Scheduling-guide.md)
-- [Kokoro external bakeoff plan](../../Plans/kokoro-external-bakeoff-v1.md)
+- [Kokoro external bakeoff plan](../../Plans/006-kokoro-external-bakeoff-plan.md)

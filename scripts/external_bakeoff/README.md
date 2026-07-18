@@ -1,6 +1,6 @@
 # External Bakeoff Adapters
 
-Disposable adapters for `README/Plans/kokoro-external-bakeoff-v1.md`.
+Disposable adapters for `README/Plans/006-kokoro-external-bakeoff-plan.md`.
 
 ## Runtime Inputs
 
@@ -118,7 +118,7 @@ python scripts/external_bakeoff/summarize_external.py
 
 ## Completion Gate
 
-Before marking `README/Plans/kokoro-external-bakeoff-v1.md` complete, run:
+Before marking `README/Plans/006-kokoro-external-bakeoff-plan.md` complete, run:
 
 ```bash
 python scripts/external_bakeoff/verify_external_bakeoff_completion.py
