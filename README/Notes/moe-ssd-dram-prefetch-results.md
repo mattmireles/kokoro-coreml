@@ -6,7 +6,7 @@
 ## Summary
 
 This note records the staged results for
-[MoE SSD/DRAM expert prefetch experiment plan](../Plans/moe-ssd-dram-prefetch-v1.md).
+[MoE SSD/DRAM expert prefetch experiment plan](../Plans/009-moe-ssd-dram-prefetch-plan.md).
 Each stage must end with a written go/kill decision before the next stage
 starts. A kill decision is a valid result.
 

@@ -1,7 +1,7 @@
 # External Bakeoff Phase 0 API Audit
 
 **Date:** 2026-06-05
-**Plan:** `README/Plans/kokoro-external-bakeoff-v1.md`
+**Plan:** `README/Plans/006-kokoro-external-bakeoff-plan.md`
 **Status:** Phase 0 complete for Mac synthesis proof; physical iPhone access
 confirmed, but a signed minimal iOS run target is still needed before benchmark
 collection.

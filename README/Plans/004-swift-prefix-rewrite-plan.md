@@ -372,8 +372,8 @@ Trim (Swift)
 
 - [Performance Notes (baseline)](../Notes/performance-notes.md) — bakeoff v2 stage breakdown, measured CoreML predict times
 - [Debug Notes (decoder-only quality)](../Notes/debug-notes.md) — hn-nsf CoreML failure (correlation ~0.00), AdaIN/IdentityAdaIN issues
-- [ANE Optimization Plan](ane-optimization-v1.md) — prior AdaIN experiment, MIL compiler behavior
-- [Bakeoff v2 Plan](kokoro-bakeoff-v2.md) — benchmark methodology, counterbalanced design
+- [ANE Optimization Plan](002-ane-optimization-plan.md) — prior AdaIN experiment, MIL compiler behavior
+- [Bakeoff v2 Plan](003-kokoro-bakeoff-plan.md) — benchmark methodology, counterbalanced design
 - [Learnings](../learnings.md) — §10 production status (17x RT), §3 decoder-only architecture
 - [CoreML Compute Unit Scheduling Guide](../Guides/apple-silicon/CoreML-Compute-Unit-Scheduling-guide.md)
 

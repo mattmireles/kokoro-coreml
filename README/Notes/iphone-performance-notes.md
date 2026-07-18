@@ -53,7 +53,7 @@ The A17 Pro runs the 30s bucket ~7.3x realtime; the A14 ~3.5x realtime. The
 padded-duration stage is the largest single line item at 30s: 0.799 s of
 3.742 s (21%) on the A17 Pro, 1.558 s of 8.551 s (18%) on the A14 — the
 motivation for the exact-duration experiment in
-[kokoro-iphone-performance-v1.md](../Plans/kokoro-iphone-performance-v1.md).
+[007-kokoro-iphone-performance-plan.md](../Plans/007-kokoro-iphone-performance-plan.md).
 
 Raw artifacts: `outputs/iphone_bench/results_15pm_ladder_release.json` and
 `results_12pro_ladder_release.json` (gitignored; hardware `iPhone16,2` /

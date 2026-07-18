@@ -195,7 +195,7 @@ Two separate problems overlapped:
 
 - [Performance notes](performance-notes.md)
   - Records the v10 M1 Mini partial bakeoff and the original A/F blocker.
-- [ANE optimization plan](../Plans/ane-optimization-v1.md)
+- [ANE optimization plan](../Plans/002-ane-optimization-plan.md)
   - Documents the `decoder-har` split and `GeneratorFromHar` export contract.
 - [Core ML LSTM enumerated shapes guide](../Guides/apple-silicon/CoreML-LSTM-Enumerated-Shapes.md)
   - Gives context for static-shape LSTM export and why wrapper idempotence
@@ -811,7 +811,7 @@ The `15s` one-frame delta is expected FP16 rounding sensitivity around
 
 ### Related Guides
 
-- [Swift prefix rewrite plan](../Plans/swift-prefix-rewrite-v1.md)
+- [Swift prefix rewrite plan](../Plans/004-swift-prefix-rewrite-plan.md)
   - Documents the static enumerated Duration model contract and the assumption
     that it replaces Python `extract_vocoder_inputs()`.
 - [Core ML compute-unit scheduling guide](../Guides/apple-silicon/CoreML-Compute-Unit-Scheduling-guide.md)

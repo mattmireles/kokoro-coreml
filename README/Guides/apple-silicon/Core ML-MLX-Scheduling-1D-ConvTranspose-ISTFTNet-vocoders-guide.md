@@ -21,7 +21,7 @@ June 6, 2026
   Two-stage pipeline architecture, bucketing, and `(B, C, 1, S)` layout context.
 - **[PyTorch MPS and Core ML field guide](pytorch-mps.md)**: MLX/MPS training and
   conversion context; MLX graph-batching dispatch lessons mirror Core ML handoff cost.
-- **[ANE optimization plan](../../Plans/ane-optimization-v1.md)**: Generator
+- **[ANE optimization plan](../../Plans/002-ane-optimization-plan.md)**: Generator
   Linear→Conv1d graph surgery and `MLComputePlan` placement gates.
 - **Repo tooling:** [`scripts/inspect_coreml_compute_plan.m`](../../../scripts/inspect_coreml_compute_plan.m)
   — native per-op placement summary (macOS 14.4+); pair with the Python snippet

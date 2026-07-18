@@ -37,7 +37,7 @@ from kokoro.synthesis_backends import build_decoder_har_post_inputs_np
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Bakeoff-style lengths (README/Plans/kokoro-bakeoff-v2.md). Actual F0 seconds and Core ML bucket
+# Bakeoff-style lengths (README/Plans/003-kokoro-bakeoff-plan.md). Actual F0 seconds and Core ML bucket
 # come from :meth:`HybridTTSPipeline._select_bucket_seconds` (smallest loaded bucket >= ceil(duration)).
 # With only {3s, 10s} decoder_har_post buckets, ~3.25s audio still maps to the 10s package.
 BAKEOFF_INPUT_PRESETS: dict[str, str] = {

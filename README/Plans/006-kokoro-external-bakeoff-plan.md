@@ -7,7 +7,7 @@ reruns; local Config F, MLX, Soniqo, and laishere powermetrics captured; signed
 iPhone execution ingested; human listening decisions recorded as valid; final
 completion verifier passes.
 
-> Internal bakeoff methodology lives in `README/Plans/kokoro-bakeoff-v2.md`.
+> Internal bakeoff methodology lives in `README/Plans/003-kokoro-bakeoff-plan.md`.
 > This plan extends that methodology to external Apple Silicon Kokoro
 > implementations for a publication-grade claim. The paper question is not
 > "can Kokoro run fast on a Mac?" It is whether our surgical Swift+Core ML
@@ -538,7 +538,7 @@ is the final plan-completion gate; it now passes with `result_record_count=65`,
 
 ### Internal
 
-- [Bakeoff v2 Plan](kokoro-bakeoff-v2.md) - internal harness design
+- [Bakeoff v2 Plan](003-kokoro-bakeoff-plan.md) - internal harness design
 - [Bakeoff Results v2](../Notes/bakeoff-results-v2.md) - existing Config F baseline
 - [Performance Notes](../Notes/performance-notes.md) - where final results land
 - `/Users/mm/Documents/GitHub/botnet` - fleet health and worker status commands
@@ -565,7 +565,7 @@ is the final plan-completion gate; it now passes with `result_record_count=65`,
 | `scripts/external_bakeoff/requirements_mlx_audio.txt` | Create | pinned MLX Python deps |
 | `scripts/external_bakeoff/README.md` | Create | install/run instructions |
 | `README/Notes/performance-notes.md` | Modify | add external section |
-| `README/Plans/kokoro-external-bakeoff-v1.md` | Modify | this revised plan |
+| `README/Plans/006-kokoro-external-bakeoff-plan.md` | Modify | this revised plan |
 
 ## Risks and Mitigations
 

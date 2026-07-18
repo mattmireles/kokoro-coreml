@@ -269,8 +269,8 @@ kokoro-coreml/
 
 - [bakeoff-results.md](README/Notes/bakeoff-results.md) -- v5 cross-machine comparison (M2 Ultra, M2 Air, M1 Mini)
 - [performance-notes.md](README/Notes/performance-notes.md) -- full bakeoff history, stage breakdowns
-- [ane-optimization-v1.md](README/Plans/ane-optimization-v1.md) -- Linear→Conv1d swap (48→0 MIL linear ops)
-- [swift-prefix-rewrite-v1.md](README/Plans/swift-prefix-rewrite-v1.md) -- Swift pipeline architecture
+- [002-ane-optimization-plan.md](README/Plans/002-ane-optimization-plan.md) -- Linear→Conv1d swap (48→0 MIL linear ops)
+- [004-swift-prefix-rewrite-plan.md](README/Plans/004-swift-prefix-rewrite-plan.md) -- Swift pipeline architecture
 - [debug-notes.md](README/Notes/debug-notes.md) -- active issues and resolved investigations
 - [learnings.md](README/learnings.md) -- conversion challenges and solutions
 - [CoreML-Compute-Unit-Scheduling-guide.md](README/Guides/apple-silicon/CoreML-Compute-Unit-Scheduling-guide.md)
