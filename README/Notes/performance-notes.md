@@ -23,25 +23,11 @@ These numbers do **not** include:
 - model download
 - application-level audio playback
 
-## iPhone benchmarks moved
-
-iPhone timing evidence lives in
-[iphone-performance-notes.md](iphone-performance-notes.md) (first entry:
-2026-06-09, Config F vs MLX Swift `mlalma/kokoro-ios` on iPhone 12 Pro and
-iPhone 15 Pro Max — closes this file's "Config F iPhone timings remain
-absent" gap). iPhone failure modes live in
-[iphone-debug-notes.md](iphone-debug-notes.md). This file stays Mac-only;
-do not merge iPhone rows into Mac tables — the iPhone rows run a different
-compute-unit policy (`staged`, because the iPhone ANE compiler rejects the
-Mac `.all` plan).
-
 ## External Bakeoff: surgical Core ML vs MLX and iOS/Core ML Kokoro
 
 **Collected:** 2026-06-05
-**Status:** Complete for warmed Mac external bakeoff and Soniqo iPhone
-comparator ingestion; Config F iPhone timings remain absent until the installed
-manual runner can launch on the unlocked device. Waveform sanity passed, human
-listening decisions are recorded, and the final completion verifier passes.
+**Status:** Complete; signed iPhone execution ingested, waveform sanity passed,
+human listening decisions recorded, and final completion verifier passed.
 
 This bakeoff compares the current Swift + Core ML Config F reference against
 popular Apple Silicon Kokoro implementations:
@@ -99,7 +85,7 @@ Other Config F cells are N=5 full-sweep medians.
 
 ### iPhone Status
 
-The connected iPhone 12 Pro is visible to CoreDevice as `Matt's iPhone`
+The connected iPhone 12 Pro is visible to CoreDevice as `Webcam`
 (`F383FC46-FD64-5346-AEC6-59E3E2F8C9CA`, model `iPhone13,3`, UDID
 `00008101-001134561A0A001E`) and is connected, paired, and running with
 Developer Mode enabled. The minimal Soniqo Kokoro iOS runner in
@@ -125,224 +111,8 @@ The iPhone 3s cold call was `10866.3 ms`, reflecting first-use model setup. The
 device execution evidence for the public Soniqo artifact, not full-duration
 7s/10s/15s/30s parity evidence.
 
-Config F now has a dedicated physical-device runner scaffold at
-`scripts/external_bakeoff/ConfigFIOSRunner/`. It uses exact-duration model
-discovery, staged compute units, and the five runtime buckets. The runner now
-compiles the `KokoroPipeline` Swift sources directly into the app target instead
-of depending on the local Swift package, and it copies benchmark `.mlpackage`
-and JSON inputs with a post-compile script rather than asking Xcode's resource
-build phase to model the packages.
-
-`xcodegen generate` succeeds. A direct Swift frontend check against the iOS
-simulator SDK also succeeds for the runner plus `KokoroPipeline` sources. The
-remaining build failure is earlier than Swift compilation, resource copying, Core
-ML model compilation, or device signing: `xcodebuild` stalls idle in
-build-description creation with only `SWBBuildService` alive. The same stall
-reproduced for a minimal one-file XcodeGen iOS app, so treat this as a local
-Xcode/SwiftBuild environment blocker rather than a Config F source, packaging,
-signing, or on-device 30s model compile timeout. There are still no Config F
-iPhone warmed inference timings.
-
-Fresh check on 2026-06-06: `xcrun devicectl list devices` still shows
-`Matt's iPhone` connected as CoreDevice
-`F383FC46-FD64-5346-AEC6-59E3E2F8C9CA`; `xcrun xctrace list devices` shows the
-hardware UDID `00008101-001134561A0A001E`. `uv run --no-sync python
-scripts/prepare_swift_bench_inputs.py` and `DEVELOPMENT_TEAM=LCE6SSD8DB
-xcodegen generate` both completed for `ConfigFIOSRunner`. The physical-device
-build command then stalled again before any Swift/resource/model compile output:
-`xcodebuild` PID `55910` and `SWBBuildService` PID `55972` sat at `0.0%` CPU
-for more than 75 seconds, derived data was only `156K`, and the last build line
-was the initial `clang -v -E -dM ... /dev/null` SDK probe. The build was
-interrupted manually; this reconfirms the local SwiftBuild stall blocker.
-
-Follow-up on the same date narrowed the blocker further. The generated
-`ConfigFIOSRunner.xcodeproj` is inspectable: `xcodebuild -list` completed, and
-`xcodebuild -showBuildSettings -destination
-platform=iOS,id=00008101-001134561A0A001E DEVELOPMENT_TEAM=LCE6SSD8DB`
-resolved the physical iPhone destination and build settings. A fresh physical
-device build with derived data
-`/tmp/kokoro-external-bakeoff/config-f-ios-derived-20260606a` still stalled at
-`CreateBuildDescription` after `GatherProvisioningInputs`; after roughly 80
-seconds, derived data was only `56K`, and `xcodebuild`, `SWBBuildService`, and
-the child clang SDK probe were idle at `0.0%` CPU. A generic unsigned iOS build
-using `-destination generic/platform=iOS CODE_SIGNING_ALLOWED=NO` reproduced
-the same hang, and interrupting it emitted `unexpected service error: The Xcode
-build system has crashed` with failed commands `CreateBuildDescription` and the
-same clang SDK probe. The clang command itself completed immediately when run
-standalone, producing 471 macro lines and returning `0`. This rules out device
-signing, install, Swift source compilation, resource copying, 30s `.mlpackage`
-compile time, and the clang tool as the immediate failure; the blocker is the
-local Xcode/SwiftBuild build-description service path for this generated
-Config F runner.
-
-Manual Xcode bypass: `scripts/external_bakeoff/build_install_config_f_ios_manual.sh`
-now compiles the same runner and `KokoroPipeline` Swift sources with direct
-`swiftc`, copies the five runtime bucket `.mlpackage` sets and JSON inputs into
-the app bundle, embeds the existing wildcard iOS development provisioning
-profile, signs with the Apple Development identity, and optionally installs via
-`devicectl`. The one-off manual run produced an arm64 iOS executable, created
-an `882M` `ConfigFIOSRunner.app`, signed it with team entitlement
-`6ETYBAJKY8`, and installed it successfully on the connected iPhone as
-`com.kokoro.externalbakeoff.ConfigFIOSRunnerManual`. Launch then failed with
-`FBSOpenApplicationServiceErrorDomain ... RequestDenied ... Locked` because the
-iPhone was locked; `devicectl device info lockState` still reports
-`passcodeRequired: true` and `unlockedSinceBoot: true`. The remaining iPhone
-step is to unlock the device, relaunch the installed manual runner, tap `Run`,
-and ingest the JSON from the clipboard/output. This bypass path means Config F
-iPhone benchmarking is no longer blocked on Xcode project build, but warmed
-Config F iPhone timings are still absent until the installed runner executes.
-
-Fresh launch check on 2026-06-06 at 02:37 local time: CoreDevice still lists
-`Matt's iPhone` as `available (paired)`, Developer Mode is enabled, and the
-tunnel is connected. The manual bypass rebuilt and reinstalled
-`com.kokoro.externalbakeoff.ConfigFIOSRunnerManual` successfully on the phone,
-again producing an `882M` app bundle. Launch still fails before app startup
-with `FBSOpenApplicationServiceErrorDomain ... RequestDenied ... Locked` and
-`Unable to launch ... because the device was not, or could not be, unlocked`.
-`xcrun devicectl device info lockState --device 00008101-001134561A0A001E`
-reports `passcodeRequired: true` and `unlockedSinceBoot: true`. The phone is
-accessible to the machine, but the runner cannot execute until the physical
-device is unlocked.
-
-Fresh launch check on 2026-06-06 at 04:08 local time: CoreDevice still reports
-the iPhone as `available (paired)` over wired transport, with Developer Mode
-enabled and launch capability present. Launching the already installed
-`com.kokoro.externalbakeoff.ConfigFIOSRunnerManual` again failed with
-`RequestDenied ... Locked` and `Unable to launch ... because the device was
-not, or could not be, unlocked`. The host can see and talk to the phone; the
-only current Config F iPhone execution blocker is the physical lock state.
-
-Fresh install check on 2026-06-06 at 05:17 local time: the iPhone is still
-visible as `Matt's iPhone`, `available (paired)`, model `iPhone13,3`, UDID
-`00008101-001134561A0A001E`, iOS `26.5`. The wildcard provisioning profile
-includes that UDID, and the manual direct-`swiftc` bypass again built, signed,
-and installed an `882M` `ConfigFIOSRunner.app` as
-`com.kokoro.externalbakeoff.ConfigFIOSRunnerManual`. Launch still failed before
-app startup with `FBSOpenApplicationServiceErrorDomain ... RequestDenied ...
-Locked`. The Soniqo iOS preflight also sees the device, but currently lacks
-`DEVELOPMENT_TEAM`, `SPEECH_SWIFT_PATH`, and a generated Xcode project. Config F
-iPhone timing remains blocked only by the physical device lock state, not by
-install/signing.
-
-Follow-up on the same pass rejected the likely host-side launch bypasses.
-`devicectl device process launch` still routes a remote app-bundle path through
-SpringBoard, so `--console --no-activate` failed with the same locked-device
-denial. Passing the app executable path directly failed because this `devicectl`
-subcommand requires an application bundle, and `--start-stopped --no-activate`
-also failed before app startup with `RequestDenied ... Locked`. The installed
-manual runner was updated to auto-start on first view appearance, copy the JSON
-to the clipboard, and save `Documents/config_f_ios_result.json`; once the phone
-is physically unlocked, `scripts/external_bakeoff/pull_config_f_ios_result.sh`
-can copy that file from the app data container, ingest it as
-`results_config_f_reference_ios_iphone-12-pro.json`, and regenerate the
-competitive frontier.
-
-Fresh launch check on 2026-06-06 at 05:41 local time: CoreDevice still lists
-`Matt's iPhone` as `available (paired)`. Launching
-`com.kokoro.externalbakeoff.ConfigFIOSRunnerManual` again failed with
-`FBSOpenApplicationServiceErrorDomain ... RequestDenied ... Locked` and
-`Unable to launch ... because the device was not, or could not be, unlocked`.
-The app remains installed; Config F iPhone timing is still blocked by the
-physical lock state, not by build, signing, install, or model packaging.
-
-Fresh launch check on 2026-06-06 at 05:48 local time produced the same result:
-CoreDevice acquired a tunnel and usage assertion, then SpringBoard denied
-launching `com.kokoro.externalbakeoff.ConfigFIOSRunnerManual` because the
-device was locked. The device remains visible and paired; the runner still
-cannot execute until the physical phone is unlocked.
-
-Fresh launch check on 2026-06-06 at 05:52 local time again failed before app
-startup with `FBSOpenApplicationServiceErrorDomain ... RequestDenied ...
-Locked`. CoreDevice could still acquire the tunnel and usage assertion, so the
-blocker remains only the physical phone lock state.
-
-Fresh launch check on 2026-06-06 at 05:56 local time produced the same
-SpringBoard lock denial. The machine can still see the device, but
-`com.kokoro.externalbakeoff.ConfigFIOSRunnerManual` cannot launch until the
-physical iPhone is unlocked.
-
-Fresh launch check on 2026-06-06 at 05:58 local time produced the same locked
-SpringBoard denial after CoreDevice acquired a tunnel and usage assertion.
-The iPhone remains visible and paired, but Config F iPhone timing still cannot
-run until the physical device is unlocked.
-
-Fresh launch check on 2026-06-06 at 06:00 local time again produced the same
-locked SpringBoard denial. This reconfirms that the installed Config F runner
-is blocked by the physical iPhone lock state, not by pairing, tunnel, signing,
-or install.
-
 Whisper, ASR, VAD, playback, and echo-demo dependencies are not part of this
 bakeoff boundary. The iOS runner is intentionally Kokoro TTS only.
-
-Plain cos-Snake/iOS17 fused generator extension to the remaining medium buckets
-is rejected as a standalone Irvine candidate. Local M2 Studio probes passed the
-strict waveform gate but were slower than the fused package:
-`outputs/generator_cos_snake/10s_toolchain_ct9_plain_ios17/report_ct9_plain_ios17.json`
-reported fused `72.998 ms`, cos `73.114 ms`, speedup `-0.16%`, corr
-`0.9999949102781406`, SNR `50.47 dB`, max abs `0.00234985`; and
-`outputs/generator_cos_snake/15s_toolchain_ct9_plain_ios17/report_ct9_plain_ios17.json`
-reported fused `105.926 ms`, cos `106.211 ms`, speedup `-0.27%`, corr
-`0.9999959374146906`, SNR `51.43 dB`, max abs `0.00219727`. This closes the
-cheap 10s/15s plain cos-Snake/iOS17 gap without changing the M1 frontier.
-
-The refreshed graph-surface comparison makes the next strict target sharper.
-First-party `GeneratorFromHar 3s` has `2207` MIL ops, including `88`
-`reduce_mean` ops and `96` `tile` ops from manual AdaIN lowering. laishere
-`KokoroVocoder` has `1534` ops, `42` native `instance_norm` ops, `0` tiles, and
-`101` LUT decompression ops. Prior native-InstanceNorm/cos/broadcast probes did
-not reproduce laishere's warmed runtime benefit, so the remaining useful strict
-research is not another isolated flag toggle; it is a single-package surface
-that removes the manual AdaIN/tile footprint while avoiding the measured
-multi-package synchronization penalty.
-
-Fused `GeneratorFromHar` fp16 input dtype was tested directly rather than
-inferred from the split-body failures. `scripts/probe_generator_cos_snake.py`
-now supports `--input-dtype`, and
-`outputs/generator_cos_snake/3s_fused_input_dtype_plain_fp16_inputs/report_fp16_inputs_cpu_gpu.json`
-records the local result: strict pass against the fused output, fused
-`26.434 ms`, fp16-input candidate `26.453 ms`, speedup `-0.07%`, corr `1.0`,
-SNR `142.94 dB`, max abs `0`. The graph comparison
-`outputs/graph_surface/fused_fp16_inputs_3s.json` shows op count only changed
-from `2207` to `2201`, with the same `88` reductions and `96` tiles. This is
-rejected as a standalone path because it does not touch the actual bad surface.
-
-Fused native `instance_norm` plus fp16 inputs repairs only part of the target
-surface. `outputs/generator_cos_snake/3s_native_in_fp16_inputs_plain_native_in_fp16_inputs_ios17/report_ios17_native_in_fp16_inputs_cpu_gpu.json`
-reported a strict local pass with fused `26.349 ms`, candidate `26.316 ms`,
-speedup `0.12%`, corr `0.9999942588867583`, SNR `49.84 dB`, max abs
-`0.00256348`. The graph comparison
-`outputs/graph_surface/fused_native_in_fp16_inputs_3s.json` shows `2207 -> 1725`
-ops and `88 -> 0` reductions with `44` native `instance_norm` ops, but still
-`96` tiles and no LUT decompression. This is not material enough for Irvine
-timing by itself; the next useful strict candidate must remove the tile
-footprint or produce a much larger local win.
-
-Fused native `instance_norm` plus broadcast AdaIN plus fp16 inputs removes the
-manual AdaIN surface but is still not material. The report at
-`outputs/generator_cos_snake/3s_native_in_broadcast_fp16_inputs_plain_broadcast_adain_native_in_fp16_inputs_ios17/report_ios17_native_broadcast_fp16_inputs_cpu_gpu.json`
-passed strict local validation with fused `26.424 ms`, candidate `26.402 ms`,
-speedup `0.08%`, corr `0.9999942588867583`, SNR `49.84 dB`, max abs
-`0.00256348`. The graph comparison
-`outputs/graph_surface/fused_native_broadcast_fp16_inputs_3s.json` shows
-`2207 -> 1533` ops, `88 -> 0` reductions, `96 -> 0` tiles, and `44` native
-`instance_norm` ops. This is the closest first-party fused graph surface to
-laishere so far, but it proves that surface similarity alone is not sufficient;
-the missing ingredient is likely runtime placement, weight decompression, or a
-different boundary/layout effect.
-
-Adding 8-bit palettization to that same fused near-surface package creates the
-closest visible laishere-like surface so far, but it loses runtime and reduces
-quality margin. The report at
-`outputs/generator_cos_snake/3s_native_broadcast_fp16_pal8_plain_broadcast_adain_native_in_pal8_fp16_inputs_ios17/report_ios17_native_broadcast_fp16_pal8_cpu_gpu.json`
-passed the strict threshold with fused `26.333 ms`, candidate `27.077 ms`,
-speedup `-2.83%`, corr `0.9998795313806623`, SNR `36.55 dB`, max abs
-`0.00868225`. The graph comparison
-`outputs/graph_surface/fused_native_broadcast_fp16_pal8_3s.json` shows
-`2207 -> 1533` ops, `88 -> 0` reductions, `96 -> 0` tiles, `44` native
-`instance_norm` ops, and `101` LUT decompression ops. This rejects the
-hypothesis that laishere's visible surface alone explains the M1 win; the
-remaining difference is likely placement, layout, external runtime scheduling,
-or a boundary effect outside this fused package.
 
 ### Consolidated Warm Median and RTF by Platform
 
@@ -356,7 +126,7 @@ Mac14,14, 64 GiB, macOS 26.5 / 25F71.
 
 | Impl | 3s | 7s | 10s | 15s | 30s | Caveats |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| Config F | 50.6 ms / 0.018 | 96.1 ms / 0.014 | 126.2 ms / 0.013 | 185.6 ms / 0.013 | 379.3 ms / 0.014 | staged + exact duration + vDSP HnSF + direct HAR padding + vectorized HnSF noise/mask + frame-source phase; current batch rerun |
+| Config F | 60.2 ms / 0.022 | 110.5 ms / 0.016 | 149.6 ms / 0.016 | 222.6 ms / 0.016 | 449.0 ms / 0.016 | staged + exact duration + vDSP HnSF + direct HAR padding; 30s is N=10 rerun |
 | MLX | error | 223.9 ms / 0.033 | 288.8 ms / 0.030 | 376.3 ms / 0.027 | 762.7 ms / 0.028 | 3s broadcast-shape failure |
 | Soniqo | 71.7 ms / 0.027 | 69.3 ms / 0.014 | 71.0 ms / 0.014 | 68.1 ms / 0.014 | 69.5 ms / 0.014 | Long buckets emit 5.0s public artifact |
 | laishere | 212.3 ms / 0.077 | 403.3 ms / 0.059 | 626.3 ms / 0.065 | 429.8 ms / 0.031 | 925.1 ms / 0.034 | Excludes G2P/feed prep |
@@ -367,7 +137,7 @@ Mac14,15, 24 GiB, macOS 15.7.7 / 24G720.
 
 | Impl | 3s | 7s | 10s | 15s | 30s | Caveats |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| Config F | 148.0 ms / 0.053 | 330.7 ms / 0.049 | 466.0 ms / 0.049 | 693.6 ms / 0.050 | 1404.8 ms / 0.051 | staged + exact duration + vDSP HnSF + direct HAR padding + vectorized HnSF noise; current batch rerun |
+| Config F | 151.7 ms / 0.054 | 335.0 ms / 0.050 | 474.6 ms / 0.049 | 704.7 ms / 0.051 | 1430.0 ms / 0.052 | staged + exact duration + vDSP HnSF + direct HAR padding; 3s/7s/30s are N=10 reruns |
 | MLX | error | 685.6 ms / 0.102 | 835.8 ms / 0.087 | 1521.0 ms / 0.109 | 2600.3 ms / 0.095 | 3s broadcast-shape failure |
 | Soniqo | 1097.4 ms / 0.406 | 1135.8 ms / 0.227 | 1123.0 ms / 0.225 | 1125.5 ms / 0.225 | 1123.5 ms / 0.225 | Long buckets emit 5.0s public artifact |
 | laishere | 142.0 ms / 0.051 | 316.9 ms / 0.046 | 450.2 ms / 0.047 | 657.3 ms / 0.047 | 1476.4 ms / 0.054 | Excludes G2P/feed prep |
@@ -378,7 +148,7 @@ Macmini9,1, 16 GiB, macOS 15.7.7 / 24G720.
 
 | Impl | 3s | 7s | 10s | 15s | 30s | Caveats |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| Config F | 233.6 ms / 0.083 | 492.7 ms / 0.073 | 685.5 ms / 0.071 | 1014.9 ms / 0.073 | 1959.4 ms / 0.072 | staged + exact duration + vDSP HnSF + direct HAR padding + vectorized HnSF noise; current batch rerun |
+| Config F | 239.2 ms / 0.085 | 510.2 ms / 0.076 | 700.7 ms / 0.073 | 1028.9 ms / 0.074 | 1977.7 ms / 0.072 | staged + exact duration + vDSP HnSF + direct HAR padding |
 | MLX | error | 824.0 ms / 0.122 | 1124.3 ms / 0.117 | 1589.5 ms / 0.114 | 3077.9 ms / 0.112 | 3s broadcast-shape failure |
 | Soniqo | 1330.9 ms / 0.493 | 1343.6 ms / 0.269 | 1313.9 ms / 0.263 | 1343.6 ms / 0.269 | 1351.2 ms / 0.270 | Long buckets emit 5.0s public artifact |
 | laishere | 176.3 ms / 0.064 | 394.6 ms / 0.058 | 593.9 ms / 0.062 | 912.0 ms / 0.065 | 2135.1 ms / 0.078 | Excludes G2P/feed prep |
@@ -392,7 +162,7 @@ ranking above.
 
 | Machine | Impl | 3s | 7s | 10s | 15s | 30s |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| m2-studio | Config F | 51.8 ms | 94.7 ms | 127.0 ms | 182.6 ms | 380.0 ms |
+| m2-studio | Config F | 125.5 ms | 309.5 ms | 570.9 ms | 647.3 ms | 1389.1 ms |
 | m2-studio | MLX | error | 195.9 ms | 4737.1 ms | 438.1 ms | 930.2 ms |
 | m2-studio | Soniqo | 615.2 ms | 433.0 ms | 398.0 ms | 411.7 ms | 414.3 ms |
 | m2-studio | laishere | 237.0 ms | 359.0 ms | 839.7 ms | 676.1 ms | 1955.1 ms |
@@ -409,15 +179,15 @@ ranking above.
 
 | Machine | Impl | 3s | 7s | 10s | 15s | 30s |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| m2-studio | Config F | 50.6 ms | 96.1 ms | 126.2 ms | 185.6 ms | 379.3 ms |
+| m2-studio | Config F | 60.2 ms | 110.5 ms | 149.6 ms | 222.6 ms | 449.0 ms |
 | m2-studio | MLX | error | 223.9 ms | 288.8 ms | 376.3 ms | 762.7 ms |
 | m2-studio | Soniqo | 71.7 ms | 69.3 ms | 71.0 ms | 68.1 ms | 69.5 ms |
 | m2-studio | laishere | 212.3 ms | 403.3 ms | 626.3 ms | 429.8 ms | 925.1 ms |
-| m2-air | Config F | 148.0 ms | 330.7 ms | 466.0 ms | 693.6 ms | 1404.8 ms |
+| m2-air | Config F | 151.7 ms | 335.0 ms | 474.6 ms | 704.7 ms | 1430.0 ms |
 | m2-air | MLX | error | 685.6 ms | 835.8 ms | 1521.0 ms | 2600.3 ms |
 | m2-air | Soniqo | 1097.4 ms | 1135.8 ms | 1123.0 ms | 1125.5 ms | 1123.5 ms |
 | m2-air | laishere | 142.0 ms | 316.9 ms | 450.2 ms | 657.3 ms | 1476.4 ms |
-| irvine-m1 | Config F | 233.6 ms | 492.7 ms | 685.5 ms | 1014.9 ms | 1959.4 ms |
+| irvine-m1 | Config F | 239.2 ms | 510.2 ms | 700.7 ms | 1028.9 ms | 1977.7 ms |
 | irvine-m1 | MLX | error | 824.0 ms | 1124.3 ms | 1589.5 ms | 3077.9 ms |
 | irvine-m1 | Soniqo | 1330.9 ms | 1343.6 ms | 1313.9 ms | 1343.6 ms | 1351.2 ms |
 | irvine-m1 | laishere | 176.3 ms | 394.6 ms | 593.9 ms | 912.0 ms | 2135.1 ms |
@@ -426,15 +196,15 @@ ranking above.
 
 | Machine | Impl | 3s | 7s | 10s | 15s | 30s |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| m2-studio | Config F | 0.018 | 0.014 | 0.013 | 0.013 | 0.014 |
+| m2-studio | Config F | 0.022 | 0.016 | 0.016 | 0.016 | 0.016 |
 | m2-studio | MLX | error | 0.033 | 0.030 | 0.027 | 0.028 |
 | m2-studio | Soniqo | 0.027 | 0.014 | 0.014 | 0.014 | 0.014 |
 | m2-studio | laishere | 0.077 | 0.059 | 0.065 | 0.031 | 0.034 |
-| m2-air | Config F | 0.053 | 0.049 | 0.049 | 0.050 | 0.051 |
+| m2-air | Config F | 0.054 | 0.050 | 0.049 | 0.051 | 0.052 |
 | m2-air | MLX | error | 0.102 | 0.087 | 0.109 | 0.095 |
 | m2-air | Soniqo | 0.406 | 0.227 | 0.225 | 0.225 | 0.225 |
 | m2-air | laishere | 0.051 | 0.046 | 0.047 | 0.047 | 0.054 |
-| irvine-m1 | Config F | 0.083 | 0.073 | 0.071 | 0.073 | 0.072 |
+| irvine-m1 | Config F | 0.085 | 0.076 | 0.073 | 0.074 | 0.072 |
 | irvine-m1 | MLX | error | 0.122 | 0.117 | 0.114 | 0.112 |
 | irvine-m1 | Soniqo | 0.493 | 0.269 | 0.263 | 0.269 | 0.270 |
 | irvine-m1 | laishere | 0.064 | 0.058 | 0.062 | 0.065 | 0.078 |
@@ -464,15 +234,15 @@ faster. Values below `1.0x` mean the comparator was faster.
 
 | Machine | Comparator | 3s | 7s | 10s | 15s | 30s |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| m2-studio | MLX / Config F | n/a | 2.33x | 2.29x | 2.03x | 2.01x |
-| m2-studio | Soniqo / Config F | 1.42x | 0.72x | 0.56x | 0.37x | 0.18x |
-| m2-studio | laishere / Config F | 4.20x | 4.20x | 4.96x | 2.32x | 2.44x |
-| m2-air | MLX / Config F | n/a | 2.07x | 1.79x | 2.19x | 1.85x |
-| m2-air | Soniqo / Config F | 7.41x | 3.43x | 2.41x | 1.62x | 0.80x |
-| m2-air | laishere / Config F | 0.96x | 0.96x | 0.97x | 0.95x | 1.05x |
-| irvine-m1 | MLX / Config F | n/a | 1.67x | 1.64x | 1.57x | 1.57x |
-| irvine-m1 | Soniqo / Config F | 5.70x | 2.73x | 1.92x | 1.32x | 0.69x |
-| irvine-m1 | laishere / Config F | 0.75x | 0.80x | 0.87x | 0.90x | 1.09x |
+| m2-studio | MLX / Config F | n/a | 2.03x | 1.93x | 1.69x | 1.70x |
+| m2-studio | Soniqo / Config F | 1.19x | 0.63x | 0.47x | 0.31x | 0.15x |
+| m2-studio | laishere / Config F | 3.53x | 3.65x | 4.19x | 1.93x | 2.06x |
+| m2-air | MLX / Config F | n/a | 2.05x | 1.76x | 2.16x | 1.82x |
+| m2-air | Soniqo / Config F | 7.23x | 3.39x | 2.37x | 1.60x | 0.79x |
+| m2-air | laishere / Config F | 0.94x | 0.95x | 0.95x | 0.93x | 1.03x |
+| irvine-m1 | MLX / Config F | n/a | 1.62x | 1.60x | 1.54x | 1.56x |
+| irvine-m1 | Soniqo / Config F | 5.56x | 2.63x | 1.88x | 1.31x | 0.68x |
+| irvine-m1 | laishere / Config F | 0.74x | 0.77x | 0.85x | 0.89x | 1.08x |
 
 ### Config F Fast-Path Correction
 
@@ -491,249 +261,26 @@ with `.cpuAndGPU`, while decoder-pre loads with `.cpuAndNeuralEngine`. The
 external Config F adapter now defaults to this staged policy and enables exact
 duration model discovery by default. With the missing
 `kokoro_duration_exact_t156.mlpackage` generated for the `10s` fixture, the
-corrected warm medians after the vDSP HnSF optimization, direct HAR-padding
-fast path, and vectorized HnSF Gaussian noise are:
+corrected warm medians after the vDSP HnSF optimization and direct HAR-padding
+fast path are:
 
 | Machine | 3s | 7s | 10s | 15s | 30s |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| m2-studio | 55.1 ms | 103.8 ms | 135.2 ms | 202.6 ms | 409.1 ms |
-| m2-air | 148.0 ms | 330.7 ms | 466.0 ms | 693.6 ms | 1404.8 ms |
-| irvine-m1 | 233.6 ms | 492.7 ms | 685.5 ms | 1014.9 ms | 1959.4 ms |
+| m2-studio | 60.2 ms | 110.5 ms | 149.6 ms | 222.6 ms | 449.0 ms |
+| m2-air | 151.7 ms | 335.0 ms | 474.6 ms | 704.7 ms | 1430.0 ms |
+| irvine-m1 | 239.2 ms | 510.2 ms | 700.7 ms | 1028.9 ms | 1977.7 ms |
 
 This corrected run flips the MLX comparison for every MLX-comparable Mac
-bucket across all three hardware platforms. It beats laishere on every M2
-Studio cell, effectively ties laishere on M2 Air short/medium buckets, and wins
-the M2 Air and M1 `30s` laishere rows. The remaining negative rows are
-important: laishere's narrower Core ML-chain-only boundary is still faster on
-Irvine M1 short/medium buckets. Soniqo's 5s-only public artifact remains faster
-than full-duration Config F for the 15s/30s rows because it emits much less
-audio. The exact duration package set, including
+bucket across all three hardware platforms. It also beats Soniqo's valid `3s`
+macOS cell on every Mac and beats laishere on every M2 Studio cell. The
+remaining negative rows are important: laishere's narrower Core ML-chain-only
+boundary is still faster on M2 Air and M1 short/medium buckets, though the gap
+is now small on M2 Air and Config F now wins the M2 Air and M1 `30s` laishere
+rows. Soniqo's 5s-only public artifact remains faster than full-duration Config
+F for the 30s row because it emits much less audio. The exact duration package
+set, including
 `kokoro_duration_exact_t156.mlpackage`, still needs to be published with the
 model artifacts for third-party reproduction.
-
-Current ratio table, competitor median divided by Config F median; values above
-`1.0x` mean Config F is faster:
-
-| Machine | Comparator | 3s | 7s | 10s | 15s | 30s |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| m2-studio | MLX | n/a | 2.33x | 2.29x | 2.03x | 2.01x |
-| m2-studio | laishere | 4.20x | 4.20x | 4.96x | 2.32x | 2.44x |
-| m2-studio | Soniqo | 1.42x | 0.72x | 0.56x | 0.37x | 0.18x |
-| m2-air | MLX | n/a | 2.07x | 1.79x | 2.19x | 1.85x |
-| m2-air | laishere | 0.96x | 0.96x | 0.97x | 0.95x | 1.05x |
-| m2-air | Soniqo | 7.41x | 3.43x | 2.41x | 1.62x | 0.80x |
-| irvine-m1 | MLX | n/a | 1.67x | 1.64x | 1.57x | 1.57x |
-| irvine-m1 | laishere | 0.75x | 0.80x | 0.87x | 0.90x | 1.09x |
-| irvine-m1 | Soniqo | 5.70x | 2.73x | 1.92x | 1.32x | 0.69x |
-
-**Current answer to "why is MLX faster?": it is not faster in the corrected
-warmed comparison.** MLX originally looked faster because the first Config F
-external table timed a less production-shaped Core ML path: padded Duration
-graphs, `.all` placement, and avoidable host/HAR overhead. MLX was already on
-its natural MLX/Metal path, so it did not pay that same mistake. After switching
-Config F to staged compute units, exact Duration packages, direct HAR padding,
-vDSP HnSF, and vectorized HnSF noise, Config F beats the pinned `mlx-audio
-0.4.3`/`mlx-community/Kokoro-82M-bf16` implementation on every valid
-MLX-comparable Mac cell. Placement evidence also says MLX is GPU/Metal, not ANE:
-the M2 Studio MLX powermetrics run reported `ANE Power` min/median/max
-`0/0/0 mW` and `GPU HW active residency` min/median/max `32.6/49.435/98.28%`.
-The remaining warmed Mac losses are all to laishere, whose split Core ML chain
-has a different source/vocoder boundary and partial hardware-placement behavior.
-
-#### Competitive frontier gate
-
-`scripts/external_bakeoff/summarize_competitive_frontier.py` turns the current
-paper-facing result JSONs into a fastest-implementation frontier. It defaults
-to the corrected Config F `*_vector_noise_batch.json` files plus the current
-MLX, Soniqo, laishere, and Soniqo iPhone payloads, so it does not accidentally
-mix older compile/cache-polluted Config F rows into the ranking. A row is
-eligible for fastest ranking only when
-`observed_audio_duration_s / canonical_audio_duration_s >= 0.95`; this excludes
-Soniqo's short public-artifact outputs from long-bucket wins.
-
-```bash
-uv run --no-sync python scripts/external_bakeoff/summarize_competitive_frontier.py \
-  --output outputs/external_bakeoff/competitive_frontier.md \
-  --json-output outputs/external_bakeoff/competitive_frontier.json
-```
-
-Current machine-checkable frontier result:
-
-| Status | Count / cells | Interpretation |
-| --- | ---: | --- |
-| `absolute_fastest_verified` | `false` | The global objective is not complete. |
-| Config F full-duration Mac losses | `8` | Strict paper-facing frontier rows still show laishere losses; freshness report below narrows the real Mac gap. |
-| Config F missing full-duration phone cells | `1` | iPhone 12 Pro has Soniqo iOS `3s`; Config F phone timing is still absent. |
-| No full-duration phone frontier cells | `4` | iPhone long buckets only have short Soniqo public-artifact outputs right now. |
-
-`scripts/external_bakeoff/summarize_frontier_freshness.py` compares the strict
-paper-facing frontier losses against newer laishere stage-profile reruns. The
-stage-profile rows are diagnostic evidence, not automatic replacements for the
-paper table, but they prevent wasting optimization effort on stale or
-measurement-scale cells:
-
-```bash
-uv run --no-sync python scripts/external_bakeoff/summarize_frontier_freshness.py \
-  --output outputs/external_bakeoff/frontier_freshness.md \
-  --json-output outputs/external_bakeoff/frontier_freshness.json
-```
-
-Current freshness result: all four M2 Air frontier losses are stale or
-measurement-scale by the newer stage-profile evidence (`3s` favors Config F;
-`7s`, `10s`, and `15s` are within the `2%` tie threshold). The four real Mac
-losses are Irvine M1 `3s`, `7s`, `10s`, and `15s`.
-
-Remaining full-duration Mac losses from the generated frontier:
-
-| Machine | Bucket | Fastest impl | Fastest median | Config F median | Required Config F reduction |
-| --- | --- | --- | ---: | ---: | ---: |
-| irvine-m1 | 3s | laishere | 176.3 ms | 233.6 ms | 32.5% |
-| irvine-m1 | 7s | laishere | 394.6 ms | 492.7 ms | 24.9% |
-| irvine-m1 | 10s | laishere | 593.9 ms | 685.5 ms | 15.4% |
-| irvine-m1 | 15s | laishere | 912.0 ms | 1014.9 ms | 11.3% |
-| m2-air | 3s | laishere | 142.0 ms | 148.0 ms | 4.2% |
-| m2-air | 7s | laishere | 316.9 ms | 330.7 ms | 4.3% |
-| m2-air | 10s | laishere | 450.2 ms | 466.0 ms | 3.5% |
-| m2-air | 15s | laishere | 657.3 ms | 693.6 ms | 5.5% |
-
-This is now the explicit ship gate for the "absolute fastest" claim: the
-script must report `absolute_fastest_verified=true`, with no Config F losses
-and no missing Config F device cells, before the broad claim is proven. Today
-the next meaningful speed work remains the source/vocoder path on M1 and the
-small laishere short/medium deficit on M2 Air; MLX no longer explains a
-warmed-inference loss.
-
-#### Optimization candidate frontier
-
-`scripts/summarize_optimization_candidates.py` scans saved
-`outputs/**/report*.json` probe reports and classifies each candidate by
-quality gate and speedup. This is the promotion gate for experimental packages:
-quality-safe but sub-material wins stay in the research ledger, while
-speed-positive quality failures remain blocked until source quality or
-listening acceptance changes.
-
-```bash
-uv run --no-sync python scripts/summarize_optimization_candidates.py \
-  --material-speedup-pct 3.0 \
-  --top 40 \
-  --output outputs/optimization_candidate_frontier.md \
-  --json-output outputs/optimization_candidate_frontier.json
-```
-
-Current scan result across `112` saved probe reports:
-
-| Category | Count | Interpretation |
-| --- | ---: | --- |
-| Quality-safe speed-positive candidates | `9` | All are noise-sized relative to the current frontier. |
-| Quality-safe material candidates (`>=3%`) | `0` | No saved strict-equivalent candidate should be promoted as the next fix. |
-| Speed-positive quality-fail candidates | `31` | The speed lives mostly in F0/source-shape branches that still fail parity. |
-
-Largest quality-safe speed-positive rows:
-
-| Family | Candidate | Speedup | Decision |
-| --- | --- | ---: | --- |
-| generator_cos_snake | `3s_toolchain_ct9_plain_ios17` | 2.14% | Below material threshold; later same-process CT8/CT9 run tied. |
-| generator_cos_snake | `3s` | 1.27% | Below material threshold. |
-| generator_cos_snake | `3s_plain_ios17` | 0.65% | Below material threshold. |
-| generator_har_input_trim | `3s_har28561` on Irvine M1 | 0.43% | Strict quality passes but cannot close the 32.5% M1 3s laishere gap. |
-
-Largest speed-positive rows remain quality failures: F0-source natural/padded
-branches reach `28.9%`, `25.0%`, and `21.9%` in saved reports, but they fail
-strict waveform parity. The `acos` phase-repair sweep improves the padded
-F0-source rows across 7s/10s/15s/30s and keeps material speedups, but its best
-quality row is still only `corr 0.972150`, SNR `13.04 dB`, max abs `0.24933`.
-The current promotion frontier therefore rules out
-mining old saved reports for a ready strict-equivalent win. New work must either
-recover F0/source quality, change the accepted quality criterion through
-listening review, or find a new generator/vocoder formulation with a material
-quality-safe speedup.
-
-#### Frontier gap candidate closure
-
-`scripts/summarize_frontier_gap_candidates.py` joins the current competitive
-frontier with saved probe reports and asks a narrower question: if a measured
-exact-machine, exact-bucket sub-stack saving were substituted into Config F,
-would that estimated full-path median beat the current fastest implementation?
-This uses warmed inference only and treats the result as an estimate, not
-promotion proof, because most probes time a sub-stack rather than the full
-end-to-end path. The percent in this table is `required_ms / Config F median`;
-the competitive frontier's "Config F needs" percent is relative to the
-competitor median.
-
-```bash
-uv run --no-sync python scripts/summarize_frontier_gap_candidates.py \
-  --frontier-json outputs/external_bakeoff/competitive_frontier.json \
-  --top-per-cell 6 \
-  --output outputs/external_bakeoff/frontier_gap_candidates.md \
-  --json-output outputs/external_bakeoff/frontier_gap_candidates.json
-```
-
-Current gap-closure result:
-
-| Status | Count | Interpretation |
-| --- | ---: | --- |
-| Loss cells analyzed | `8` | The current full-duration Mac losses to laishere. |
-| Strict-pass candidates that would close a loss | `0` | No saved quality-safe probe is enough to promote. |
-| Quality-fail candidates that would close a loss | `0` | Even accepting current quality-fail F0/source probes would not erase any exact-machine loss by itself. |
-
-Exact-machine highlights from the generated report:
-
-| Machine | Bucket | Required Config F reduction | Best strict-pass estimate | Best quality-fail estimate |
-| --- | --- | ---: | --- | --- |
-| irvine-m1 | 3s | `57.2 ms` | `3s_har28561` estimates `232.8 ms`, still short of laishere `176.3 ms`. | `3s_natural_asr_cos_rsqrt` estimates `214.8 ms`, still short and quality-fail. |
-| irvine-m1 | 7s | `98.1 ms` | `7s_har_cos_resblock_cos_rsqrt` estimates `541.5 ms`, slower than Config F. | `7s_natural_asr_cos_rsqrt` estimates `444.1 ms`, still short of laishere `394.6 ms`. |
-| irvine-m1 | 10s | `91.6 ms` | `10s_har_cos_resblock_cos_rsqrt` estimates `754.3 ms`, slower than Config F. | `10s_natural_asr_cos_resblock_natural_asr_cos_rsqrt` estimates `608.7 ms`, still short of laishere `593.9 ms`. |
-| irvine-m1 | 15s | `102.9 ms` | none | `15s_padded_cos_resblock_cos_rsqrt` estimates `936.1 ms`, still short of laishere `912.0 ms`. |
-| m2-air | 3s | `6.0 ms` | saved strict-pass probes are slower on this exact hardware. | none |
-
-This rules out the current saved probe pile as the route to the absolute-fastest
-claim. The next frontier move needs a new full-path graph/runtime change,
-laishere-style package/kernel-plan decomposition, or a hardware-specific Core
-ML scheduling fix; polishing the existing F0-source candidate is not enough
-unless it comes with additional full-path savings.
-
-#### Irvine 3s residual after warmed-profile correction
-
-`scripts/external_bakeoff/summarize_irvine_3s_residual.py` isolates the
-remaining hard cell after the warmed-profile correction:
-
-```bash
-uv run --no-sync python scripts/external_bakeoff/summarize_irvine_3s_residual.py \
-  --output outputs/external_bakeoff/irvine_3s_residual.md \
-  --json-output outputs/external_bakeoff/irvine_3s_residual.json
-```
-
-Current result: the best saved F0/source quality-fail branch
-(`3s_natural_asr_cos_rsqrt`) saves `18.7 ms` but still leaves `19.8 ms` versus
-the warmed laishere profile (`214.8 ms` projected Config F vs `195.0 ms`
-laishere). Adding the only positive strict-pass saved probe
-(`3s_har28561`, `0.7 ms`) still leaves `19.1 ms`. Even the optimistic additive
-estimate of best F0/source branch + best strict probe + eliminating the matched
-upstream/runtime gap still leaves `6.2 ms`.
-
-This means Irvine `3s` needs a genuinely new source/body graph surface or a
-real upstream/runtime reduction that exceeds the currently measured matched
-gap. Existing saved strict-equivalent probes do not close it, and the
-quality-fail F0/source family alone is insufficient for the broad
-absolute-fastest claim.
-
-`scripts/external_bakeoff/summarize_irvine_3s_surfaces.py` is the focused
-scanner for saved Irvine `3s` graph-surface reports. It understands split/fused
-benchmark schemas that the generic optimization scanner does not classify:
-
-```bash
-uv run --no-sync python scripts/external_bakeoff/summarize_irvine_3s_surfaces.py \
-  --output outputs/external_bakeoff/irvine_3s_surfaces.md \
-  --json-output outputs/external_bakeoff/irvine_3s_surfaces.json
-```
-
-Current scan result: `19` saved Irvine `3s` surface rows are classifiable.
-Only `2` strict-pass rows are speed-positive: `3s_har28561` (`+0.7 ms`) and
-`3s_broadcast_adain_native_in_ios17` (`+0.2 ms`). Every material positive row
-is a quality-fail F0/source variant. The quality-safe split/fused attempts
-around generator stage split, generator noise split, exact HAR/body split, and
-nyquist-padded HAR-source fused graphs are all slower on Irvine `3s`. This
-closes the "maybe an existing unclassified report already solved 3s" question.
 
 #### Corrected Config F stage medians
 
@@ -743,21 +290,21 @@ Swift HnSF step is the second largest long-bucket cost on all machines.
 
 | Machine | Input | Duration | F0Ntrain | DecoderPre | Generator | Swift HnSF |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| m2-studio | 3s | 9.4 ms | 4.4 ms | 3.2 ms | 26.9 ms | 6.2 ms |
-| m2-studio | 7s | 13.7 ms | 6.6 ms | 5.4 ms | 54.5 ms | 14.7 ms |
-| m2-studio | 10s | 16.3 ms | 7.7 ms | 7.5 ms | 73.5 ms | 20.4 ms |
-| m2-studio | 15s | 19.8 ms | 10.6 ms | 15.6 ms | 106.6 ms | 30.7 ms |
-| m2-studio | 30s | 36.0 ms | 17.3 ms | 50.8 ms | 207.5 ms | 64.4 ms |
-| m2-air | 3s | 11.4 ms | 5.0 ms | 2.9 ms | 120.6 ms | 7.7 ms |
-| m2-air | 7s | 18.5 ms | 8.9 ms | 5.0 ms | 278.3 ms | 17.6 ms |
-| m2-air | 10s | 23.7 ms | 11.2 ms | 7.1 ms | 396.0 ms | 25.8 ms |
-| m2-air | 15s | 33.4 ms | 15.5 ms | 11.5 ms | 591.5 ms | 39.8 ms |
-| m2-air | 30s | 75.4 ms | 32.0 ms | 29.8 ms | 1183.2 ms | 78.8 ms |
-| irvine-m1 | 3s | 27.5 ms | 12.1 ms | 4.4 ms | 167.1 ms | 21.2 ms |
-| irvine-m1 | 7s | 45.5 ms | 17.9 ms | 8.4 ms | 383.7 ms | 35.5 ms |
-| irvine-m1 | 10s | 58.7 ms | 20.3 ms | 10.4 ms | 548.6 ms | 41.6 ms |
-| irvine-m1 | 15s | 80.7 ms | 30.9 ms | 17.1 ms | 820.8 ms | 62.6 ms |
-| irvine-m1 | 30s | 143.3 ms | 42.3 ms | 36.3 ms | 1631.9 ms | 94.8 ms |
+| m2-studio | 3s | 9.5 ms | 5.8 ms | 4.2 ms | 28.8 ms | 10.5 ms |
+| m2-studio | 7s | 13.6 ms | 6.6 ms | 5.5 ms | 58.3 ms | 24.7 ms |
+| m2-studio | 10s | 17.8 ms | 7.8 ms | 7.5 ms | 79.2 ms | 35.5 ms |
+| m2-studio | 15s | 22.4 ms | 11.3 ms | 16.1 ms | 115.8 ms | 53.8 ms |
+| m2-studio | 30s | 41.2 ms | 18.6 ms | 50.5 ms | 220.6 ms | 113.2 ms |
+| m2-air | 3s | 11.4 ms | 5.0 ms | 3.0 ms | 120.6 ms | 10.7 ms |
+| m2-air | 7s | 18.3 ms | 8.7 ms | 5.2 ms | 277.6 ms | 24.6 ms |
+| m2-air | 10s | 23.7 ms | 11.1 ms | 7.5 ms | 395.1 ms | 35.5 ms |
+| m2-air | 15s | 33.2 ms | 15.4 ms | 11.4 ms | 589.3 ms | 53.9 ms |
+| m2-air | 30s | 73.2 ms | 31.6 ms | 29.9 ms | 1182.6 ms | 108.2 ms |
+| irvine-m1 | 3s | 26.5 ms | 12.1 ms | 4.4 ms | 167.6 ms | 27.3 ms |
+| irvine-m1 | 7s | 43.9 ms | 18.0 ms | 8.4 ms | 387.6 ms | 47.1 ms |
+| irvine-m1 | 10s | 58.0 ms | 21.9 ms | 11.3 ms | 550.6 ms | 57.5 ms |
+| irvine-m1 | 15s | 79.4 ms | 31.8 ms | 17.9 ms | 821.5 ms | 75.7 ms |
+| irvine-m1 | 30s | 140.7 ms | 42.6 ms | 34.9 ms | 1633.2 ms | 120.6 ms |
 
 #### Vectorized HnSF Gaussian noise
 
@@ -784,53 +331,6 @@ Parity check against the pre-change `30s` tensor dump passed for
 and `waveform_full` with no failing boundary. Final waveform correlation was
 `0.999997` with max abs `0.00274658`; the HnSF boundary tensors were
 correlation `1.0`.
-
-Cross-machine validation used synced vectorized Swift sources, exact duration
-models, staged compute units, and the persistent external batch runner with
-three discarded preflight calls plus five warm measurements per input. HnSF
-improved relative to the older recorded stage medians, but total wall remains
-dominated by the generator predict call.
-
-| Machine | 3s HnSF | 7s HnSF | 10s HnSF | 15s HnSF | 30s HnSF |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| m2-studio | 6.2 ms | 14.7 ms | 20.4 ms | 30.7 ms | 64.4 ms |
-| m2-air | 7.7 ms | 17.6 ms | 25.8 ms | 39.8 ms | 78.8 ms |
-| irvine-m1 | 21.2 ms | 35.5 ms | 41.6 ms | 62.6 ms | 94.8 ms |
-
-2026-06-06 follow-up: the voiced/unvoiced mask and Gaussian-noise mix inside
-`sineGen` was also vectorized with `vDSP_vmul`/`vDSP_vadd`. A refreshed local
-M2 Studio official batch kept the exact same output SHA-256 for every bucket and
-moved HnSF medians to `7.0/17.6/22.7/35.0/72.8 ms` for `3s/7s/10s/15s/30s`.
-M2 Air and Irvine rows were not repromoted in this refresh because both hosts
-were running Spotlight/mediaanalysis load during the live check.
-
-Rejected micro-optimization: replacing the scalar `f0Upsample` repeat loop with
-per-frame `vDSP_vfill` preserved output SHA-256 but was slightly slower in a
-local M2 Studio probe. `3s` moved from `51.136 ms` wall / `7.018 ms` HnSF to
-`52.941 ms` wall / `7.304 ms` HnSF; `30s` moved from `389.353 ms` wall /
-`72.821 ms` HnSF to `390.939 ms` wall / `73.009 ms` HnSF. Keep the scalar repeat
-loop unless a future compiler/hardware check proves otherwise.
-
-Successful structural simplification: `buildHarComponents` now uses
-`sineGenFromF0Frames`, which skips the redundant phase-path
-`f0Upsample -> align_corners=false downsample` pair. Because F0 is
-nearest-upsampled by exactly `300`, the downsampled phase increment at frame
-`i` is the original frame value multiplied by the harmonic/sample-rate factor.
-The old `sineGen(f0Upsample(...))` path remains available for tests; the new
-unit test checks mixed voiced/unvoiced source samples against it. A refreshed
-local M2 Studio batch preserved the same output SHA-256 for every bucket and
-moved HnSF medians to `6.2/14.7/20.4/30.7/64.4 ms` for
-`3s/7s/10s/15s/30s`.
-
-Rejected follow-up: specializing the remaining `align_corners=false`
-interpolation for the fixed `N -> N*300` phase geometry was not promoted.
-Unit tests proved exact equality to the generic helper, and a 30s-only warmed
-probe looked positive (`379.3 -> 375.3 ms` wall, `64.4 -> 61.1 ms` HnSF), but
-the official all-bucket run shape did not hold the win consistently:
-`50.6/96.1/126.2/185.6/379.3 ms` became
-`50.4/94.4/124.6/185.4/379.7 ms`, with 30s HnSF at `65.6 ms`. Keep the generic
-interpolator until the long-bucket row is speed-positive in the same warmed
-all-bucket harness used for paper-facing results.
 
 #### Direct HAR padding fast path
 
@@ -885,42 +385,6 @@ Studio, `.all` merely ties `cpuAndGPU`. Forcing CPU+ANE is catastrophic even at
 3s. This does not by itself prove laishere's generator-equivalent chain is
 faster; it proves our current fused generator is the main place where a
 same-boundary optimization could move the full-pipeline table.
-
-#### Python/Core ML host-path probe
-
-`scripts/check_coreml_generator_from_dump.py` now also supports warmed timing
-from Python/coremltools against the same dumped generator tensors:
-
-```bash
-uv run --no-sync python scripts/check_coreml_generator_from_dump.py \
-  --tensor-dump outputs/generator_isolation/dumps/3s \
-  --package coreml/kokoro_decoder_har_post_3s.mlpackage \
-  --compute-units cpuAndGPU \
-  --warmup 3 \
-  --iterations 10 \
-  --write-json outputs/generator_isolation/results/python_generator_3s_cpuAndGPU.json \
-  --fail-on-difference
-```
-
-This tests whether laishere's Python/Core ML path is faster because Swift
-`MLMultiArray` or feature-provider plumbing is expensive. The answer is no for
-the validated short-bucket boundary. Values are N=10 medians after three
-discarded warmups.
-
-| Machine | Input | Swift generator isolation | Python/coremltools | Parity | Decision |
-| --- | --- | ---: | ---: | --- | --- |
-| m2-studio | 3s | 27.2 ms | 54.2 ms | pass, corr 0.999996, SNR 51.60 dB | reject host-path explanation |
-| m2-studio | 7s | 59.5 ms | 69.2 ms | pass, corr 1.000000, SNR 80.90 dB | reject host-path explanation |
-| irvine-m1 | 3s | 168.9 ms | 167.9 ms | pass, corr 0.999992, SNR 48.31 dB | reject host-path explanation |
-| irvine-m1 | 7s | 384.7 ms | 384.6 ms | pass, corr 0.999997, SNR 52.23 dB | reject host-path explanation |
-
-The Irvine numbers are especially important because that is where laishere
-still beats Config F at 3s/7s/10s/15s. Python/coremltools lands on the same
-warm generator timing as Swift there, so the remaining gap is in the package
-surface/model contract/runtime scheduling, not in Swift host overhead. The
-10s/15s/30s Python runs produced timings but failed parity against the current
-local dumps, so they are recorded only as invalid evidence until the dump and
-package pair is refreshed.
 
 #### Exact generator geometry probe
 
@@ -982,8 +446,6 @@ they are rejection probes only.
 | dual-output audio anchor + cos Snake | 3s | noise ALL, vocoder CPU+ANE, fp32 tail ALL | 35.7 ms | 242.3 ms | noise 11.8 ms, vocoder 226.4 ms, tail 1.5 ms | corr 0.999916, SNR 38.11 dB | reject |
 | dual-output mean anchor + cos Snake + int8-pal vocoder | 3s | noise ALL, vocoder CPU+ANE, fp32 tail ALL | 32.9 ms | 252.3 ms | noise 11.9 ms, vocoder 238.5 ms, tail 2.0 ms | corr 0.999848, SNR 35.61 dB | reject |
 | dual-output mean anchor + cos Snake + int8-pal vocoder | 3s | noise CPU+GPU, vocoder CPU+GPU, fp32 tail CPU+GPU | 27.9 ms | 32.4 ms | noise 11.2 ms, vocoder 19.9 ms, tail 1.2 ms | corr 0.999933, SNR 39.10 dB | reject |
-| exact HAR-source dual-output body + fp32 tail | 3s | body CPU+GPU, tail CPU+GPU | 26.5 ms | 27.7 ms | body 26.7 ms, tail 1.1 ms | corr 0.999995, SNR 50.05 dB | reject |
-| exact HAR-source dual-output body + fp32 tail | 3s | body CPU+ANE, tail CPU+GPU | 27.8 ms | 210.3 ms | body 208.3 ms, tail 2.0 ms | corr 0.999995, SNR 50.05 dB | reject |
 
 The final-tail split is too small to matter; the tail costs only about 1-2 ms.
 The HAR-noise split is more informative: it proves the graph can be partitioned
@@ -1003,17 +465,6 @@ and CPU+GPU remains slower than the fused package because extra package
 dispatch plus noise/tail stages outweigh the smaller vocoder body. The next
 viable performance work is therefore an operator-surface rewrite or a larger
 end-to-end graph reshaping, not more generator package-boundary experiments.
-
-The `exact HAR-source dual-output body + fp32 tail` rows additionally test the
-boundary that is closest to Config F's Swift runtime contract: Swift still
-produces the exact dumped `har_source`/Nyquist inputs, the Core ML body emits a
-discarded mean anchor plus `pre_tail`, and a separate fp32 tail runs
-`conv_post`/ISTFT. This preserves strict waveform parity but does not produce a
-faster warmed path on local M2 Studio. On Irvine M1 the same exported packages
-also reject: CPU+GPU measured `168.2 ms` fused versus `191.0 ms` split
-(`186.5 ms` body, `4.6 ms` tail), while CPU+ANE measured `171.7 ms` fused
-versus `335.5 ms` split (`331.5 ms` body, `3.9 ms` tail). That rules out the
-laishere-style discarded-anchor/tail split as the missing M1 short-bucket win.
 
 The per-stage split proves there is no hidden ANE-friendly island inside the
 current generator body. Explicit CPU+ANE makes every stage slower: noise grows
@@ -1087,134 +538,12 @@ decoder-plus-generator body, while Config F's isolated generator starts after
 
 | Machine | Input | Config F full | Config F generator | Laishere chain | Laishere noise+vocoder+tail | Interpretation |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| m2-studio | 3s | 55.1 ms | 27.2 ms | 104.5 ms | 90.4 ms | Config F wins decisively; laishere's split chain is slower here. |
-| m2-studio | 7s | 103.8 ms | 59.5 ms | 192.7 ms | 168.0 ms | Config F wins decisively; no laishere generator advantage. |
-| m2-air | 3s | 148.0 ms | 120.1 ms | 153.0 ms | 123.7 ms | Practical tie despite laishere's broader boundary. |
-| m2-air | 7s | 330.7 ms | 277.6 ms | 334.7 ms | 279.0 ms | Practical tie; old laishere lead was measurement-scale, not a clear graph win. |
-| irvine-m1 | 3s | 233.6 ms | 168.9 ms | 195.0 ms | 145.1 ms | Laishere wins; about half the gap is source/vocoder/tail and half upstream. |
-| irvine-m1 | 7s | 492.7 ms | 384.7 ms | 444.2 ms | 340.4 ms | Laishere wins; the M1 gap is real, but the split boundary is broader than our isolated generator. |
-
-Fresh Irvine current-vs-laishere deltas show where the remaining lower-end Mac
-loss lives. `Config F non-generator` is the current full warmed median minus
-`t_coreml_predict_s` from `results_config_f_reference_irvine-m1_vector_noise_batch.json`.
-`Laishere other+prep` is laishere chain time outside `noise+vocoder+tail` plus
-the separately reported feed-preparation time, so this row is intentionally
-conservative against laishere's narrower benchmark boundary.
-
-| Input | Config F full | Config F generator | Config F non-generator | Laishere chain | Laishere noise+vocoder+tail | Laishere other+prep |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 3s | 233.6 ms | 167.0 ms | 66.6 ms | 195.0 ms | 145.1 ms | 54.0 ms |
-| 7s | 492.7 ms | 388.7 ms | 103.9 ms | 444.2 ms | 340.4 ms | 106.7 ms |
-| 10s | 685.5 ms | 549.9 ms | 135.6 ms | 644.9 ms | 492.7 ms | 155.9 ms |
-| 15s | 1014.9 ms | 823.1 ms | 191.9 ms | 990.6 ms | 779.9 ms | 215.3 ms |
-| 30s | 1959.4 ms | 1631.6 ms | 327.8 ms | 2292.3 ms | 1799.7 ms | 501.4 ms |
-
-`scripts/external_bakeoff/summarize_stage_gap_decomposition.py` now regenerates
-this comparison for every current frontier loss cell and writes
-`outputs/external_bakeoff/stage_gap_decomposition.{md,json}`. It uses warmed
-Config F `raw_warm_results` stage medians and laishere warmed stage-profile
-medians, not cold or compile-contaminated rows:
-
-```bash
-uv run --no-sync python scripts/external_bakeoff/summarize_stage_gap_decomposition.py \
-  --frontier-json outputs/external_bakeoff/competitive_frontier.json \
-  --output outputs/external_bakeoff/stage_gap_decomposition.md \
-  --json-output outputs/external_bakeoff/stage_gap_decomposition.json
-```
-
-Current generated stage-gap summary:
-
-| Machine | Bucket | Total gap | Source/body gap | Other gap | Interpretation |
-| --- | --- | ---: | ---: | ---: | --- |
-| irvine-m1 | 3s | `+38.5 ms` | `+22.0 ms` | `+12.9 ms` | Both source/body and upstream matter. |
-| irvine-m1 | 7s | `+48.4 ms` | `+43.3 ms` | `+3.6 ms` | Almost all remaining loss is source/body. |
-| irvine-m1 | 10s | `+40.6 ms` | `+56.0 ms` | `-9.8 ms` | Config F non-generator is already faster; source/body dominates. |
-| irvine-m1 | 15s | `+24.3 ms` | `+40.9 ms` | `-23.6 ms` | Config F upstream advantage hides part of the source/body loss. |
-| m2-air | 3s | `-5.0 ms` | `-3.1 ms` | `-3.0 ms` | Stage-profile rerun favors Config F despite the frontier table's older/laishere-fast cell. |
-| m2-air | 7s | `-4.0 ms` | `-0.7 ms` | `-5.3 ms` | Practical tie; not a meaningful graph loss. |
-| m2-air | 10s | `-1.3 ms` | `+3.2 ms` | `-8.6 ms` | Practical tie; small source/body deficit offset elsewhere. |
-| m2-air | 15s | `+2.0 ms` | `+7.6 ms` | `-7.6 ms` | Measurement-scale tie. |
-
-Frontier-candidate reruns now include the previously missing Irvine M1 15s
-F0-source row. The remote skip-export run reused the local
-`15s_padded_cos_resblock_cos_rsqrt` packages and measured `758.8 ms` versus a
-same-host strict-equivalent baseline of `837.7 ms` (`+9.4%`), but it still fails
-quality (`corr 0.956796`, `SNR 11.00 dB`) and does not close the current 15s
-frontier cell. Regenerating `outputs/external_bakeoff/frontier_gap_candidates.md`
-after that run still reports `0` strict-pass closers and `0` quality-fail
-closers across all current loss cells. The F0-source branch remains useful
-research evidence, but the saved candidates are not enough to prove a faster
-implementation even if listening accepted the quality drift.
-
-`scripts/inspect_coreml_compute_plan.m` now records `MLComputePlan` placement
-for ML Program packages. It must be compiled as a small Objective-C CLI because
-the Swift-refined Core ML API in the current Xcode exposes structure and cost
-but not the ML Program device-usage selector directly:
-
-```bash
-clang -fobjc-arc -framework Foundation -framework CoreML \
-  scripts/inspect_coreml_compute_plan.m -o /tmp/inspect_coreml_compute_plan
-```
-
-The first useful M1 placement result changes the explanation for laishere's
-Irvine advantage. On Irvine M1, our shipping 3s HAR-post generator loaded with
-`cpuAndGPU` is GPU-preferred for all non-constant estimated cost
-(`gpu=100%`). Loading the same generator with `.all` still does not expose a
-Neural Engine-preferred generator plan. By contrast, laishere's public adapter
-loads `KokoroVocoder.mlpackage` with `CPU_AND_NE`, and that exact policy has a
-mixed Irvine M1 plan: estimated cost is `47.5%` Neural Engine and `49.6%` CPU
-(`unknown` ops are constants/control with `0` estimated cost). Its `conv`,
-`add`, `mul`, and `instance_norm` families are mostly Neural Engine-preferred,
-while `conv_transpose` and `cos` fall mostly or entirely to CPU. Forcing
-laishere's vocoder to `cpuAndGPU` removes that NE placement and makes it a
-GPU-only plan.
-So the current M1 root-cause hypothesis is no longer "MLX is faster" or
-"laishere has lower Python overhead"; it is that laishere's different iOS17
-vocoder boundary/operator surface unlocks partial NE placement on M1, while our
-quality-safe HAR-post generator remains GPU-bound.
-
-Fresh Irvine compute-plan JSONs saved under ignored
-`outputs/external_bakeoff/compute_plan/` make the contrast explicit. Our strict
-`kokoro_decoder_har_post_3s.mlpackage` under `cpuAndNeuralEngine` reports
-`2207` ops with preferred-device counts `cpu=1038`, `unknown=1169`, and `0`
-Neural Engine-preferred ops. laishere's `KokoroVocoder.mlpackage` under the
-same policy reports `1534` ops with `597` Neural Engine-preferred ops and
-`47.5%` estimated cost on Neural Engine. laishere's `KokoroNoise` and
-`KokoroTail` remain CPU/unknown-only, so the useful M1 placement advantage is
-localized to the vocoder body.
-
-Follow-up check: the strict-parity visible-surface candidate
-`3s_broadcast_adain_native_in_ios17` also unlocks partial NE placement on Irvine
-M1 under `.all` (`30.6%` estimated cost NE, `66.9%` GPU, `2.5%` CPU), but it is
-not a runtime win. The fresh skip-export Irvine run with `--compute-units all`
-measured fused `177.1 ms` versus candidate `318.2 ms` (`-79.7%`) while still
-passing the waveform gate. This rejects the simple next hypothesis that any
-partial NE placement of our strict HAR-post graph will beat laishere. The target
-is narrower: reproduce laishere's useful mixed plan without the synchronization
-penalty and without changing the Swift source/HAR quality contract.
-
-`profile_laishere_stages.py` now accepts `--noise-compute-units`,
-`--vocoder-compute-units`, and `--tail-compute-units` for controlled stage
-policy ablations while preserving laishere's public policy by default. A
-same-window Irvine M1 ablation over every current Irvine loss bucket confirms
-that laishere's vocoder-side compute policy is causal, not just decorative
-placement metadata. Keeping Albert/Post/Alignment/Prosody on `cpuAndNeuralEngine`
-but forcing Noise/Vocoder/Tail to `cpuAndGPU` leaves Noise mostly unchanged and
-makes Vocoder much slower:
-
-| Input | Public policy total | CPU+GPU N/V/T total | Total delta | Public vocoder | CPU+GPU vocoder | Vocoder delta |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 3s | `208.5 ms` | `331.2 ms` | `+122.7 ms` | `84.2 ms` | `202.2 ms` | `+118.0 ms` |
-| 7s | `448.6 ms` | `679.2 ms` | `+230.6 ms` | `216.1 ms` | `417.5 ms` | `+201.4 ms` |
-| 10s | `661.0 ms` | `913.9 ms` | `+252.9 ms` | `330.0 ms` | `555.8 ms` | `+225.8 ms` |
-| 15s | `1020.4 ms` | `1270.4 ms` | `+250.0 ms` | `544.4 ms` | `793.8 ms` | `+249.4 ms` |
-
-This sharpens the next implementation target: do not chase MLX or generic
-Core ML cleanup. The lower-end Mac gap is specifically a useful laishere
-`KokoroVocoder` mixed CPU/NE plan at its broader decoder-plus-vocoder boundary.
-Our quality-safe HAR-post graph must either be reshaped into a similarly useful
-mixed plan without the `.all` synchronization penalty, or we need a different
-quality-preserving source/body contract.
+| m2-studio | 3s | 60.2 ms | 27.2 ms | 104.5 ms | 90.4 ms | Config F wins decisively; laishere's split chain is slower here. |
+| m2-studio | 7s | 110.5 ms | 59.5 ms | 192.7 ms | 168.0 ms | Config F wins decisively; no laishere generator advantage. |
+| m2-air | 3s | 151.7 ms | 120.1 ms | 153.0 ms | 123.7 ms | Practical tie despite laishere's broader boundary. |
+| m2-air | 7s | 335.0 ms | 277.6 ms | 334.7 ms | 279.0 ms | Practical tie; old laishere lead was measurement-scale, not a clear graph win. |
+| irvine-m1 | 3s | 239.2 ms | 168.9 ms | 195.0 ms | 145.1 ms | Laishere wins; about half the gap is source/vocoder/tail and half upstream. |
+| irvine-m1 | 7s | 510.2 ms | 384.7 ms | 444.2 ms | 340.4 ms | Laishere wins; the M1 gap is real, but the split boundary is broader than our isolated generator. |
 
 This answers the "how is laishere/MLX faster?" question more narrowly. MLX is
 not faster after warmed Config F correction. Laishere is not faster on M2 Studio
@@ -1226,21 +555,6 @@ graph-surface inspection below checks whether laishere's visible
 The next boundary-level probe should recreate laishere's actual
 decoder-plus-generator body against the Swift dumps, not only the narrower
 HAR-post `GeneratorFromHar` boundary.
-
-`scripts/external_bakeoff/summarize_irvine_3s_placement_target.py` captures the
-current 3s target as a durable artifact in
-`outputs/external_bakeoff/irvine_3s_placement_target.md`. The saved compute
-plans show our strict HAR-post 3s package has `0` Neural Engine-preferred ops
-under `cpuAndNeuralEngine`, while laishere's `KokoroVocoder` has `597`
-Neural Engine-preferred ops and `47.5%` estimated cost on Neural Engine. The
-same report records the strict partial-NE counterexample:
-`3s_broadcast_adain_native_in_ios17` under `.all` measured `318.2 ms` versus
-`177.1 ms`, so the implementation target is not "turn on ANE"; it is a
-runtime-positive laishere-like mixed CPU/NE body plan that preserves the Swift
-HAR/source contract without introducing the synchronization penalty. The exact
-decoder+vocoder body split already gets `599` Neural Engine-preferred ops and
-`48.7%` estimated cost on Neural Engine, so placement alone is already proven
-insufficient.
 
 #### Fused generator graph-surface probes
 
@@ -1265,7 +579,6 @@ Local M2 Studio 3s, CPU+GPU, N=10 median after three discarded warmups:
 | corrected broadcast AdaIN | 8 | 2015 | `tile` 96 -> 0 | 30.92 ms | 30.93 ms | -0.03% | corr 0.999997, SNR 53.17 dB | reject |
 | native InstanceNorm AdaIN | 8 | 1731 | `reduce_mean` 88 -> 0, `instance_norm` 0 -> 44 | 31.00 ms | 30.93 ms | +0.24% | corr 0.999994, SNR 49.84 dB | reject |
 | native InstanceNorm + broadcast + cos | 8 | 1635 | no `tile`, native `instance_norm`, cos Snake | 30.08 ms | 30.68 ms | -2.02% | corr 0.999994, SNR 49.71 dB | reject |
-| native InstanceNorm + broadcast + cos + HAR28561 | 8 | 1635 | same graph cleanup plus strict HAR-axis trim | 27.96 ms | 28.61 ms | -2.33% | corr 0.999983, SNR 45.21 dB, max abs 0.00623 | reject; strict-equivalent combo is slower |
 | native InstanceNorm + broadcast + cos + pal8 | 8 | 1635 | adds 101 `constexpr_lut_to_dense` ops; package `38M` -> `19M` | 29.64 ms | 31.31 ms | -5.65% | corr 0.999879, SNR 36.54 dB, max abs 0.01007 | reject; slower and misses max-abs gate |
 
 The strongest visible graph cleanup is the combined native InstanceNorm +
@@ -1288,12 +601,6 @@ compute-plan/kernel selection, compiler/runtime/toolchain differences, or a
 larger pipeline boundary difference rather than a simple AdaIN/Snake source
 rewrite.
 
-`scripts/probe_generator_cos_snake.py --har-time 28561` now composes that same
-strict-equivalent graph cleanup with the HAR input-trim candidate while keeping
-the baseline on the full shipping HAR input. The combined local M2 Studio 3s
-probe remains quality-safe but slower, so the small graph-surface and HAR-trim
-effects do not compound into a promotable package.
-
 The palettized fused-generator row is the direct check against laishere's
 `KokoroVocoder` metadata surface. `xcrun coremlcompiler metadata` reports
 laishere's vocoder as mixed FP16/FP32 plus 8-bit palettized weights with
@@ -1305,38 +612,6 @@ split: its palettized vocoder emits an intermediate audio anchor that is
 discarded, while a separate tail emits the listener-facing waveform. Do not
 ship or rank palettized fused-generator packages without a fresh quality gate.
 
-The same full visible-surface pal8 candidate was combined with the current
-HAR-post upsample rewrite and compared directly against the production rewrite
-package rather than the older shipped package:
-
-```bash
-uv run --no-sync python scripts/probe_generator_cos_snake.py \
-  --label 3s_native_broadcast_fp16_pal8_ups_as_conv_vs_rewrite \
-  --no-cos-snake \
-  --native-instance-norm-adain \
-  --broadcast-adain \
-  --input-dtype fp16 \
-  --deployment-target ios17 \
-  --palettize \
-  --rewrite-ups-conv-transpose \
-  --fused-package outputs/export_rewrite_smoke/kokoro_decoder_har_post_3s.mlpackage \
-  --report-name report_cpu_gpu_vs_rewrite.json \
-  --warmup 3 \
-  --iterations 10
-```
-
-Result: strict by the fused-output gate but slower than the simpler production
-rewrite. Warmed local M2 Studio CPU+GPU was production rewrite `25.221 ms`
-versus full-surface pal8 rewrite `25.923 ms` (`-2.78%`). Quality versus the
-production rewrite was corr `0.999880`, SNR `36.57 dB`, max abs `0.009857`.
-The graph surface has `1555` ops, `101` LUT decompressions, `44` native
-`instance_norm` ops, no manual reductions/tiles, and the remaining `2`
-`conv_transpose` ops are the iSTFT tail. CPU+NE compute-plan extraction still
-emitted `ANECCompile() FAILED`; the returned plan had `685` CPU-preferred ops,
-`0` neural-engine-preferred ops, and `576` NE-supported ops. Decision: reject.
-The laishere-like LUT surface does not add speed on top of the upsample rewrite
-and does not fix Core ML placement.
-
 Linear weight quantization is also rejected for the final-waveform generator.
 `scripts/probe_generator_cos_snake.py --linear-quantize int8` compressed the
 plain fixed-shape 3s candidate from `39.7 MB` to `20.2 MB` without changing the
@@ -1347,17 +622,6 @@ the CPU-only row is not shippable: `93.27 ms` vs `97.43 ms` fused CPU-only and
 fails parity (`corr 0.999051`, SNR `27.62 dB`, max abs `0.03387`). Compression
 can reduce bundle size, but it is not the missing lower-end Mac speed path for
 our final-waveform generator.
-
-The 4-bit version is also rejected. Core ML refused `--linear-quantize int4`
-with an iOS17 deployment target (`4-bit quantization is supported since
-iOS18`). Re-exporting the same fixed-shape fused 3s generator with
-`--deployment-target ios18 --linear-quantize int4` succeeded, but the local
-M2 Studio CPU+GPU row was both slower and below quality thresholds:
-candidate `27.15 ms` vs fused `26.52 ms` (`-2.36%`), corr `0.958562`, SNR
-`11.28 dB`, max abs `0.145416`. Report:
-`outputs/generator_cos_snake/3s_linear_int4_ios18_wint4_ios18/report_ios18_linear_int4.json`.
-This closes "try newer 4-bit compression inside the single fused
-final-waveform package" as a strict speed path.
 
 The toolchain-only hypothesis is also rejected for the current fused generator.
 `scripts/probe_generator_cos_snake.py` now records `coremltools`, `torch`, and
@@ -1444,7 +708,7 @@ includes decoder F0/N conv, decoder encode/decode, and the generator body, then
 a separate fp32 tail. The baseline is the same Swift tensor dump run through the
 checked-in `decoder_pre` package plus the checked-in fused HAR-post generator.
 
-Cross-machine and exact losing-bucket results:
+Cross-machine `3s` results:
 
 | Candidate body units | Baseline median | Candidate median | Stage medians | Parity vs fused | Decision |
 | --- | ---: | ---: | --- | --- | --- |
@@ -1454,66 +718,13 @@ Cross-machine and exact losing-bucket results:
 | m2-air CPU+GPU | 123.7 ms | 138.8 ms | noise 52.2 ms, body 84.4 ms, tail 2.1 ms | corr 0.999991, SNR 47.70 dB | reject |
 | irvine-m1 CPU+ANE | 176.3 ms | 314.6 ms | noise 75.2 ms, body 235.5 ms, tail 3.9 ms | corr 0.999907, SNR 37.69 dB | reject |
 | irvine-m1 CPU+GPU | 174.6 ms | 199.3 ms | noise 74.9 ms, body 119.8 ms, tail 4.8 ms | corr 0.999991, SNR 47.72 dB | reject |
-| irvine-m1 CPU+GPU, 7s | 396.9 ms | 445.7 ms | noise 173.6 ms, body 264.6 ms, tail 7.7 ms | corr 0.999991, SNR 47.82 dB | reject; exact losing bucket also slows down |
-| m2-studio CPU+GPU, 10s | 81.3 ms | 87.6 ms | noise 30.7 ms, body 54.5 ms, tail 2.6 ms | corr 0.999990, SNR 47.49 dB | reject |
-| irvine-m1 CPU+GPU, 10s | 562.8 ms | 631.6 ms | noise 247.8 ms, body 371.5 ms, tail 11.4 ms | corr 0.999991, SNR 47.86 dB | reject; exact losing bucket also slows down |
-
-The same broader decoder+vocoder probe now accepts
-`--rewrite-ups-conv-transpose`, applying the strict HAR-post upsample rewrite
-inside the body before export. Local M2 Studio screening runs are strict and
-slightly reduce body time, but the three-package boundary still loses overall:
-`3s` measured `33.2 ms` baseline versus `36.1 ms` candidate (noise `11.4 ms`,
-body `23.1 ms`, tail `1.4 ms`, corr `0.999991`, SNR `47.67 dB`), and `10s`
-measured `86.0 ms` baseline versus `91.7 ms` candidate (noise `33.5 ms`, body
-`55.1 ms`, tail `2.8 ms`, corr `0.999990`, SNR `47.58 dB`). Decision: reject
-the laishere-style decoder+vocoder boundary plus upsample rewrite as a
-production split; the rewrite is only useful inside the fused HAR-post package
-or as part of a source/body quality branch. Reports:
-`outputs/decoder_vocoder_split/3s_har_cos_resblock_cos_rsqrt_ups_as_conv/report_laishere_boundary_ups_as_conv_local.json`
-and
-`outputs/decoder_vocoder_split/10s_har_cos_resblock_cos_rsqrt_ups_as_conv/report_laishere_boundary_ups_as_conv_local.json`.
-
-Local long-bucket `har_source -> STFT/noise_convs` split results:
-
-| Input | Baseline median | Candidate median | Speedup | Stage medians | Parity vs fused | Decision |
-| --- | ---: | ---: | ---: | --- | --- | --- |
-| 10s | 85.9 ms | 78.1 ms | +9.1% | noise 19.1 ms, body 56.2 ms, tail 2.6 ms | corr 0.977328, SNR 12.81 dB | speed-positive, reject for strict quality |
-| 15s | 122.5 ms | 110.1 ms | +10.1% | noise 27.3 ms, body 79.0 ms, tail 3.5 ms | corr 0.978868, SNR 13.02 dB | speed-positive, reject for strict quality |
-| 30s | 234.2 ms | 206.8 ms | +11.7% | noise 51.8 ms, body 149.0 ms, tail 5.6 ms | corr 0.974779, SNR 12.45 dB | speed-positive, reject for strict quality |
-
-The long sweep was run with `uv run --no-sync python
-scripts/probe_har_source_noise_split.py ... --warmup 3 --iterations 10`; reports
-are under `outputs/har_source_noise_split/{10s,15s,30s}/report_har_source_noise.json`.
-This branch scales in the right direction and is now the strongest
-quality-adjacent speed lead, but the parity gap is still too large for
-production. The next useful work is phase/STFT parity repair for this compact
-source boundary, or a no-ASR listening review if the paper accepts an
-audio-equivalent rather than tensor-equivalent branch.
-
-Phase/STFT repair probe:
-
-| Variant | Baseline median | Candidate median | Speedup | Parity vs fused | Decision |
-| --- | ---: | ---: | ---: | --- | --- |
-| 3s `atan_manual`, noise fp32 | 32.3 ms | 31.7 ms | +1.7% | corr 0.987931, SNR 16.62 dB | better, still reject |
-| 3s `acos`, noise fp32 | 32.5 ms | 31.8 ms | +2.2% | corr 0.987922, SNR 16.62 dB | better, still reject |
-| 3s `atan_manual`, noise fp32 + dumped Nyquist input | 31.3 ms | 29.3 ms | +6.5% | corr 0.988458, SNR 16.75 dB | faster, still reject |
-
-This uses the new `--phase-mode` option in
-`scripts/probe_har_source_noise_split.py`. It confirms the standalone STFT
-semantics finding: fp32 phase formulas reduce the phase-induced waveform error,
-but they do not close the raw generator sensitivity enough for production. The
-Nyquist-input variant threads the dumped Swift Nyquist phase into the compact
-`har_source -> STFT/noise_convs` package, closing the known raw phase branch but
-still failing strict quality at natural geometry; this mirrors the fused
-HAR-source result where parity only closes after preserving the padded shipping
-HAR geometry, which loses the speed edge.
 
 This closes the direct "copy laishere's decoder+vocoder split boundary" path for
-our current Swift dump contract on every tested Mac, including the exact Irvine
-M1 `7s` and `10s` losing buckets. The remaining laishere advantage on Irvine M1
-short/medium rows is not explained by this boundary alone. It must come from
-laishere's full runtime/package details, a hardware-specific Core ML compile
-plan, or work reduction outside the reproduced boundary.
+our current Swift dump contract on every tested Mac. The remaining laishere
+advantage on Irvine M1 short/medium rows is not explained by this boundary
+alone. It must come from laishere's full runtime/package details, a
+hardware-specific Core ML compile plan, or work reduction outside the reproduced
+boundary.
 
 #### F0-noise exact-shape reuse probe
 
@@ -1565,25 +776,19 @@ At `7s`, the natural-ASR export uses `x_source_0=[1,256,5400]` and
 | --- | --- | ---: | ---: | --- | --- | --- | --- |
 | m2-studio | natural `asr=112`, `F0=224` | 33.4 ms | 32.7 ms | noise 7.3 ms, body 23.5 ms, tail 2.1 ms | corr 0.814046, SNR 5.08 dB | corr 0.804153, SNR 4.54 dB | reject for quality; speed tie |
 | m2-studio | padded `asr=120`, `F0=240` | 33.5 ms | 33.7 ms | noise 7.6 ms, body 24.4 ms, tail 1.5 ms | corr 0.931896, SNR 9.19 dB | corr 0.939812, SNR 9.57 dB | reject; quality better but no speed |
-| m2-studio | padded Swift-like source + Swift phase, `asr=120`, `F0=240` | 32.1 ms | 32.0 ms | noise 6.7 ms, body 23.6 ms, tail 1.7 ms | corr 0.186514, SNR 0.32 dB | recorded in `report_swift_like_phase_swift.json` | reject; closes Swift-source/phase recovery corner |
 | irvine-m1 | natural `asr=112`, `F0=224` | 172.0 ms | 153.3 ms | noise 37.1 ms, body 111.4 ms, tail 4.6 ms | corr 0.814046, SNR 5.08 dB | corr 0.804153, SNR 4.54 dB | promising M1 speed, not quality-safe |
 | m2-studio | natural `asr=270`, `F0=540` | 63.1 ms | 56.5 ms | noise 12.8 ms, body 41.5 ms, tail 2.2 ms | corr 0.796791, SNR 4.77 dB | corr 0.795823, SNR 4.33 dB | faster, reject for quality |
 | m2-studio | padded `asr=280`, `F0=560` | 63.0 ms | 58.8 ms | noise 13.5 ms, body 43.0 ms, tail 2.3 ms | corr 0.962251, SNR 11.51 dB | corr 0.968596, SNR 12.51 dB | faster, quality closer but not parity |
-| m2-studio | padded `asr=280`, `F0=560`, `acos` phase | 63.8 ms | 59.9 ms | noise 13.6 ms, body 43.8 ms, tail 2.2 ms | corr 0.972150, SNR 13.04 dB | recorded in `report_cos_resblock_phase_acos.json` | faster, best quality so far, still not strict parity |
 | irvine-m1 | natural `asr=270`, `F0=540` | 398.4 ms | 349.8 ms | noise 87.1 ms, body 255.3 ms, tail 8.0 ms | corr 0.796785, SNR 4.77 dB | corr 0.795823, SNR 4.33 dB | faster, reject for quality |
 | irvine-m1 | padded `asr=280`, `F0=560` | 390.8 ms | 358.9 ms | noise 89.6 ms, body 261.5 ms, tail 7.4 ms | corr 0.962306, SNR 11.52 dB | corr 0.968596, SNR 12.51 dB | faster, quality closer but not parity |
 | m2-studio | natural `asr=384`, `F0=768` | 86.0 ms | 76.4 ms | noise 18.2 ms, body 56.1 ms, tail 2.7 ms | corr 0.866976, SNR 6.55 dB | corr 0.843346, SNR 5.40 dB | faster, reject for quality |
 | m2-studio | padded `asr=400`, `F0=800` | 87.6 ms | 79.0 ms | noise 18.4 ms, body 57.8 ms, tail 2.8 ms | corr 0.955085, SNR 10.86 dB | corr 0.942765, SNR 9.78 dB | faster, quality closer but not parity |
-| m2-studio | padded `asr=400`, `F0=800`, `acos` phase | 81.0 ms | 73.1 ms | noise 16.8 ms, body 53.8 ms, tail 2.6 ms | corr 0.968904, SNR 12.57 dB | recorded in `report_cos_resblock_phase_acos.json` | faster, better quality than padded, still not strict parity |
 | irvine-m1 | natural `asr=384`, `F0=768` | 563.9 ms | 487.1 ms | noise 122.8 ms, body 353.5 ms, tail 10.2 ms | corr 0.867049, SNR 6.55 dB | not rerun | faster, reject for quality |
 | irvine-m1 | padded `asr=400`, `F0=800` | 565.7 ms | 509.0 ms | noise 127.5 ms, body 369.6 ms, tail 11.1 ms | corr 0.955223, SNR 10.87 dB | not rerun | faster, quality closer but not parity |
-| irvine-m1 | padded `asr=400`, `F0=800`, `acos` phase | 562.9 ms | 506.9 ms | noise 127.1 ms, body 369.4 ms, tail 10.4 ms | corr 0.968961, SNR 12.58 dB | recorded in `remote_reports/report_f0_noise_phase_acos_10s_irvine.json` | faster, better quality than padded, still not strict parity and still not enough for laishere 10s |
 | m2-studio | natural `asr=556`, `F0=1112` | 129.9 ms | 101.4 ms | noise 23.8 ms, body 74.5 ms, tail 3.2 ms | corr 0.838603, SNR 5.73 dB | corr 0.818057, SNR 4.78 dB | faster, reject for quality |
 | m2-studio | padded `asr=600`, `F0=1200` | 130.0 ms | 109.2 ms | noise 25.6 ms, body 79.5 ms, tail 3.6 ms | corr 0.956701, SNR 10.99 dB | corr 0.949135, SNR 10.29 dB | faster, quality closer but not parity |
-| m2-studio | padded `asr=600`, `F0=1200`, `acos` phase | 122.7 ms | 102.0 ms | noise 24.0 ms, body 74.9 ms, tail 3.2 ms | corr 0.969391, SNR 12.60 dB | recorded in `report_cos_resblock_phase_acos.json` | faster, better quality than padded, still not strict parity |
 | m2-studio | natural `asr=1095`, `F0=2190` | 268.9 ms | 191.3 ms | noise 46.0 ms, body 139.6 ms, tail 5.6 ms | corr 0.794801, SNR 4.78 dB | corr 0.776711, SNR 3.98 dB | faster, reject for quality |
 | m2-studio | padded `asr=1200`, `F0=2400` | 269.9 ms | 211.4 ms | noise 50.5 ms, body 154.2 ms, tail 5.5 ms | corr 0.949790, SNR 10.40 dB | corr 0.943165, SNR 9.84 dB | faster, quality closer but not parity |
-| m2-studio | padded `asr=1200`, `F0=2400`, `acos` phase | 256.7 ms | 192.6 ms | noise 46.9 ms, body 140.4 ms, tail 5.3 ms | corr 0.964458, SNR 11.99 dB | recorded in `report_cos_resblock_phase_acos.json` | large speed, better than padded, still not strict parity |
 
 This is a useful narrowing result. The first-party candidate reproduces the M1
 and `7s` speed opportunity without relying on external packages, but the PyTorch
@@ -1598,13 +803,6 @@ closely enough, or prove through listening review that the different source is
 acceptable. Until then, this is a research target rather than a production
 replacement.
 
-The Irvine M1 10s `acos` row is the direct check against one remaining real
-frontier loss. It removes about `56 ms` from the measured
-decoder-pre+source/vocoder stack, but the current full Config F 10s frontier row
-is `685.5 ms` versus laishere at `593.9 ms`; substituting this branch would
-estimate roughly `629.5 ms` before any other changes. That is still slower than
-laishere, and the row is not quality-safe.
-
 #### F0-source listening pack
 
 `scripts/create_f0_source_listening_pack.py` turns saved
@@ -1612,7 +810,7 @@ laishere, and the row is not quality-safe.
 re-exporting packages and without ASR/Whisper. It renders the Swift dump
 reference, checked-in baseline Core ML path, and F0-source candidate on the same
 tensor dump, then runs the repo's objective waveform-health gate and writes a
-fillable listening review plus `f0_source_listening_decisions.csv`.
+fillable listening review.
 
 Local generated pack:
 
@@ -1626,80 +824,7 @@ uv run --no-sync python scripts/create_f0_source_listening_pack.py \
   --plots
 ```
 
-Output index: `outputs/f0_source_listening/README.md`. Fill each generated CSV
-decision row with `pass`, `caveat`, or `fail`; `caveat` requires notes. Validate
-with:
-
-```bash
-uv run --no-sync python scripts/validate_f0_source_listening_decisions.py \
-  --decisions outputs/f0_source_listening/native_in_ios17_speed_branch/f0_source_listening_decisions.csv
-```
-
-The validator intentionally fails while `human_decision` is blank. For the
-native-IN iOS17/spec8 pack, the current pre-listening state is
-`valid=false` with `missing human_decision`, which prevents this speed branch
-from silently becoming a production claim before human review.
-
-Phase-repair listening pack:
-
-```bash
-uv run --no-sync python scripts/create_f0_source_listening_pack.py \
-  --out-dir outputs/f0_source_listening/phase_repair_speed_branch \
-  --report \
-  outputs/f0_noise_exact_shape/7s_padded_cos_resblock_cos_rsqrt/report_cos_resblock.json \
-  outputs/f0_noise_exact_shape/7s_padded_cos_resblock_phase_acos_cos_rsqrt/report_cos_resblock_phase_acos.json \
-  --plots
-```
-
-Output index:
-`outputs/f0_source_listening/phase_repair_speed_branch/README.md`. The current
-pack contains 3s/7s/10s/15s/30s `acos` phase-repair candidates plus the original
-7s padded F0-source comparator. The validator currently fails closed with six
-`missing human_decision` errors, so this no-ASR pack is evidence for listening
-review only, not approval.
-
-Cheap post-hoc quality repair is also rejected. `scripts/analyze_waveform_alignment.py`
-loads the phase-repair listening pack and checks whether candidate-vs-baseline
-drift can be explained by a sample lag plus affine gain/offset correction:
-
-```bash
-uv run --no-sync python scripts/analyze_waveform_alignment.py \
-  --index outputs/f0_source_listening/phase_repair_speed_branch/index.json \
-  --max-lag 2400 \
-  --downsample 8 \
-  --output outputs/f0_source_listening/phase_repair_speed_branch/waveform_alignment_analysis.md \
-  --json-output outputs/f0_source_listening/phase_repair_speed_branch/waveform_alignment_analysis.json
-```
-
-Result: all six rows choose best lag `0`. Gain/offset improves SNR only
-slightly: 7s `acos` moves from `12.60` to `13.14 dB`, 10s from `12.66` to
-`12.68 dB`, 15s from `12.71` to `12.73 dB`, and 30s from `12.07` to
-`12.11 dB`. This rules out a simple alignment or amplitude correction as the
-strict-parity fix for the F0-source branch.
-
-`scripts/summarize_f0_source_candidates.py` ranks all saved
-`outputs/f0_noise_exact_shape/**/report*.json` probes by warm median speedup
-and joins any filled `f0_source_listening_decisions.csv` rows when available.
-This keeps the failed and successful speed paths reusable without rerunning the
-exports:
-
-```bash
-uv run --no-sync python scripts/summarize_f0_source_candidates.py \
-  --decisions outputs/f0_source_listening/native_in_ios17_speed_branch/f0_source_listening_decisions.csv \
-  --top 12 \
-  --output outputs/f0_source_listening/f0_source_candidate_summary.md \
-  --json-output outputs/f0_source_listening/f0_source_candidate_summary.json
-```
-
-Current top-ranked rows are all speed-positive but strict-quality-negative:
-`30s` natural on local M2 Studio is fastest relative to baseline (`28.9%`
-warm median speedup, corr `0.794801`, SNR `4.78 dB`), followed by `15s`
-natural (`21.9%`) and `30s` padded (`21.7%`). The padded candidates are closer
-objectively, but every top-12 row still fails strict waveform parity and has a
-blank human decision. The ranking therefore points at where the speed lives:
-longer exact/natural F0-source branches save the most work, while padded
-branches preserve more quality. It does not approve any F0-source branch for
-production.
+Output index: `outputs/f0_source_listening/README.md`.
 
 | Candidate | Waveform health gate | Candidate vs baseline | Review WAV |
 | --- | --- | --- | --- |
@@ -1713,7 +838,6 @@ production.
 | padded `asr=600`, `F0=1200` | `needs_listening` | corr 0.956701, SNR 10.99 dB, max 0.31872 | `outputs/f0_source_listening/15s_speed_branch/15s_padded_cos_resblock_cos_rsqrt/wav/15s_padded_cos_resblock_cos_rsqrt_candidate.wav` |
 | natural `asr=1095`, `F0=2190` | `needs_listening` | corr 0.794801, SNR 4.78 dB, max 0.51957 | `outputs/f0_source_listening/30s_speed_branch/30s_natural_asr_cos_resblock_natural_asr_cos_rsqrt/wav/30s_natural_asr_cos_resblock_natural_asr_cos_rsqrt_candidate.wav` |
 | padded `asr=1200`, `F0=2400` | `needs_listening` | corr 0.949790, SNR 10.40 dB, max 0.28593 | `outputs/f0_source_listening/30s_speed_branch/30s_padded_cos_resblock_cos_rsqrt/wav/30s_padded_cos_resblock_cos_rsqrt_candidate.wav` |
-| padded native-IN iOS17/spec8 `asr=120`, `F0=240` | `needs_listening` | corr 0.931854, SNR 9.19 dB, max 0.23769 | `outputs/f0_source_listening/native_in_ios17_speed_branch/3s_padded_native_in_ios17_nopal_cos_rsqrt_cos_rsqrt_native_in/wav/3s_padded_native_in_ios17_nopal_cos_rsqrt_cos_rsqrt_native_in_candidate.wav` |
 
 Interpretation: strict tensor parity still rejects both candidates, but the
 machine audio-health gate does not reject them as silence, clipping, or broken
@@ -1723,9 +847,7 @@ quality-negative pattern in the newly added runtime bucket. The `15s` and `30s`
 local probes complete the `3s`/`7s`/`10s`/`15s`/`30s` runtime bucket sweep and
 strengthen the trend: speedup grows with duration, while the same source quality
 gap remains. The padded source improves objective similarity while preserving
-some of that speed. The native-IN iOS17/spec8 row adds the fastest local 3s
-variant from the same branch and remains a listening question rather than a
-machine-health reject. The exact-shape F0-source path is now a human-listening
+some of that speed. The exact-shape F0-source path is now a human-listening
 question, not an automatic machine reject. It is still not production-approved
 until listening decisions accept the different source character or a
 quality-preserving source formulation closes the metric gap.
@@ -1798,19 +920,9 @@ uv run --no-sync python scripts/probe_har_source_fused.py \
   --precision fp32 \
   --pad-har-to 28801 \
   --warmup 2 --iterations 10
-
-uv run --no-sync python scripts/probe_har_source_fused.py \
-  outputs/generator_isolation/dumps/3s \
-  --fused-package coreml/kokoro_decoder_har_post_3s.mlpackage \
-  --label 3s_atan_manual_fp32_nyquist_padded \
-  --phase-mode atan_manual \
-  --precision fp32 \
-  --nyquist-input \
-  --pad-har-to 28801 \
-  --warmup 2 --iterations 5
 ```
 
-| Probe | Baseline median | Candidate median | Quality signal | Decision |
+| Probe | Baseline median | Candidate median | Candidate vs dump | Decision |
 | --- | ---: | ---: | --- | --- |
 | `har_source` split, 3s padded | 35.2 ms | 36.5 ms | corr 0.980600, SNR 13.09 dB | reject: slower before source-generation cost and not parity |
 | `har_source` split, 7s padded | 67.4 ms | 62.8 ms | corr 0.979393, SNR 13.07 dB | reject/low priority: small speed before source-generation cost and not parity |
@@ -1820,29 +932,15 @@ uv run --no-sync python scripts/probe_har_source_fused.py \
 | fused `har_source`, 3s `atan_manual` phase | 31.1 ms | 27.2 ms | corr 0.987372, SNR 16.19 dB | better, still not parity |
 | fused `har_source`, 3s `atan_manual` fp32 | 31.4 ms | 27.1 ms | corr 0.987820, SNR 16.58 dB | Core ML matches PyTorch; PyTorch source boundary still not parity |
 | fused `har_source`, 3s `atan_manual` fp32 + HAR pad 28801 | 26.9 ms | 27.2 ms | corr 0.998808, SNR 26.44 dB | padding restores most quality but loses speed and still not strict parity |
-| fused `har_source`, 3s `atan_manual` fp32 + Nyquist input | 28.0 ms | 25.1 ms | corr 0.988451, SNR 16.74 dB | fast, but natural geometry still not parity |
-| fused `har_source`, 3s `atan_manual` fp32 + Nyquist input + HAR pad 28801 | 28.7 ms | 29.3 ms | vs current generator corr 0.999995, SNR 50.05 dB; vs dump SNR 47.75 dB | replacement-quality but slower |
 | fused `har_source`, 7s fp16 | 60.9 ms | 51.2 ms | corr 0.979271, SNR 13.06 dB | speed-positive, blocked on Core ML parity |
-| fused `har_source`, 7s `atan_manual` fp32 + Nyquist input + HAR pad 67201 | 57.6 ms | 60.2 ms | vs current generator corr 0.999993, SNR 49.15 dB; vs dump SNR 49.15 dB | replacement-quality but slower |
-| fused `har_source`, 10s `atan_manual` fp32 + Nyquist input + HAR pad 96001 | 78.3 ms | 82.3 ms | vs current generator corr 0.999994, SNR 49.87 dB | replacement-quality but slower |
-| fused `har_source`, 30s `atan_manual` fp32 + Nyquist input + HAR pad 288001 | 218.8 ms | 238.8 ms | vs current generator corr 0.999992, SNR 48.43 dB | replacement-quality but slower |
 
 Interpretation: exact dumped source improves quality over the F0-source path,
 but the Core ML/STFT source-boundary path still fails strict parity. The staged
 source split has too little speed margin once Swift source generation is
-counted. Feeding the dumped Swift Nyquist phase as a tiny extra input closes the
-raw phase convention gap only when the recomputed HAR is padded back to the
-shipping geometry; those padded packages pass the replacement gate versus the
-current generator, but they are slower than the existing fused generator. The
-new all-bucket Swift boundary probe (`kokoro-hnsf-bench`) measures removable
-STFT work at only `0.518/1.293/1.738/2.495/5.001 ms` for
-`3s/7s/10s/15s/30s`. After crediting the measured STFT removal, strict fused
-source candidates still do not win: `+0.051 ms` 3s, `+1.326 ms` 7s,
-`+2.231 ms` 10s, and `+14.977 ms` 30s. The fused source graph therefore has no
-current production path: native Core ML `atan2` conversion is broken, natural
-geometry is fast but quality-negative, and padded replacement-quality geometry
-loses the speed edge unless a future change also removes a Core ML call boundary
-or reduces body cost.
+counted. The fused source graph has enough package-level speed upside to remain
+a research target, but two separate blockers are now proven: native Core ML
+`atan2` conversion is broken, and even a Core ML-correct fp32 manual phase graph
+does not reproduce the current Swift HAR waveform closely enough.
 
 The STFT-only semantic probe gives the exact bisection:
 
@@ -1972,26 +1070,6 @@ laishere noise+vocoder+tail at `145.1 ms` and `340.4 ms`. Future lower-end Mac
 work should target that combined source/vocoder contract, not duration, F0,
 decoder-pre, compute-unit policy, or generic compression.
 
-Rejected M2 Air refresh attempt: a same-host rerun on 2026-06-06 under
-`/tmp/kokoro-m2air-refresh` produced much slower medians for both Config F and
-laishere and must not replace the cleaner frontier rows. Config F measured
-`193.6/483.4/700.8/1079.5 ms` for `3s/7s/10s/15s`; laishere measured
-`176.9/418.1/606.3/884.2 ms`. A simultaneous host snapshot showed load averages
-around `4` on the fanless Air, with `mds_stores` at about `100%` CPU,
-`mediaanalysisd` around `53%`, and `mediaanalysisd-access` around `39%`. This
-is a polluted benchmark window, useful only as a warning: before replacing any
-M2 Air frontier row, collect a low-load run or explicitly pause competing
-desktop/indexing work.
-
-Fresh remote-load check on 2026-06-06 at 04:09 local time: M2 Air still had load
-averages around `3.8/3.9/4.1`, with `mds_stores`, `mediaanalysisd`, and
-`mediaanalysisd-access` each around `60%` CPU. Irvine M1 still had load averages
-around `3.2/3.2/3.3`, with `mediaanalysisd` near `100%` CPU and `mds_stores`
-near `47%`. Noninteractive `killall` did not keep those OS daemons down, and
-`sudo -n mdutil -a -i off` failed with `sudo: a password is required` on both
-hosts. Do not promote fresh lower-end Mac rows until the indexing/mediaanalysis
-load is actually quieted.
-
 #### Fused HnSF merge probe
 
 Rejected path: fusing the HnSF 9-to-1 linear merge into the harmonic loop
@@ -2058,7 +1136,6 @@ Core ML predict results:
 | m2-studio | 27601 | 30.22 ms | 29.90 ms | +1.07% | corr 0.999827, SNR 35.05 dB, max 0.02661 | reject; strict parity fail |
 | m2-studio | 28561 | 30.07 ms | 30.41 ms | -1.15% | corr 0.999983, SNR 45.13 dB, max 0.00737 | reject; quality-safe but slower |
 | irvine-m1 | 28561 | 168.36 ms | 167.64 ms | +0.43% | corr 0.999984, SNR 45.28 dB, max 0.00684 | reject; too small to close laishere gap |
-| m2-studio | 28561 + native-IN/broadcast/cos | 27.96 ms | 28.61 ms | -2.33% | corr 0.999983, SNR 45.21 dB, max 0.00623 | reject; strict graph combo is slower |
 
 This closes the "just trim the HAR tail" path. It can recover less than one
 millisecond on M1 at strict parity, while the remaining laishere 3s gap is about
@@ -2193,7 +1270,7 @@ After filling the CSV, run
 before any latency cell is interpreted as quality parity.
 The overall plan-completion check is
 `python scripts/external_bakeoff/verify_external_bakeoff_completion.py`; it
-passes with `result_record_count=143`, `ios_preflight_ok=true`, and
+passes with `result_record_count=65`, `ios_preflight_ok=true`, and
 `decisions={'pass': 57}`.
 
 Known caveats:
@@ -2224,10 +1301,7 @@ excluded. Config F now beats laishere on every M2 Studio bucket, M2 Air `30s`,
 and M1 `30s`. Soniqo is a useful iOS/Core ML comparator, but its public artifact
 emits 5s audio for the long buckets, so its long-bucket latency cannot prove
 full-duration parity. The connected iPhone currently has Soniqo-on-device
-results only. Config F now has a manually built and signed iOS runner installed
-as `com.kokoro.externalbakeoff.ConfigFIOSRunnerManual`, bypassing the local
-Xcode/SwiftBuild stall, but `devicectl` launch is still denied while the device
-is locked. Config F has therefore still not produced warmed iPhone timings.
+results only; Config F has not yet been ported and benchmarked on that iPhone.
 
 The next optimization target is clear: make the generator stage faster on M2 Air
 and M1, then rerun against laishere's chain-only boundary and an on-device
@@ -2787,7 +1861,7 @@ All four listen samples recorded `quality_pass=true` and
 ### Plan reference
 
 Audio parity recovery plan Phase 7:
-`README/Plans/kokoro-audio-parity-recovery-v1.md`
+`README/Plans/005-kokoro-audio-parity-recovery-plan.md`
 
 ## End-to-end latency
 
@@ -2969,7 +2043,7 @@ This +8-9ms penalty is consistent across inputs and dwarfs the Core ML predict d
 
 ### Plan reference
 
-Full experiment design: `README/Plans/ane-optimization-v1.md`
+Full experiment design: `README/Plans/002-ane-optimization-plan.md`
 
 ---
 
@@ -3083,7 +2157,7 @@ The +12–15% gap vs HF baseline packages reported earlier is **not re-tested** 
 
 ### Plan reference
 
-Full experiment design: `README/Plans/kokoro-bakeoff-v2.md`
+Full experiment design: `README/Plans/003-kokoro-bakeoff-plan.md`
 
 ---
 
@@ -3184,7 +2258,7 @@ The AdaIN export risk did NOT materialize. DecoderPre (F0_conv + N_conv + encode
 
 ### Plan reference
 
-Full plan: `README/Plans/swift-prefix-rewrite-v1.md`
+Full plan: `README/Plans/004-swift-prefix-rewrite-plan.md`
 
 ---
 
@@ -3251,8 +2325,8 @@ Controlled counterbalanced comparison of the Swift+CoreML pipeline (Config F) ag
 
 ### Plan reference
 
-Bakeoff plan Phase 6: `README/Plans/kokoro-bakeoff-v2.md`
-Swift pipeline plan: `README/Plans/swift-prefix-rewrite-v1.md`
+Bakeoff plan Phase 6: `README/Plans/003-kokoro-bakeoff-plan.md`
+Swift pipeline plan: `README/Plans/004-swift-prefix-rewrite-plan.md`
 
 ---
 
@@ -3768,7 +2842,7 @@ Config A on M1 Mini is 1.5–2.2x slower than M2 Ultra and surprisingly close to
 
 ### Plan reference
 
-Full experiment design: `README/Plans/kokoro-bakeoff-v2.md`
+Full experiment design: `README/Plans/003-kokoro-bakeoff-plan.md`
 
 ---
 
@@ -3879,7 +2953,7 @@ One outlier was excluded: `medium` on iteration 0 spiked to `2101 ms` predict (v
 
 ### Plan reference
 
-Full experiment design: `README/Plans/kokoro-bakeoff-v2.md`
+Full experiment design: `README/Plans/003-kokoro-bakeoff-plan.md`
 
 ---
 
@@ -4165,48 +3239,7 @@ Same corrected v5 harness as the M2 Air run (all audit bugs fixed: bucket parity
 
 ### Plan reference
 
-Bakeoff plan Phase 7: `README/Plans/kokoro-bakeoff-v2.md`
-
----
-
-## Reusable Swift Input MLMultiArrays Probe
-
-Collected: 2026-06-06.
-
-Hypothesis: Config F short buckets might be paying avoidable fixed cost by
-allocating fresh Swift `MLMultiArray` inputs for DecoderPre and Generator on
-every synthesis call. A benchmark-only `--reuse-input-arrays` flag was added to
-`kokoro-bench` and `run_config_f_reference.py` to reuse zeroed float input
-buffers by logical role and shape.
-
-Important failure found during the probe:
-
-- A first implementation keyed the cache by shape only. That was not strict:
-  same-shape inputs such as DecoderPre `f0` and `n_input` aliased inside one
-  Core ML prediction.
-- After adding logical-role keys, tensor dumps still diverged because the
-  reusable `har_padded` path copied flat channel-major HAR data contiguously
-  instead of copying each channel row from `sourceTime` to `targetTime`.
-- The fixed implementation has exact 3s tensor-dump parity and hash-identical
-  3s/7s spotcheck WAVs.
-
-Final local M2 Studio staged A/B, warmed only, `iterations=10`,
-`preflight-runs=3`:
-
-| Bucket | Baseline | Reusable arrays | Speedup | Hash |
-| --- | ---: | ---: | ---: | --- |
-| `3s` | `49.412 ms` | `50.011 ms` | `-1.21%` | identical |
-| `7s` | `93.877 ms` | `97.355 ms` | `-3.71%` | identical |
-
-Decision: reject as a production optimization. Reusing input buffers does not
-remove the real short-bucket bottleneck and can make Core ML scheduling or
-provider handling slower. Keep the flag as a diagnostic harness only.
-
-Artifacts:
-
-- `outputs/external_bakeoff/results_config_f_reference_m2-studio-local_reuse_arrays_baseline_v3_short.json`
-- `outputs/external_bakeoff/results_config_f_reference_m2-studio-local_reuse_arrays_candidate_v3_short.json`
-- `outputs/reuse_input_arrays_debug/`
+Bakeoff plan Phase 7: `README/Plans/003-kokoro-bakeoff-plan.md`
 
 ---
 
@@ -4255,109 +3288,6 @@ while the PyTorch F0-source candidate vs dump is corr `0.939812`, SNR
 accept/reject the drift by listening review; more conversion flags are unlikely
 to solve this branch.
 
-#### Native InstanceNorm F0-source probe
-
-`scripts/probe_f0_noise_exact_shape.py` now supports
-`--native-instance-norm`, which patches the exporter-side `AdaIN1d` class before
-loading weights so Core ML receives native `instance_norm` ops instead of the
-manual `mean/var/sqrt/tile` AdaIN surface. This closes the last visible
-laishere `KokoroVocoder` package-surface difference for the first-party
-F0-source branch.
-
-Graph-surface comparison for the corrected 3s body packages:
-
-| Body package | Spec | Size | Ops | InstanceNorm | ReduceMean | Tile | LUT | Interpretation |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| first-party native InstanceNorm, no palette | 7 | 97.7 MB | 1526 | 42 | 1 | 0 | 0 | matches laishere op surface except palette/spec |
-| first-party native InstanceNorm + palette | 7 | 49.1 MB | 1526 | 42 | 1 | 0 | 101 | matches laishere size/LUT surface; spec still v7 |
-| laishere `KokoroVocoder` | 8 | 49.1 MB | 1534 | 42 | 1 | 0 | 101 | public comparator package |
-
-`scripts/compare_coreml_metadata.py` wraps `xcrun coremlcompiler metadata` and
-normalizes spec/storage/I/O/op-histogram fields for repeatable package-surface
-comparison:
-
-```bash
-uv run --no-sync python scripts/compare_coreml_metadata.py \
-  --model 'config-f-generator=coreml/kokoro_decoder_har_post_3s.mlpackage' \
-  --model 'laishere-vocoder=outputs/external_bakeoff/laishere_packages/KokoroVocoder.mlpackage' \
-  --model 'first-party-native-in-body=outputs/f0_noise_exact_shape/3s_padded_native_in_ios17_nopal_cos_rsqrt_cos_rsqrt_native_in/kokoro_f0_noise_body_3s_padded_native_in_ios17_nopal_cos_rsqrt_cos_rsqrt_native_in.mlpackage' \
-  --output outputs/graph_surface/coreml_metadata_configf_laishere_nativein_3s.json \
-  --markdown-output outputs/graph_surface/coreml_metadata_configf_laishere_nativein_3s.md
-```
-
-The metadata comparison confirms that the first-party native-IN body has the
-same major body surface as laishere's vocoder (`54` conv, `3` convTranspose,
-`46` linear, `42` instanceNorm, `1` reduceMean, `36` cos), while the shipping
-Config F generator still exposes the older HAR-post surface (`88` reduceMean,
-`96` tile, `50` sin, `1` cos). The remaining visible differences between the
-closest first-party body and laishere are now narrow: laishere uses fp16
-flexible inputs, a discarded `anchor` plus scalar-shaped `x_pre` output,
-palettized storage with `101` LUT ops, and a CT9/Torch 2.10 conversion
-metadata string. Prior fp16-input, palette, iOS17/spec8, native-IN, and CT9
-probes did not produce a quality-safe material win, so the next speed path
-cannot be "match the metadata surface" alone; it needs source/vocoder quality
-recovery or a different accepted boundary.
-
-Warmed 3s timing, same tensor dump and strict waveform gate:
-
-| Machine | Variant | Baseline stack | Candidate stack | Candidate body | Speedup | Corr | SNR | Decision |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| m2-studio | native InstanceNorm, no palette | 33.11 ms | 35.00 ms | 26.74 ms | -5.7% | 0.931816 | 9.19 dB | reject; local slower and quality fails |
-| irvine-m1 | native InstanceNorm, no palette | 174.49 ms | 161.67 ms | 117.46 ms | +7.3% | 0.931801 | 9.19 dB | speed-positive, still quality fail |
-| m2-studio | native InstanceNorm, no palette, iOS17/spec8 | 33.04 ms | 32.46 ms | 24.66 ms | +1.8% | 0.931854 | 9.19 dB | speed-positive, still quality fail |
-| irvine-m1 | native InstanceNorm, no palette, iOS17/spec8 | 173.02 ms | 162.14 ms | 118.15 ms | +6.3% | 0.931840 | 9.19 dB | speed-positive, still quality fail |
-| m2-studio | native InstanceNorm + palette | 31.86 ms | 36.90 ms | 28.16 ms | -15.8% | 0.931531 | 9.17 dB | reject; palette slows local |
-| irvine-m1 | native InstanceNorm + palette | 174.16 ms | 169.92 ms | 126.03 ms | +2.4% | 0.931617 | 9.17 dB | reject; palette slower than no-palette |
-
-Conclusion: native InstanceNorm is the real package-surface speed ingredient on
-M1; iOS17/spec8 gives a small additional local win and preserves the same
-roughly `6-7%` Irvine M1 speed signal, while int8 palettization is size
-reduction, not speed, for this branch. The corrected native body now closes the
-visible package-surface suspects: `tile`/manual AdaIN, fp16 inputs, palette, and
-spec-v8 target are not enough to make this branch production-safe. The branch is
-still not production-eligible because the PyTorch F0-source formulation itself
-diverges from the current HAR/HnSF output. Any future work here must either
-change the source formulation, retrain/accept the source character through
-listening review, or find a different strict-equivalent generator boundary.
-
-#### Swift-like source export probe
-
-`scripts/probe_f0_noise_exact_shape.py` now also supports
-`--source-mode swift_like`. This keeps the same first-party F0-source package
-boundary but replaces the simplified Core ML-friendly source with a vectorized
-fixed-shape version of Swift `HarmonicSource`, including precomputed Swift RNG
-initial phases and Gaussian noise as package constants.
-
-The cheap source-only gate was encouraging: a Torch fp32 vectorization of the
-Swift source matched dumped `har_source` at SNR `64.41 dB` for 3s and
-`50.53 dB` for 7s. However, the full source->STFT->noise->body->tail branch
-still fails after recomputing STFT/noise tensors:
-
-| Machine | Variant | Baseline stack | Candidate stack | Candidate noise | Candidate body | Corr | SNR | Decision |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| m2-studio | Swift-like source + native InstanceNorm | 31.80 ms | 34.74 ms | 6.62 ms | 27.16 ms | 0.215731 | 0.34 dB | reject; Core ML source/noise output diverges |
-
-The report's PyTorch candidate is much better than Core ML but still below the
-strict gate (`corr 0.988115`, SNR `16.68 dB`). This means the remaining quality
-loss is not just the simplified source equation. Recomputing STFT/noise tensors
-from source is itself not equivalent to the dumped Swift HAR tensor under the
-current traceable STFT/phase path. This closes the "just export Swift-like
-source" path unless the STFT/phase representation is changed or the runtime
-passes the already-built Swift HAR/source tensor across the boundary.
-
-A follow-up stage-isolation pass on the faster no-native-IN Swift-like variant
-(`29.14 ms` candidate vs `31.23 ms` baseline, still quality-fail) localizes the
-Core ML conversion/runtime break to the noise/source package, not the body or
-tail. Core ML vs PyTorch for `x_source_0` is only corr `0.829361`, SNR
-`5.80 dB`; `x_source_1` is better at corr `0.990291`, SNR `19.02 dB`. Feeding
-the body with PyTorch source tensors makes `pre_tail` essentially exact
-(`corr 0.9999997`, SNR `62.12 dB`), and the fp32 tail fed PyTorch `pre_tail`
-is exact (`corr 1.0`, SNR `102.46 dB`). The source/noise package is therefore
-the only broken Core ML stage for this branch. Even if that stage is fixed, the
-PyTorch Swift-like candidate remains below strict waveform parity versus the
-dump (`corr 0.988115`, SNR `16.68 dB`), so this is still a source/STFT contract
-research path rather than an integration-ready speed win.
-
 Rendered a no-ASR listening pack for the 3s and 7s cos/residual speed branch at
 `outputs/f0_source_listening/cos_resblock_speed_branch/README.md`. Both
 candidates are `needs_listening` with no waveform-health reject reasons. This
@@ -4380,568 +3310,11 @@ for 3s and `0.96731` for 7s. Laishere is faster partly because it moves this
 source work into a simplified Core ML graph; that is not strict-equivalent to
 our current seeded Double-accumulator Swift HnSF contract.
 
-The five-bucket source-variant refresh makes the blocker sharper:
-`outputs/f0_source_variants/summary_3s_7s_10s_15s_30s.md` reports
-`source_equation_is_solved=true` and `recomputed_stft_har_is_solved=false`.
-`swift_like_seeded` matches dumped `har_source` at SNR `138.15-140.33 dB`
-across `3s/7s/10s/15s/30s`, but recomputing HAR/STFT from even the exact dumped
-source stays near SNR `8.11-8.23 dB` with max abs `6.28`, consistent with
-phase-wrap/representation mismatch. So future quality-recovery work should not
-spend more time on the sine source equation alone; the missing strict contract
-is the Swift HAR/STFT representation or a quality-accepted replacement for it.
-
-The Nyquist sensitivity refresh extends that conclusion across buckets:
-`outputs/nyquist_phase_contribution/summary.md` now covers natural and padded
-geometry for `3s/7s/10s/15s/30s`. The first long-bucket refresh accidentally
-compared against the post-processed `waveform` key; the corrected probe uses
-`waveform_raw_trimmed`, which is the generator-body reference emitted from the
-same dump. With that reference, dumped Nyquist phase plus padded shipping HAR
-geometry repairs strict source-boundary parity across all five buckets (`3s`
-`50.06 dB`, `7s` `49.14 dB`, `10s` `49.87 dB`, `15s` `49.21 dB`, `30s`
-`48.42 dB`). Natural geometry still fails (`3s` `16.75 dB`, `7s` `16.00 dB`,
-`10s` `15.56 dB`, `15s` `16.13 dB`, `30s` `15.46 dB`), and the prior Core ML
-fused-source timing shows the padded strict path loses the speed edge. Do not
-promote Nyquist splicing as a production fix; use it only as evidence that the
-exact source/STFT contract is the quality blocker, while the faster compact
-boundary needs a different geometry or representation to stay strict.
-
 Keeping exact Swift HAR and only splitting the laishere-style noise/body/tail
 is not a win locally. The exact-HAR cos/residual split passes quality, but is
-slower: 3s `36.76 ms` vs `32.07 ms`, and 7s `67.72 ms` vs `60.88 ms`. The
-earlier cross-machine decoder+vocoder boundary probe already covers the same
-quality-safe split family on lower-end Macs and also rejects it: M2 Air `3s`
-CPU+GPU was `138.8 ms` vs `123.7 ms`, and Irvine M1 `3s` CPU+GPU was `199.3 ms`
-vs `174.6 ms`. That closes the remote-contradiction caveat for the
-strict-equivalent split path.
-
-The stronger iOS17/native-InstanceNorm version of the same exact-HAR
-decoder+vocoder split also fails. `scripts/probe_decoder_vocoder_split.py` now
-accepts `--native-instance-norm-adain`, `--broadcast-adain`, and
-`--deployment-target` so the exact-HAR body can be exported with the same
-visible Core ML surface as the faster laishere vocoder. The 3s package shrank
-to the expected laishere-like graph shape (`1546` ops, `42` `ios17.instance_norm`
-ops, no manual AdaIN tiles), but warmed inference still loses:
-
-| Machine | Body units | Baseline stack | Candidate stack | Candidate body | Parity vs fused | Compute-plan note | Decision |
-| --- | --- | ---: | ---: | ---: | --- | --- | --- |
-| m2-studio | CPU+NE | 32.52 ms | 382.42 ms | 369.88 ms | corr 0.999926, SNR 38.68 dB | emits `ANECCompile() FAILED`; cost weights all zero | reject |
-| m2-studio | CPU+GPU | 30.35 ms | 34.20 ms | 22.71 ms | corr 0.999990, SNR 47.56 dB | GPU-only weighted plan | reject |
-| irvine-m1 | CPU+NE | 175.07 ms | 291.35 ms | 209.18 ms | corr 0.999910, SNR 37.82 dB | mixed `51.3%` CPU / `48.7%` NE cost | reject |
-| irvine-m1 | CPU+GPU | 175.39 ms | 204.65 ms | 121.58 ms | corr 0.999991, SNR 47.76 dB | GPU-only weighted plan | reject |
-
-This closes "make our exact split look like laishere's iOS17/native-IN package"
-as a standalone speed path. The first-party body can now reproduce the
-laishere-like op surface and, on Irvine M1, even gets a comparable mixed CPU/NE
-plan. It still loses because the exact-HAR body boundary is too broad or has
-unfavorable synchronization/work distribution relative to laishere's actual
-vocoder-centered chain. The next viable direction is a narrower strict
-equivalence boundary around the vocoder-like work, not more metadata matching
-on this full decoder+vocoder body.
-
-Changing the exact-HAR decoder+vocoder split to pass `x_source_*` into the body
-as fp16 is also rejected. The hypothesis was that halving the cross-package
-source tensors might reduce transfer/sync overhead without changing the Swift
-HAR contract. Local M2 Studio `3s` CPU+GPU stayed strict (corr `0.999991`, SNR
-`47.76 dB`, max abs `0.00266`) but got much slower: baseline `30.242 ms` versus
-candidate `40.316 ms` (`-33.31%`). Body time rose to `28.895 ms`, so fp16 body
-inputs do not solve the exact split overhead. Report:
-`outputs/decoder_vocoder_split/3s_har_body_fp16_inputs_cos_cos_rsqrt/report_body_fp16_inputs_cpu_gpu.json`.
-
-The narrower generator-only HAR-noise split was rerun with the same
-native-InstanceNorm/iOS17 surface. This keeps decoder/HAR exactly as shipped and
-only splits the current generator into `noise_convs/noise_res` and the main
-generator body. It also fails to beat the fused package:
-
-| Machine | Units | Fused | Split total | Noise | Body | Parity vs fused | Decision |
-| --- | --- | ---: | ---: | ---: | ---: | --- | --- |
-| m2-studio | noise CPU+GPU, body CPU+GPU | 26.43 ms | 28.86 ms | 11.25 ms | 17.59 ms | corr 0.999994, SNR 49.84 dB | reject; close but slower |
-| m2-studio | noise CPU+GPU, body CPU+NE | 28.19 ms | 161.41 ms | 11.40 ms | 150.02 ms | corr 0.999905, SNR 37.64 dB | reject |
-| irvine-m1 | noise CPU+GPU, body CPU+GPU | 168.31 ms | 179.84 ms | 74.02 ms | 105.89 ms | corr 0.999995, SNR 50.29 dB | reject; close but slower |
-| irvine-m1 | noise CPU+GPU, body CPU+NE | 172.20 ms | 294.06 ms | 73.63 ms | 220.34 ms | corr 0.077158, SNR 0.01 dB | reject; quality fails |
-
-This is the current tightest strict-equivalent split result. Native
-InstanceNorm reduces the generator body, but the separate HAR-noise package and
-extra Core ML boundary still cost more than the fused graph saves. The remaining
-laishere advantage is therefore not solved by a strict split of the shipped
-HAR-post generator either; it likely requires moving to a laishere-style source
-contract, proving that drift acceptable by listening review, or finding a new
-single-package optimization that preserves the exact Swift HAR contract.
-
-The body-only counterfactual is important and should not be lost: if
-`x_source_0/x_source_1` were already available for free, the single
-body+tail package would beat fused prediction. Local M2 Studio native-IN/iOS17
-3s body-only is `17.59 ms` versus fused `26.43 ms`; Irvine M1 body-only is
-`105.89 ms` versus fused `168.31 ms`. The full strict split loses because
-producing exact `x_source_*` costs `11.25 ms` on M2 Studio and `74.02 ms` on
-Irvine, plus an extra Core ML dispatch. This reframes the open path: do not
-repeat the same split, but do search for a cheaper strict source contract or a
-single package that consumes a smaller Swift-produced representation and still
-gets the body-only savings.
-
-Style-specializing the fused generator for the fixed bakeoff voice is also not
-a speed path. `scripts/probe_generator_style_specialization.py` freezes the
-48 AdaIN style projections from the `af_heart` tensor dump, removes `ref_s` as
-a runtime input, and exports a strict HAR-post package with the same `x_pre` and
-`har` inputs. On local M2 Studio `3s`, CPU+GPU preserves quality but is slower:
-fused `26.386 ms`, style-specialized `26.766 ms` (`-1.44%`), corr `0.999994`,
-SNR `49.36 dB`, max abs `0.00238`. Older remote CPU+GPU reruns show the same
-direction: M2 Air `3s` fused `120.84 ms` vs style `123.04 ms` (`-1.82%`),
-Irvine M1 `3s` fused `167.80 ms` vs style `170.80 ms` (`-1.79%`), and local
-`7s` fused `63.87 ms` vs style `64.19 ms` (`-0.50%`). CPU+NE is not usable: it
-reports style-specialized `935.970 ms` vs fused `1467.920 ms`, still far slower
-than the CPU+GPU path, fails the strict max-abs gate (`0.01245`), and logs
-`ANECCompile() FAILED`. Reports:
-`outputs/generator_style_specialization/3s_style_specialized/report_cpu_gpu.json`
-and
-`outputs/generator_style_specialization/3s_style_specialized/report_cpu_ne.json`,
-plus the older remote reports under `outputs/generator_style_specialization/3s/`.
-
-Adding native `InstanceNorm1d` lowering to the style-specialized package shrinks
-the converted graph (`1558` PyTorch frontend ops versus `1926` for manual
-frozen AdaIN) but still does not create a material candidate. Local M2 Studio
-`3s` CPU+GPU is strict and only noise-positive: fused `26.398 ms`, native-IN
-style `26.327 ms` (`+0.27%`), corr `0.999993`, SNR `49.27 dB`, max abs
-`0.00220`. CPU+NE remains unusable: native-IN style is `641.826 ms`, fails the
-strict max-abs gate (`0.01099`), and logs `ANECCompile() FAILED`. Reports:
-`outputs/generator_style_specialization/3s_style_native_in_ios17/report_cpu_gpu.json`
-and
-`outputs/generator_style_specialization/3s_style_native_in_ios17/report_cpu_ne.json`.
-
-Combining native-IN style specialization with the best strict HAR trim is also
-noise-sized, not a frontier candidate. The style-specialization probe now
-accepts `--har-time`; with `--har-time 28561`, iOS17 native-IN, and CPU+GPU,
-local M2 Studio `3s` remains strict but only saves `0.22%`: fused `26.401 ms`,
-candidate `26.342 ms`, corr `0.999984`, SNR `45.32 dB`, max abs `0.00635`.
-This combined single-package path should not be promoted to Irvine without a
-new local material signal. Report:
-`outputs/generator_style_specialization/3s_style_native_in_ios17_har28561/report_cpu_gpu.json`.
-
-Do not carry style-specialization to Irvine unless a different operator rewrite
-produces a material CPU+GPU result first.
-
-The latest fused `GeneratorFromHar` graph-surface probes were also inspected
-with `MLComputePlan` to separate "looks like laishere" from actual ANE
-placement. This explains why the laishere-style surface still did not win:
-
-| Package | Units | Ops | Preferred CPU | Preferred GPU | Preferred NE | Unknown | CPU cost | GPU cost | NE cost |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| laishere vocoder | CPU+NE | 1534 | 58 | 0 | 597 | 879 | 0.409 | 0 | 0.560 |
-| first-party HAR-post baseline | CPU+NE | 2207 | 1038 | 0 | 0 | 1169 | 0 | 0 | 0 |
-| first-party native-IN+broadcast+fp16 | CPU+NE | 1533 | 677 | 0 | 0 | 856 | 0 | 0 | 0 |
-| first-party native-IN+broadcast+fp16+pal8 | CPU+NE | 1533 | 677 | 0 | 0 | 856 | 0 | 0 | 0 |
-| first-party native-IN+broadcast+fp16 | CPU+GPU | 1533 | 0 | 678 | 0 | 855 | 0 | 1.000 | 0 |
-
-The important point is not just that the first-party graph remains slower. The
-near-surface fused package has roughly the same op count as laishere and exposes
-hundreds of NE-supported ops, but under CPU+NE Core ML still prefers none of
-them on the Neural Engine. Under CPU+GPU the same package is fully GPU-preferred
-for weighted work, which matches the observed "CPU+GPU is the usable path"
-behavior. This closes graph-surface parity as a standalone explanation for the
-remaining Irvine M1 loss. Reports:
-`outputs/graph_surface/compute_plan_generator_native_broadcast_fp16_3s_cpu_ne.json`,
-`outputs/graph_surface/compute_plan_generator_native_broadcast_fp16_pal8_3s_cpu_ne.json`,
-and
-`outputs/graph_surface/compute_plan_generator_native_broadcast_fp16_3s_cpu_gpu.json`.
-
-Combining cos-Snake with native InstanceNorm AdaIN, broadcast AdaIN, and fp16
-inputs also fails as an ANE-placement unlock. Local M2 Studio `3s` CPU+GPU is
-strict and slightly faster: fused `26.416 ms`, candidate `26.348 ms`
-(`+0.26%`), corr `0.999994`, SNR `49.71 dB`, max abs `0.00226212`. The graph
-surface removes the previous no-cos `sin`/`pow` footprint (`2` sin, `49` cos,
-`0` pow), keeps reductions/tiles at zero, and has `1629` ops. But
-`MLComputePlan` under CPU+NE still reports `725` CPU-preferred ops, `0`
-NE-preferred ops, `904` unknown ops, and `0` NE cost weight. Under CPU+GPU the
-same package is GPU-preferred for weighted work (`726` GPU-preferred ops, GPU
-cost weight `1.0`). Therefore the remaining M1 loss is not solved by removing
-`sin`/`pow`; it remains a placement/layout/package-boundary problem. Reports:
-`outputs/generator_cos_snake/3s_cos_native_broadcast_fp16_inputs_broadcast_adain_native_in_fp16_inputs_ios17/report_ios17_cos_native_broadcast_fp16_inputs_cpu_gpu.json`,
-`outputs/graph_surface/fused_cos_native_broadcast_fp16_3s.json`,
-`outputs/graph_surface/compute_plan_generator_cos_native_broadcast_fp16_3s_cpu_ne.json`,
-and
-`outputs/graph_surface/compute_plan_generator_cos_native_broadcast_fp16_3s_cpu_gpu.json`.
-
-Rewriting the two main generator upsample `ConvTranspose1d` layers as
-zero-insertion plus normal `conv1d` is the first strict local optimization in
-this sequence with material warmed wins across all runtime buckets. The probe
-uses cos-Snake, native InstanceNorm AdaIN, broadcast AdaIN, fp16 inputs, iOS17,
-and `--rewrite-ups-conv-transpose`. Local M2 Studio CPU+GPU results:
-
-| Bucket | Fused | Candidate | Speedup | Corr | SNR | Max abs |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 3s | 26.375 ms | 25.203 ms | 4.45% | 0.999994 | 49.65 dB | 0.00217 |
-| 7s | 53.897 ms | 52.053 ms | 3.42% | 0.999995 | 50.74 dB | 0.00208 |
-| 10s | 72.972 ms | 70.371 ms | 3.56% | 0.999995 | 50.27 dB | 0.00256 |
-| 15s | 106.084 ms | 102.349 ms | 3.52% | 0.999995 | 50.40 dB | 0.00244 |
-| 30s | 204.624 ms | 197.992 ms | 3.24% | 0.999995 | 50.37 dB | 0.00244 |
-
-The 3s graph surface changes `conv_transpose 4 -> 2` and `conv 51 -> 53`
-without changing the external `GeneratorFromHar` boundary. `MLComputePlan`
-shows this remains a GPU-path optimization, not an ANE unlock:
-CPU+GPU has `734` GPU-preferred ops and GPU cost weight `1.0`, while CPU+NE has
-`0` NE-preferred ops and `0` NE cost weight. Promote this candidate to Irvine
-M1 timing when the host is quiet enough. Reports:
-`outputs/generator_cos_snake/3s_cos_native_broadcast_fp16_inputs_broadcast_adain_native_in_fp16_inputs_ups_as_conv_ios17/report_ios17_cos_native_broadcast_fp16_ups_as_conv_cpu_gpu.json`,
-`outputs/generator_cos_snake/7s_cos_native_broadcast_fp16_inputs_broadcast_adain_native_in_fp16_inputs_ups_as_conv_ios17/report_ios17_cos_native_broadcast_fp16_ups_as_conv_cpu_gpu.json`,
-`outputs/generator_cos_snake/10s_cos_native_broadcast_fp16_inputs_broadcast_adain_native_in_fp16_inputs_ups_as_conv_ios17/report_ios17_cos_native_broadcast_fp16_ups_as_conv_cpu_gpu.json`,
-`outputs/generator_cos_snake/15s_cos_native_broadcast_fp16_inputs_broadcast_adain_native_in_fp16_inputs_ups_as_conv_ios17/report_ios17_cos_native_broadcast_fp16_ups_as_conv_cpu_gpu.json`,
-`outputs/generator_cos_snake/30s_cos_native_broadcast_fp16_inputs_broadcast_adain_native_in_fp16_inputs_ups_as_conv_ios17/report_ios17_cos_native_broadcast_fp16_ups_as_conv_cpu_gpu.json`,
-`outputs/graph_surface/fused_cos_native_broadcast_fp16_ups_as_conv_3s.json`,
-`outputs/graph_surface/compute_plan_generator_cos_native_broadcast_fp16_ups_as_conv_3s_cpu_gpu.json`,
-and
-`outputs/graph_surface/compute_plan_generator_cos_native_broadcast_fp16_ups_as_conv_3s_cpu_ne.json`.
-
-The same upsample rewrite has been moved into the production `decoder-har`
-exporter behind `--rewrite-ups-conv-transpose`; shipped defaults are unchanged.
-A 3s graph-surface smoke export preserves the production-default surface except
-for the intended upsample lowering (`conv_transpose 4 -> 2`, `conv 51 -> 53`).
-The all-bucket production-package benchmark compares
-`outputs/export_rewrite_smoke/kokoro_decoder_har_post_{3s,7s,10s,15s,30s}.mlpackage`
-against the shipped `coreml/` packages on the saved Swift generator tensor
-dumps. Results are warmed local M2 Studio CPU+GPU medians:
-
-| Bucket | Shipped | Rewrite | Speedup | Corr | SNR | Max abs |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 3s | 26.278 ms | 25.154 ms | 4.28% | 0.999995708 | 51.10 dB | 0.002197 |
-| 7s | 53.827 ms | 52.134 ms | 3.15% | 0.999996566 | 52.17 dB | 0.001953 |
-| 10s | 73.072 ms | 70.753 ms | 3.17% | 0.999995896 | 51.41 dB | 0.002426 |
-| 15s | 105.842 ms | 103.086 ms | 2.60% | 0.999996419 | 51.98 dB | 0.002563 |
-| 30s | 204.765 ms | 200.253 ms | 2.20% | 0.999995368 | 50.88 dB | 0.002930 |
-
-The multi-bucket export also flushed out and fixed exporter idempotence:
-`rewrite_generator_ups_conv_transpose` now skips already rewritten
-`ZeroInsertConvTranspose1d` layers, because `export_synth.main` reuses one
-generator object across buckets. The 30s synthetic export gate still emits the
-known FP16 synthetic-HAR non-finite warning, but the real tensor dump benchmark
-is finite and strict-like. Reports:
-`outputs/export_rewrite_smoke/report_all_buckets_cpu_gpu.json`,
-`outputs/export_rewrite_smoke/report_3s_cpu_gpu.json`, and
-`outputs/graph_surface/production_rewrite_ups_as_conv_3s.json`. Next action is
-Irvine M1 warmed timing when the host is quiet; only then should the checked-in
-five runtime bucket packages be regenerated.
-
-The same five rewrite packages also survive an end-to-end Config F local
-overlay run. The preferred current harness path is now
-`run_config_f_reference.py --generator-models-dir outputs/export_rewrite_smoke`,
-which loads duration/F0N/decoder-pre packages from `coreml/` and only redirects
-`kokoro_decoder_har_post_{3s,7s,10s,15s,30s}.mlpackage` to the rewrite export.
-This replaces the older manual symlink overlay, while preserving the staged
-compute policy and exact-duration package path. Against the current best local
-Config F `vector_noise_batch` result, warmed end-to-end medians improve by
-`1.2-2.6%`:
-
-| Bucket | Current best local | Rewrite overlay | Speedup |
-| --- | ---: | ---: | ---: |
-| 3s | 50.665 ms | 49.669 ms | 1.97% |
-| 7s | 95.503 ms | 93.792 ms | 1.79% |
-| 10s | 125.687 ms | 123.655 ms | 1.62% |
-| 15s | 185.782 ms | 183.511 ms | 1.22% |
-| 30s | 383.906 ms | 373.985 ms | 2.58% |
-
-Spotcheck WAVs versus `vector_noise_batch` remain strict-like: corr
-`0.999994895-0.999996490`, SNR `46.51-51.48 dB`, and max abs error
-`<=0.008453`. Result:
-`outputs/external_bakeoff/results_config_f_reference_m2-studio-local_rewrite_ups_as_conv.json`.
-Do not promote this to the paper-facing frontier until Irvine M1 warmed timing
-confirms the same direction on the lower-end loss platform.
-
-For quiet-host promotion, use:
-
-```bash
-uv run --no-sync python scripts/external_bakeoff/run_config_f_reference.py \
-  --machine-id <host>-rewrite-ups-as-conv \
-  --output outputs/external_bakeoff/results_config_f_reference_<host>_rewrite_ups_as_conv.json \
-  --compute-units staged \
-  --generator-models-dir outputs/export_rewrite_smoke
-```
-
-`scripts/external_bakeoff/summarize_rewrite_candidate_impact.py` turns the
-rewrite evidence into a frontier-impact table at
-`outputs/external_bakeoff/rewrite_candidate_impact.md`. The projection applies
-only the measured package-level generator speedup to each machine's current
-Config F generator stage. This candidate likely closes the stale/tie M2 Air
-profile rows, but it closes `0` Irvine rows by itself:
-
-| Irvine bucket | Projected save | Projected gap after rewrite |
-| --- | ---: | ---: |
-| 3s | 7.2 ms | 31.4 ms |
-| 7s | 12.1 ms | 36.4 ms |
-| 10s | 17.4 ms | 23.2 ms |
-| 15s | 21.4 ms | 3.0 ms |
-
-Decision: keep and retime the rewrite on quiet lower-end hardware, but do not
-treat it as sufficient for the absolute-fastest claim. Irvine still needs either
-another strict source/body improvement or a stronger single-package graph
-change.
-
-The fully rewritten probe surface was also tested as a drop-in Swift overlay:
-cos-Snake, native InstanceNorm AdaIN, broadcast AdaIN, fp16 inputs, iOS17, and
-the upsample rewrite, with only the five HAR-post package symlinks redirected.
-The Core ML contract matches the production HAR-post contract (`x_pre`,
-`ref_s`, `har` -> `waveform`), and local waveform metrics remain strict-like
-versus `vector_noise_batch` spotchecks: corr `0.999993675-0.999995451`, SNR
-`48.01-50.62 dB`, max abs `<=0.007263`. Warmed local M2 Studio end-to-end
-medians:
-
-| Bucket | Current best local | Production rewrite | Full probe surface |
-| --- | ---: | ---: | ---: |
-| 3s | 50.665 ms | 49.669 ms | 49.532 ms |
-| 7s | 95.503 ms | 93.792 ms | 94.128 ms |
-| 10s | 125.687 ms | 123.655 ms | 123.617 ms |
-| 15s | 185.782 ms | 183.511 ms | 183.980 ms |
-| 30s | 383.906 ms | 373.985 ms | 376.200 ms |
-
-Decision: reject the full probe surface as a production replacement for now.
-It proves the interface is compatible, but it is only better than the simpler
-production rewrite on `3s` and noise-tied on `10s`; it regresses `7s/15s/30s`.
-Result:
-`outputs/external_bakeoff/results_config_f_reference_m2-studio-local_full_surface_ups_as_conv.json`.
-
-Style specialization was also combined with the strict HAR-post upsample
-rewrite. `scripts/probe_generator_style_specialization.py` now accepts
-`--rewrite-ups-conv-transpose` and `--comparison-package` so the fixed-voice
-package can be compared directly against the three-input production rewrite
-package. Local M2 Studio `3s` CPU+GPU remains strict but is only noise-positive
-against the simpler production rewrite: shipped fused `26.294 ms`, production
-rewrite `25.143 ms`, style-specialized native-IN upsample rewrite `25.101 ms`,
-or `+0.17%` versus production rewrite at N=30. Metrics versus shipped fused:
-corr `0.999993`, SNR `49.09 dB`, max abs `0.002197`; metrics versus production
-rewrite: corr `0.999994`, SNR `49.66 dB`, max abs `0.002197`. Decision: reject
-as a production candidate unless future multi-bucket evidence shows a material
-margin over the simpler rewrite. Report:
-`outputs/generator_style_specialization/3s_style_native_in_ups_as_conv_ios17/report_cpu_gpu_vs_rewrite_n30.json`.
-CPU+NE compute-plan inspection reinforces the rejection: both the production
-rewrite and style-specialized rewrite emitted the same ANE compiler failure
-prefix (`ANECCompile() FAILED`) before returning a plan, and the style package
-remained CPU-preferred (`493` CPU-preferred ops, `0` neural-engine-preferred
-ops, `384` NE-supported ops). The style package cut operation count from `2229`
-to `1171`, but did not create a laishere-like partition or runtime-positive NE
-placement.
-
-`scripts/external_bakeoff/summarize_candidate_frontier_matrix.py` now records
-the current optimization frontier at
-`outputs/external_bakeoff/candidate_frontier_matrix.md`. The matrix separates
-the two production-ready strict wins (DecoderPre/HnSF runtime overlap and the
-HAR-post upsample rewrite), strict but rejected or too-small families, and
-non-strict or quality-changing families. The ledger explicitly includes HAR
-trim, CT8/CT9 toolchain-only rebuilds, RangeDim/flexible inputs, linear
-quantization, reusable input arrays, the DecoderPre+Generator merge, and the
-style-specialized upsample rewrite combination so those measured dead ends are
-not rediscovered as open hypotheses. It also carries the current iPhone Config F
-launch blocker from
-`outputs/external_bakeoff/config_f_ios_manual_install_latest.json`, so the
-next pass has one machine-readable place to check what is worth rerunning. As
-of the latest local check on 2026-06-06 at 07:06, the iPhone remains visible
-and paired, but launching `com.kokoro.externalbakeoff.ConfigFIOSRunnerManual`
-still fails with `RequestDenied ... Locked`; Config F iPhone warmed timing is
-therefore still blocked only by the physical lock state.
-
-`scripts/external_bakeoff/summarize_source_contract_frontier.py` now folds the
-post-overlap+rewrite budget into
-`outputs/external_bakeoff/source_contract_frontier.md`. This is the current
-strict source/body target ledger: the Swift-like source equation is solved
-(`138.15 dB` minimum SNR), recomputed HAR/STFT is not (`8.23 dB` maximum SNR),
-and no saved strict candidate closes any Irvine row. After the two current
-strict candidates, Irvine still needs `27.0 ms` / `28.0 ms` / `12.8 ms` extra
-strict save on warmed-profile `3s` / `7s` / `10s`, while the paper frontier
-still needs `45.7 ms` / `77.6 ms` / `63.7 ms` / `64.4 ms` on
-`3s` / `7s` / `10s` / `15s`. The body-only counterfactual remains the clue:
-Irvine `3s` body-only would save `62.4 ms` if `x_source_*` tensors were free,
-but the strict full split loses `11.5 ms` once source/noise is included. Do not
-repeat another exact HAR-post split; the next strict implementation must make
-the source/HAR contract cheaper inside a runtime-positive boundary.
-
-The no-ASR Irvine exact-speed listening pack is now mapped into the same source
-contract frontier. The review page is
-`outputs/f0_source_listening/irvine_exact_speed_branch/review.html`, and the
-decision file is
-`outputs/f0_source_listening/irvine_exact_speed_branch/f0_source_listening_decisions.csv`.
-`scripts/external_bakeoff/summarize_irvine_listening_targets.py` maps all four
-rows (`3s`, `7s`, `10s`, `15s`) to same-report listening artifacts, and
-`scripts/validate_f0_source_listening_decisions.py --decisions
-outputs/f0_source_listening/irvine_exact_speed_branch/f0_source_listening_decisions.csv
---json` now passes with `4` `pass` decisions after user no-ASR listening review
-reported that all four candidates sound great. Therefore the quality-changing
-speed branch has `4` accepted listening buckets and `0` pending buckets.
-This makes Irvine `7s`, `10s`, and `15s` quality-approved profile-only speed
-signals, but not paper-frontier wins: the lower-end Mac gate still shows those
-rows short of the stricter paper-facing laishere frontier. Whisper/ASR remains
-explicitly skipped for this gate.
-
-The first direct source/body + upsample-rewrite measurements reject the earlier
-independent "source plus production rewrite" projection as publishable evidence.
-`scripts/probe_f0_noise_exact_shape.py` now supports
-`--rewrite-ups-conv-transpose`, which rewrites the generator before exporting
-the F0-noise/body/tail source branch itself. Local M2 Studio direct-stack probes
-are speed-positive but much smaller than the production HAR-post rewrite
-projection: `10s_natural_asr_cos_resblock_natural_asr_cos_rsqrt` improves from
-`76.37 ms` to `71.87 ms` candidate median (`4.50 ms` local save), and
-`15s_padded_cos_resblock_cos_rsqrt` improves from `109.20 ms` to `105.62 ms`
-(`3.57 ms` local save). The short buckets are also too small: `3s` improves
-from `32.71 ms` to `29.36 ms` (`3.35 ms` local save), and `7s` improves from
-`56.52 ms` to `54.80 ms` (`1.72 ms` local save). The corrected
-`outputs/external_bakeoff/irvine_paper_frontier_path.md` therefore keeps the
-independent projection separate from direct measured source/body rewrite
-evidence: direct source/body rewrite closes `0` Irvine paper rows, leaving
-about `10.3 ms` extra for `10s` and `20.5 ms` extra for `15s` under the
-absolute-save projection, with even larger remaining gaps on `3s` and `7s`.
-Do not publish source+rewrite as a win until a direct quiet-host combined run
-proves it.
-
-First feasibility probes for direct `x_source_*` distillation:
-`scripts/probe_xsource_distillation_feasibility.py` fits bucket-local adapters
-and scores interleaved held-out frames. On the `3s` dump, cheap source-side
-features (`har_source`, F0, noise, voiced mask with radius `8`) are not enough:
-ridge gives `x_source_0` validation SNR `9.40 dB` (corr `0.916991`, max abs
-`3.724303`) and `x_source_1` `24.75 dB` (corr `0.997137`, max abs `0.794217`).
-A one-hidden-layer MLP (`hidden=128`, `steps=300`) improves cheap features only
-to `11.10 dB` for `x_source_0` and `25.20 dB` for `x_source_1`. Giving the
-adapter full strict HAR windows (`22` channels, radius `2`) improves the target
-but still fails strict feasibility: HAR ridge reaches `15.12 dB` / `30.54 dB`
-for `x_source_0` / `x_source_1`, and HAR MLP reaches `15.13 dB` / `32.23 dB`.
-A stronger temporal Conv1d adapter over the same HAR windows (`hidden=128`,
-`depth=4`, `kernel=17`, `steps=600`) solves the easier second source tensor
-(`x_source_1` validation SNR `42.88 dB`, corr `0.999956`) but still fails the
-first tensor (`x_source_0` validation SNR `16.20 dB`, corr `0.983172`, max abs
-`1.167980`) while overfitting train to `22.97 dB`. This rejects simple
-linear/1x1/local-window, tiny per-frame MLP, and compact temporal Conv1d
-shortcuts as strict direct `x_source_*` distillation paths. It also shows that
-`x_source_0` needs a different boundary: actual residual/AdaIN behavior, an
-early/later activation target, or algebraic STFT/HAR folding into the first
-noise convolutions plus residual behavior.
-
-The missing combination of no-side-input exact Swift DC/Nyquist phase repair
-and the HAR-post upsample rewrite was also tested in
-`scripts/probe_har_source_fused.py` using the new `--rewrite-ups-conv-transpose`
-flag. Against the production rewrite package on local M2 Studio `3s`
-CPU+GPU, fp16 is slightly speed-positive but not strict: production rewrite
-`28.27 ms`, candidate `28.07 ms` (`+0.73%`), candidate-vs-dump SNR only
-`33.00 dB`. Re-exporting the same graph in fp32 restores strict quality
-(candidate-vs-baseline SNR `49.87 dB`, candidate-vs-dump SNR `47.75 dB`) but
-loses speed: production rewrite `27.79 ms`, candidate `28.70 ms` (`-3.25%`).
-This rejects the strict no-side-input phase repair plus upsample rewrite as a
-current win; fp16 is not quality-safe, and fp32 is not fast enough.
-
-The direct-distillation probe now also supports `--target-mode pre_noise_conv`
-to test whether the source/HAR fold can stop before AdaIN residuals. That
-fails for cheap source features too. A ridge adapter from source/F0/noise
-windows (`radius=16`) reaches only `2.73 dB` on `pre_noise_conv_0` and
-`9.86 dB` on `pre_noise_conv_1`; a stronger Conv1d adapter (`hidden=128`,
-`depth=4`, `kernel=17`, `steps=400`) reaches only `10.60 dB` and `13.49 dB`.
-The sanity check with full HAR windows confirms the probe is measuring the
-right thing for same-grid convs: `pre_noise_conv_1` is recovered at `93.62 dB`
-because `noise_conv_1` is a `1x1` stride-1 conv, while `pre_noise_conv_0`
-still scores only `11.06 dB` because `noise_conv_0` is a stride-6, kernel-12
-conv and the generic resampling feature builder is not its exact geometry.
-Adding exact `har_conv_geometry` features fixes that measurement: ridge over
-the real `noise_convs[i]` receptive fields recovers `pre_noise_conv_0` at
-`96.64 dB` validation SNR and `pre_noise_conv_1` at `107.06 dB`. Decision: do
-not treat algebraic folding as "learn a cheap source-window adapter." The
-viable strict path is to compute the exact STFT/HAR receptive-field dot
-products needed by the first strided noise conv without materializing the full
-HAR tensor or adding a hot Core ML boundary.
-
-`scripts/summarize_pre_noise_folding_surface.py` quantifies that path across
-all five buckets. It reports `fold_for_memory_locality_not_frame_skipping`:
-because `noise_conv_1` is a `1x1` stride-1 convolution over every HAR frame,
-the two `noise_convs` touch `100.00%` of HAR frames for every bucket. Pre-noise
-outputs are also much larger than HAR (`7.76x` as many values; `3s` fp16 HAR is
-`1.21 MiB` while pre-noise is `9.38 MiB`, and `30s` fp16 HAR is `12.09 MiB`
-while pre-noise is `93.75 MiB`). Do not introduce a new pre-noise tensor
-boundary. Any strict folding implementation must be one fused runtime/kernel
-that improves memory locality and removes materialization/synchronization; it
-will not win by skipping most STFT/HAR frames.
-
-`scripts/external_bakeoff/summarize_strict_folding_ceiling.py` joins that
-surface with the removable Swift STFT timing and the post-overlap+rewrite
-Irvine budget. STFT-only removal closes zero warmed-profile rows and zero paper
-frontier rows: coverage is only `1.92%` / `4.63%` / `13.61%` of the remaining
-profile gap for `3s` / `7s` / `10s`, and `1.13%` / `1.67%` / `2.73%` of the
-paper gap. Decision: do not build a materialized pre-noise boundary, and do not
-spend a large implementation pass on strict folding unless it also removes
-generator-body synchronization or improves Core ML/Metal scheduling. STFT/HAR
-folding alone is too small to win the lower-end Mac rows.
-
-`scripts/external_bakeoff/run_rewrite_promotion_when_quiet.py` is now the
-preferred lower-end Mac promotion entrypoint for the HAR-post rewrite. It checks
-the quiet-host gate first, then runs
-`run_config_f_reference.py --generator-models-dir outputs/export_rewrite_smoke`
-only for quiet hosts. A quiet remote run now counts as `ok` only after the
-remote result JSON is fetched back to the local
-`outputs/external_bakeoff/results_config_f_reference_<host>_rewrite_ups_as_conv.json`
-path; a remote success with missing evidence is recorded as `fetch_error`, not
-publishable timing. The wrapper also fetches the corresponding spotcheck WAV
-directory from
-`outputs/external_bakeoff/spotcheck_wavs/config_f_reference_<host>_rewrite_ups_as_conv`;
-missing spotcheck audio is recorded separately as a review artifact gap. The
-latest dry-run wrote
-`outputs/external_bakeoff/rewrite_promotion_when_quiet_latest.md` with both
-`irvine-m1` and `m2-air` skipped for host noise (`mds_stores`,
-`mediaanalysisd`, high load, and non-zero swap), so no polluted rewrite timing
-was recorded.
-
-`scripts/external_bakeoff/check_remote_host_quiet.py` now records the lower-end
-Mac timing gate at `outputs/external_bakeoff/remote_host_quiet_latest.md`.
-The 2026-06-06 18:28 local run reports `publishable_timing_allowed=false`:
-Irvine M1 has load `2.04/2.45/2.53` with `mediaanalysisd` at `83.4%` CPU,
-`mds_stores` at `18.7%`, and `270.12 MB` swap used, while M2 Air has load
-`3.03/2.98/2.92` with `mediaanalysisd` at `63.5%`, `mds_stores` at `48.5%`,
-and `266.94 MB` swap used. A live rewrite promotion attempt at the same time
-skipped both hosts as noisy (`quiet_hosts=0`, `ran_hosts=0`), so no new
-publishable lower-end rewrite timing was recorded. Skip lower-end Mac frontier
-promotion until this gate reports `quiet=yes` for the target host.
-
-Added
-`README/Notes/Kokoro-M1-kernel-partition-deep-research-prompt.md`
-as the focused external-research handoff for the remaining M1 problem: laishere
-gets a runtime-useful CPU+NE vocoder partition, while first-party strict fused
-packages either stay GPU-only or lose when split. Use it when asking an
-external agent for deeper Core ML compiler/runtime research.
-
-`scripts/external_bakeoff/run_config_f_ios_when_unlocked.py` now provides the
-one-command Config F iPhone resume path. It records
-`outputs/external_bakeoff/config_f_ios_run_latest.json`, launches the installed
-manual runner when the physical device is unlocked, polls up to two hours for
-`Documents/config_f_ios_result.json`, ingests
-`results_config_f_reference_ios_iphone-12-pro.json`, and refreshes the
-competitive frontier. The 2026-06-06 07:23 local live launch attempt still
-failed with `device_locked`, so iPhone timing remains blocked only by the
-physical lock state.
-
-### DecoderPre + Generator merged package probe
-
-On 2026-06-06, tested a strict single-package boundary-collapse probe for the
-current short-bucket hypothesis: remove the hot DecoderPre -> Generator Core ML
-handoff while preserving the exact Swift HAR/STFT boundary. The probe exports a
-temporary package with the same Swift-facing inputs as the two current packages:
-`asr`, `f0`, `n_input`, `ref_s`, and padded `har`, then emits `waveform`.
-
-Local 3s M2 Studio result from
-`scripts/probe_decoder_pre_generator_merge.py`, warmed `3`, iterations `8`:
-
-| Compute path | Baseline two predictions | Merged package | Delta | Decision |
-| --- | ---: | ---: | ---: | --- |
-| baseline `decoder_pre=cpuAndNeuralEngine`, `generator=cpuAndGPU`; merged `cpuAndGPU` | `31.929 ms` | `33.589 ms` | `-5.20%` | Reject. |
-| same baseline; merged `.all` | `33.476 ms` | `35.048 ms` | `-4.70%` | Reject. |
-| same baseline; merged `cpuAndNeuralEngine` | `47.173 ms` | `1568.424 ms` | `-3224.86%` | Hard reject; ANE compiler failure. |
-
-The CPU+GPU merged waveform is close to the current two-prediction baseline
-(`SNR 47.90 dB`, correlation `0.999991`, max abs `0.002686`), so this is a
-runtime/scheduling loss rather than a gross parity failure.
-
-Decision: do not promote the merged DecoderPre+Generator package. Removing the
-Swift-visible prediction boundary makes the MLProgram larger and less
-schedulable; the current small DecoderPre package remains cheap enough that its
-separate Core ML call is better than dragging the decoder-pre body into the
-GPU generator package. Future boundary work must remove a handoff without
-making the generator graph less schedulable, or change the source/HAR contract
-inside a runtime-positive package.
-
-Artifacts:
-
-- `scripts/probe_decoder_pre_generator_merge.py`
-- `outputs/decoder_pre_generator_merge/3s/report.json`
-- `outputs/decoder_pre_generator_merge/3s/report_all.json`
-- `outputs/decoder_pre_generator_merge/3s/report_cpune.json`
+slower: 3s `36.76 ms` vs `32.07 ms`, and 7s `67.72 ms` vs `60.88 ms`. That path
+is rejected for production unless a lower-end remote device contradicts the
+local result.
 
 ---
 
@@ -5020,4 +3393,4 @@ CPU** across the corrected duration range.
 
 ### Plan reference
 
-Bakeoff plan Phase 7: `README/Plans/kokoro-bakeoff-v2.md`
+Bakeoff plan Phase 7: `README/Plans/003-kokoro-bakeoff-plan.md`

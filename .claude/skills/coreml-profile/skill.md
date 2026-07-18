@@ -7,9 +7,8 @@ description: Profile CoreML model execution to determine which compute units (AN
 
 ## Parent skill
 
-Entry point for all Core ML work: `~/.cursor/skills/coreml/SKILL.md` (cross-repo
-master; repo stub at [coreml](../coreml/SKILL.md)). Use this skill when the routed
-intent is **runtime placement** (ANE/GPU/CPU), not numerical parity.
+Entry point for all Core ML work: [coreml](../coreml/SKILL.md). Use this skill
+when the routed intent is **runtime placement** (ANE/GPU/CPU), not numerical parity.
 
 ## Repo gate
 
@@ -60,24 +59,9 @@ Before profiling, read these guides for context:
 
 - `README/Guides/apple-silicon/CoreML-Compute-Unit-Scheduling-guide.md` — silent
   fallback, graph partitioning, verification
-- `README/Guides/apple-silicon/Core ML-MLX-Scheduling-1D-ConvTranspose-ISTFTNet-vocoders-guide.md` —
-  vocoder fixed-cost diagnosis, `MLComputePlan` workflow, iSTFT tail boundaries
-- `README/Guides/apple-silicon/Kokoro-M1-vocoder-partition-boundary-guide.md` —
-  partition mechanics; ANE preferred ops can still lose warmed runtime
-- `README/Guides/apple-silicon/Kokoro-M1-vocoder-runtime-boundary-guide.md` —
-  runtime boundary strategies for lower-end Mac
-- `README/Guides/apple-silicon/Apple-Silicon-warmed-inference-benchmark-hygiene-guide.md` —
-  per-bucket warmup, quiet-host requirements before publishing timing
-- `README/Guides/apple-silicon/CoreML-ANE-compiler-failure-triage-guide.md` —
-  E5RT/STL compile failures during profiling runs
-- `scripts/inspect_coreml_compute_plan.m` — per-op placement summary on macOS 14.4+
-- `scripts/external_bakeoff/check_remote_host_quiet.py` — quiet-host gate for Irvine
-- `README/Notes/Kokoro-M1-vocoder-boundary-research-brief.md` — live bakeoff frontier
-- `README/Notes/kokoro-restarted-guide-triage-2026-06-06.md` — promotion gates after ingest
 - `README/Notes/debug-notes.md` — institutional memory of past issues
 
-Full index: `~/.cursor/skills/coreml/reference.md` (canonical; repo stub at
-[coreml/reference.md](../coreml/reference.md)).
+Full index: [coreml/reference.md](../coreml/reference.md).
 
 ## Key Concepts
 
@@ -267,12 +251,8 @@ the generated code or compiled model metadata for compute unit annotations.
 ## Anti-patterns
 
 - **Assuming `.all` means ANE** — it doesn't. Always verify.
-- **Profiling without per-bucket warmup** — first prediction includes ANE plan
-  compilation. Warm each bucket shape separately (`3s`, `7s`, `10s`, etc.); do
-  not mix bucket shapes in one warmup cycle. See
-  `Apple-Silicon-warmed-inference-benchmark-hygiene-guide.md`.
-- **Publishing Irvine timing without quiet-host evidence** — run
-  `check_remote_host_quiet.py` and record raw per-run timings.
+- **Profiling without warmup** — first prediction includes ANE plan compilation.
+  Always warm up 2-3 iterations before timing.
 - **Profiling on battery** — thermal throttling skews results. Plug in.
 - **Comparing across compute units without controlling for model compilation** —
   each compute unit config triggers a different compilation. Warm each separately.

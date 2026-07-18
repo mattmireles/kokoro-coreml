@@ -45,23 +45,6 @@ For current belief, start at `README/Wiki/README.md`, then drill into the linked
 sources. The wiki is a routing layer, not a replacement for code, scripts,
 notes, measured outputs, or checked artifacts.
 
-## README/Guides vs README/Notes
-
-`README/Guides/` is reserved for externally created reference manuals, usually
-Deep Research / external-agent reports ingested from
-`llm-workflows/outputs/create-guide/**/raw-report.md`. Do not add new guide
-content from local analysis alone. If there is no external raw guide/report,
-run or request `create-guide` before creating a guide.
-The provenance gate is strict: a prompt, checkpoint, local audit, or Codex
-synthesis is not enough to write `README/Guides/`. Record the external raw
-source path in any ingested guide.
-
-`README/Notes/` is where this repo's own learnings go: experiment logs,
-implementation decisions, provenance, benchmark interpretation, rejected
-hypotheses, and local audit trails. When ingesting an external guide, put the
-cleaned external manual in `README/Guides/` and put our triage/verification
-decisions in `README/Notes/`.
-
 Before claiming the memory layer is healthy, run:
 
 ```bash

@@ -126,28 +126,15 @@ def _check_listening(decisions_path: Path) -> tuple[dict[str, Any], list[str]]:
 
 
 def _check_preflight(results_dir: Path) -> tuple[dict[str, Any] | None, list[str]]:
-    paths = [
-        results_dir / "config_f_ios_manual_install_latest.json",
-        results_dir / "ios_runner_preflight_latest.json",
-    ]
-    payloads: list[tuple[Path, dict[str, Any]]] = []
-    errors: list[str] = []
-    for path in paths:
-        if not path.exists():
-            continue
-        try:
-            payload = load_json(path)
-        except Exception as exc:
-            errors.append(f"{path}: {exc}")
-            continue
-        payloads.append((path, payload))
-        if payload.get("ok"):
-            return payload, []
-    if not payloads and not errors:
+    path = results_dir / "ios_runner_preflight_latest.json"
+    if not path.exists():
         return None, ["missing iOS preflight evidence"]
-    if errors and not payloads:
-        return None, errors
-    path, payload = payloads[0]
+    try:
+        payload = load_json(path)
+    except Exception as exc:
+        return None, [f"{path}: {exc}"]
+    if payload.get("ok"):
+        return payload, []
     blockers = payload.get("blockers") or []
     return payload, [f"iOS preflight not ready: {', '.join(blockers) or 'unknown blocker'}"]
 

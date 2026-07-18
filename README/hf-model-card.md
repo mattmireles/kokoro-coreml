@@ -143,17 +143,12 @@ let samples = audio.samples        // 24 kHz mono Float PCM
 let buffer = try audio.makePCMBuffer()
 ```
 
-App developers consume the GitHub repo root package and the `KokoroTTS`
-product. The SDK owns raw-text preparation, Misaki phonemization,
-Botnet-compatible chunking, model loading, and AVFoundation PCM buffer
-creation. Current SDK contract: iOS 18.0+,
+The SDK is in the GitHub repo's `swift-tts` package. It owns raw-text
+preparation, Misaki phonemization, Botnet-compatible chunking, model loading,
+and AVFoundation PCM buffer creation. Current SDK contract: iOS 18.0+,
 macOS 15.0+, sample rate `24000`, starter voice `af_heart`, duration token
 sizes `32,64,128,256,320,384,512`, full buckets `3,7,10,15,30`, max caller
 chunk tokens `450`, voice embedding dimension `256`.
-
-GitHub carries the Swift source, manifests, and small runtime resources. Model
-and voice binaries are served from this Hugging Face repo; this SDK release does
-not use GitHub LFS.
 
 Build a starter bundle:
 
@@ -176,10 +171,10 @@ node scripts/validate_sdk_bundle.mjs /tmp/kokoro-sdk-starter
 ```
 
 Downloaded-resource apps can hydrate the top-level starter
-`HostedManifest.json` with `KokoroDownloadedModelStore` by passing the expected
-manifest SHA-256. Production apps should serve manifests over HTTPS and pin the
-exact manifest hash. Bundled-resource apps can use `KokoroResourceProvider.directory`,
-`.appBundle`, or `.packageBundle`.
+`HostedManifest.json` with `KokoroDownloadedModelStore`. Production apps should
+serve manifests over HTTPS and pin the expected HF revision or
+`sdk/SDKReleaseManifest.json` checksum. Bundled-resource apps can use
+`KokoroResourceProvider.directory`, `.appBundle`, or `.packageBundle`.
 
 Previous snippets that used `KokoroPipeline` directly are now low-level
 examples. Keep them for benchmarking and graph work; use `KokoroTTS` for app

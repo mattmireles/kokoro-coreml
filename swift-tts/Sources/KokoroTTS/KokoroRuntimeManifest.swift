@@ -16,10 +16,7 @@ struct KokoroRuntimeManifest: Decodable, Sendable {
 
     /// Whether the bundle builder verified local model and voice files against
     /// a Hugging Face download manifest before packaging them.
-    let hfProvenanceVerified: Bool
-
-    /// SHA-256 digest of the HF download manifest used during packaging.
-    let hfDownloadManifestSHA256: String
+    let hfProvenanceVerified: Bool?
 
     /// Minimum supported platform versions declared by the bundle builder.
     let minimumPlatforms: [String: String]?
@@ -52,7 +49,6 @@ struct KokoroRuntimeManifest: Decodable, Sendable {
         case hfRepoID = "hf_repo_id"
         case hfRevision = "hf_revision"
         case hfProvenanceVerified = "hf_provenance_verified"
-        case hfDownloadManifestSHA256 = "hf_download_manifest_sha256"
         case minimumPlatforms = "minimum_platforms"
         case supportedLanguages = "supported_languages"
         case bundleProfile = "bundle_profile"

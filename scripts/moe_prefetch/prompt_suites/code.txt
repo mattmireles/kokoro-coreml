@@ -1,0 +1,2 @@
+Write a Python function that parses a JSON lines file, groups rows by user id,
+and prints the three users with the highest event counts.

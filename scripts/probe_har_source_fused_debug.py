@@ -26,10 +26,6 @@ sys.path.insert(0, str(_ROOT))
 from audio_parity_tensor_io import load_tensor_dump  # noqa: E402
 from probe_generator_exact_geometry import _compute_units, _load_kmodel, _metrics  # noqa: E402
 from probe_generator_split import _precision_arg, _remove_existing_package  # noqa: E402
-from probe_nyquist_phase_contribution import (  # noqa: E402
-    SWIFT_NYQUIST_IMAG_BASIS,
-    SWIFT_NYQUIST_REAL_BASIS,
-)
 
 
 def _make_debug_module(generator: Any, phase_mode: str, pad_har_to: int | None):
@@ -53,14 +49,6 @@ def _make_debug_module(generator: Any, phase_mode: str, pad_har_to: int | None):
             self.hop_length = stft.hop_length
             self.register_buffer("weight_forward_real", stft.weight_forward_real)
             self.register_buffer("weight_forward_imag", stft.weight_forward_imag)
-            self.register_buffer(
-                "swift_nyquist_real",
-                torch.from_numpy(SWIFT_NYQUIST_REAL_BASIS.reshape(1, 1, -1)).to(dtype=torch.float32),
-            )
-            self.register_buffer(
-                "swift_nyquist_imag",
-                torch.from_numpy(SWIFT_NYQUIST_IMAG_BASIS.reshape(1, 1, -1)).to(dtype=torch.float32),
-            )
 
         def forward(self, waveform: Any):
             if self.center:
@@ -70,12 +58,7 @@ def _make_debug_module(generator: Any, phase_mode: str, pad_har_to: int | None):
             real = F.conv1d(x, self.weight_forward_real, stride=self.hop_length)
             imag = F.conv1d(x, self.weight_forward_imag, stride=self.hop_length)
             magnitude = torch.sqrt(real**2 + imag**2 + 1e-14)
-            if phase_mode in {
-                "atan2",
-                "swift_nyquist_atan2",
-                "swift_dc_nyquist_atan2",
-                "swift_dc_branch_nyquist_atan2",
-            }:
+            if phase_mode == "atan2":
                 phase = torch.atan2(imag, real)
             elif phase_mode == "atan_manual":
                 eps = torch.full_like(real, 1e-12)
@@ -101,25 +84,6 @@ def _make_debug_module(generator: Any, phase_mode: str, pad_har_to: int | None):
                 )
             else:
                 raise RuntimeError(f"unsupported phase_mode: {phase_mode}")
-            if phase_mode in {
-                "swift_nyquist_atan2",
-                "swift_dc_nyquist_atan2",
-                "swift_dc_branch_nyquist_atan2",
-            }:
-                nyquist_real = F.conv1d(x, self.swift_nyquist_real, stride=self.hop_length)
-                nyquist_imag = F.conv1d(x, self.swift_nyquist_imag, stride=self.hop_length)
-                nyquist_phase = torch.atan2(nyquist_imag, nyquist_real)
-                phase = torch.cat([phase[:, :10, :], nyquist_phase, phase[:, 11:, :]], dim=1)
-            if phase_mode == "swift_dc_nyquist_atan2":
-                dc_phase = torch.zeros_like(phase[:, :1, :])
-                phase = torch.cat([dc_phase, phase[:, 1:, :]], dim=1)
-            if phase_mode == "swift_dc_branch_nyquist_atan2":
-                dc_phase = torch.where(
-                    real[:, :1, :] < 0.0,
-                    torch.full_like(phase[:, :1, :], torch.pi),
-                    torch.zeros_like(phase[:, :1, :]),
-                )
-                phase = torch.cat([dc_phase, phase[:, 1:, :]], dim=1)
             return magnitude, phase
 
     class _DebugFused(nn.Module):
@@ -195,23 +159,6 @@ def _reference_outputs(
     }
 
 
-def _channel_metrics(reference: np.ndarray, candidate: np.ndarray, *, limit: int = 22) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    channels = min(int(reference.shape[1]), int(candidate.shape[1]), limit)
-    for channel in range(channels):
-        metrics = _metrics(reference[:, channel, :], candidate[:, channel, :])
-        rows.append(
-            {
-                "channel": channel,
-                "snr_db": metrics["snr_db"],
-                "correlation": metrics["correlation"],
-                "max_abs_error": metrics["max_abs_error"],
-                "mean_abs_error": metrics["mean_abs_error"],
-            }
-        )
-    return rows
-
-
 def run(args: argparse.Namespace) -> dict[str, Any]:
     import coremltools as ct
     import torch
@@ -280,8 +227,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             ref_value.reshape(-1)[:trim_len],
             candidate.reshape(-1)[:trim_len],
         )
-        if name == "har" and ref_value.ndim == 3 and candidate.ndim == 3:
-            metrics["coreml_vs_torch_har_by_channel"] = _channel_metrics(ref_value, candidate)
     waveform_trim = min(int(tensors["waveform"].size), int(coreml_out["waveform"].size))
     metrics["coreml_waveform_vs_dump"] = _metrics(
         tensors["waveform"].reshape(-1)[:waveform_trim],
@@ -316,11 +261,7 @@ def main() -> None:
     parser.add_argument("--label", default="3s_atan_manual_fp32")
     parser.add_argument("--report-name", default="report_har_source_fused_debug.json")
     parser.add_argument("--precision", default="fp32", choices=["fp16", "fp32"])
-    parser.add_argument(
-        "--phase-mode",
-        default="atan_manual",
-        choices=["atan2", "atan_manual", "swift_nyquist_atan2", "swift_dc_nyquist_atan2", "swift_dc_branch_nyquist_atan2"],
-    )
+    parser.add_argument("--phase-mode", default="atan_manual", choices=["atan2", "atan_manual"])
     parser.add_argument("--pad-har-to", type=int, default=None)
     parser.add_argument("--compute-units", default="cpu_only")
     parser.add_argument("--skip-export", action="store_true")

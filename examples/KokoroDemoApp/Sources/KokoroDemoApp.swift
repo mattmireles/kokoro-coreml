@@ -31,9 +31,6 @@ struct DemoView: View {
                         TextField("URL", text: $model.manifestURLString, axis: .vertical)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
-                        TextField("Manifest SHA-256", text: $model.manifestSHA256String, axis: .vertical)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
                     } else {
                         TextField("Bundle subdirectory", text: $model.bundleSubdirectory)
                             .textInputAutocapitalization(.never)
@@ -101,7 +98,6 @@ enum DemoResourceMode: String, CaseIterable, Identifiable {
 final class DemoModel: ObservableObject {
     @Published var resourceMode: DemoResourceMode = .downloaded
     @Published var manifestURLString = ProcessInfo.processInfo.environment["KOKORO_MANIFEST_URL"] ?? ""
-    @Published var manifestSHA256String = ProcessInfo.processInfo.environment["KOKORO_MANIFEST_SHA256"] ?? ""
     @Published var bundleSubdirectory = ProcessInfo.processInfo.environment["KOKORO_BUNDLE_SUBDIRECTORY"] ?? "KokoroRuntime"
     @Published var text = "Hello world."
     @Published var voice = "af_heart"
@@ -123,15 +119,11 @@ final class DemoModel: ObservableObject {
     private static let maximumMemoryPressureMegabytes = 768
     private static let bytesPerMegabyte = 1_048_576
     private static let memoryPageBytes = 4_096
-    private static let allowInsecureLocalManifest = ProcessInfo.processInfo.environment["KOKORO_ALLOW_INSECURE_LOCAL_MANIFEST"] == "1"
 
     init() {
         let args = CommandLine.arguments
         if let manifest = Self.value(after: "--manifest-url", in: args) {
             manifestURLString = manifest
-        }
-        if let manifestSHA256 = Self.value(after: "--manifest-sha256", in: args) {
-            manifestSHA256String = manifestSHA256
         }
         if let mode = Self.value(after: "--resource-mode", in: args) {
             if let parsed = DemoResourceMode(argument: mode) {
@@ -283,15 +275,9 @@ final class DemoModel: ObservableObject {
             guard let manifestURL = URL(string: manifestURLString), !manifestURLString.isEmpty else {
                 throw DemoScenarioError.missingManifestURL
             }
-            let manifestSHA256 = manifestSHA256String.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !manifestSHA256.isEmpty else {
-                throw DemoScenarioError.missingManifestSHA256
-            }
             return try await KokoroDownloadedModelStore(
                 manifestURL: manifestURL,
-                expectedManifestSHA256: manifestSHA256,
-                cacheDirectory: try Self.cacheDirectory(),
-                allowInsecureLocalDevelopment: Self.allowInsecureLocalManifest
+                cacheDirectory: try Self.cacheDirectory()
             ).hydrate()
         case .bundled:
             let subdirectory = bundleSubdirectory.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -441,7 +427,6 @@ enum DemoScenarioError: Error, LocalizedError {
     case invalidMemoryPressureMegabytes(String)
     case memoryPressureMegabytesOutOfRange(Int, minimum: Int, maximum: Int)
     case missingManifestURL
-    case missingManifestSHA256
     case cancellationDidNotThrow
     case memoryFootprintUnavailable(kern_return_t)
 
@@ -457,8 +442,6 @@ enum DemoScenarioError: Error, LocalizedError {
             return "Memory pressure megabytes \(value) is outside the supported range \(minimum)...\(maximum)."
         case .missingManifestURL:
             return "Missing manifest URL for downloaded resource mode."
-        case .missingManifestSHA256:
-            return "Missing manifest SHA-256 for downloaded resource mode."
         case .cancellationDidNotThrow:
             return "Cancellation scenario completed without throwing a known cancellation error."
         case .memoryFootprintUnavailable(let result):

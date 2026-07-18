@@ -35,7 +35,12 @@ final class WaveformPostProcessTests: XCTestCase {
         XCTAssertEqual(Array(result[16..<20]), Array(repeating: 0.0, count: 4))
     }
 
-    func testSuppressPunctuationTokenAudioSilencesAdjacentPunctuationWhitespace() throws {
+    func testSuppressPunctuationTokenAudioPreservesAdjacentWhitespaceSpeech() throws {
+        // Whitespace next to punctuation carries real speech — word onsets and
+        // phrase-final decays at -11 to -22 dBFS in the PyTorch reference.
+        // Suppressing it cut up to ~125 ms of audible speech at every phrase
+        // boundary (the 15s CS1 perceptual failure of 2026-07-14). Only the
+        // punctuation span itself may be silenced.
         let audio = [Float](repeating: 1.0, count: 16)
         let result = suppressPunctuationTokenAudio(
             audio,
@@ -46,8 +51,8 @@ final class WaveformPostProcessTests: XCTestCase {
         )
 
         XCTAssertEqual(Array(result[0..<4]), Array(repeating: 1.0, count: 4))
-        XCTAssertEqual(Array(result[4..<12]), Array(repeating: 0.0, count: 8))
-        XCTAssertEqual(Array(result[12..<16]), Array(repeating: 1.0, count: 4))
+        XCTAssertEqual(Array(result[4..<8]), Array(repeating: 0.0, count: 4))
+        XCTAssertEqual(Array(result[8..<16]), Array(repeating: 1.0, count: 8))
     }
 
     func testSuppressPunctuationTokenAudioUsesDefaultFadeAtProductionConstants() {

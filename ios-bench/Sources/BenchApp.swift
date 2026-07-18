@@ -15,10 +15,14 @@
 ///   --arms coreml,mlx       which arms to run (default: both; ladder mode only)
 ///   --keys 7s,15s,30s       which buckets (default: 3s,7s,15s,30s)
 ///   --out results.json      output filename in Documents
-///   --mode ladder|matrix    ladder (default): walk the compute-policy
+///   --mode ladder|matrix|g2p  ladder (default): walk the compute-policy
 ///                           fallback ladder per bucket. matrix: single-stage
 ///                           compute-unit flips for ANE-rejection attribution
 ///                           (coreml arm only; see ``BenchRunner/matrixCells``).
+///                           g2p: time ONLY the Misaki G2P pass per input
+///                           (via ``KokoroTTS/phonemizeOnlyForBench``) to
+///                           bound the raw-text-vs-pretokenized boundary
+///                           asymmetry between the two arms numerically.
 ///   --exact-duration 1      use exact-native-LSTM duration packages
 ///                           (kokoro_duration_exact_tN, 780 ops) instead of
 ///                           the padded unrolled ones (17k-134k ops); mirrors
@@ -64,7 +68,7 @@ struct HnsfWeights: Decodable {
 /// predict with ANECCompile error -9, so the ladder runner walks a fallback
 /// ladder per bucket and records which policy actually produced the timings.
 /// Matrix mode instead flips one stage at a time to attribute the rejection
-/// (see README/Plans/kokoro-iphone-performance-v1.md, Phase 1-2).
+/// (see README/Plans/007-kokoro-iphone-performance-plan.md, Phase 1-2).
 struct StagePolicy {
     let name: String
     let duration: MLComputeUnits
@@ -337,6 +341,13 @@ final class BenchRunner: ObservableObject {
                     await self.log("matrix run failed: \(error)")
                     await self.record(["arm": "coreml", "key": "matrix-level", "error": String(describing: error)])
                 }
+            } else if Self.mode == "g2p" {
+                do {
+                    try await self.runG2PMode()
+                } catch {
+                    await self.log("g2p run failed: \(error)")
+                    await self.record(["arm": "g2p", "key": "mode-level", "error": String(describing: error)])
+                }
             } else {
                 // Arms are isolated: a Core ML failure must not block the MLX
                 // arm, and vice versa. Per-bucket failures are recorded inside
@@ -563,6 +574,55 @@ final class BenchRunner: ObservableObject {
                     await recordFailure(key: key, policyName: cell.policy.name, cache: cache, error: error)
                 }
             }
+        }
+    }
+
+    // MARK: G2P-only mode (--mode g2p)
+
+    /// Times ONLY the Misaki G2P pass of the MLX arm for each bench input.
+    ///
+    /// Purpose: the MLX arm's `generateAudio` timings include G2P (raw-text
+    /// API) while the Core ML arm starts from pre-tokenized IDs. This mode
+    /// measures that boundary asymmetry per input so published comparisons
+    /// can subtract it numerically instead of calling it "small but nonzero".
+    /// Uses the same warmup/iteration discipline as the arms; first warmup
+    /// absorbs Misaki dictionary loading.
+    nonisolated private func runG2PMode() async throws {
+        // KokoroTTS init loads the full 327 MB weight set even though only
+        // g2pProcessor is used — acceptable: this mode reuses the vendored
+        // init as-is rather than forking it (SIMPLER IS BETTER).
+        await log("g2p: constructing KokoroTTS (loads full weights; G2P init is what we time)")
+        let modelURL = Bundle.main.url(forResource: "kokoro-v1_0", withExtension: "safetensors")!
+        let tts = KokoroTTS(modelPath: modelURL)
+        for key in Self.keys {
+            let input = try await MainActor.run { try self.loadInput(key) }
+            var times: [Double] = []
+            var phonemeCount = 0
+            var failure: String? = nil
+            for i in 0..<(Self.warmups + Self.iterations) {
+                do {
+                    let t0 = CFAbsoluteTimeGetCurrent()
+                    let phonemes = try tts.phonemizeOnlyForBench(language: .enUS, text: input.text)
+                    let t1 = CFAbsoluteTimeGetCurrent()
+                    phonemeCount = phonemes.count
+                    if i >= Self.warmups { times.append(t1 - t0) }
+                    await log("g2p \(key) iter \(i): \(String(format: "%.4f", t1 - t0))s phonemes=\(phonemes.count)")
+                } catch {
+                    failure = String(describing: error)
+                    await log("g2p \(key) iter \(i) FAILED: \(error)")
+                    break
+                }
+            }
+            await record([
+                "arm": "g2p",
+                "key": key,
+                "warm_times_s": times,
+                "median_s": median(times),
+                "phoneme_count": phonemeCount,
+                "text_chars": input.text.count,
+                "thermal_state": thermalStateName(),
+                "error": failure ?? NSNull(),
+            ] as [String: Any])
         }
     }
 

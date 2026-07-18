@@ -9,6 +9,12 @@ iPhone debugging trails (failure modes, not timings) live in
 Newest entries first. Warmed inference only — first-load compile/cache effects
 are excluded from every table, per the runbook.
 
+**2026-07-14:** the v1 Config F vs MLX comparison below was Debug-vs-Debug;
+the Release-build re-run (both arms, plus a measured G2P bound and a thermal
+run-order caveat) lives in
+[iphone-release-build-mlx-comparison.md](iphone-release-build-mlx-comparison.md).
+Cite that note, not v1, for arm-vs-arm iPhone numbers.
+
 ## iPhone Bench v2: Release-build Config F ladder (supersedes v1 absolute timings)
 
 **Collected:** 2026-06-10
@@ -47,7 +53,7 @@ The A17 Pro runs the 30s bucket ~7.3x realtime; the A14 ~3.5x realtime. The
 padded-duration stage is the largest single line item at 30s: 0.799 s of
 3.742 s (21%) on the A17 Pro, 1.558 s of 8.551 s (18%) on the A14 — the
 motivation for the exact-duration experiment in
-[kokoro-iphone-performance-v1.md](../Plans/kokoro-iphone-performance-v1.md).
+[007-kokoro-iphone-performance-plan.md](../Plans/007-kokoro-iphone-performance-plan.md).
 
 Raw artifacts: `outputs/iphone_bench/results_15pm_ladder_release.json` and
 `results_12pro_ladder_release.json` (gitignored; hardware `iPhone16,2` /

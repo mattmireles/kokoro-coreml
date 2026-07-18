@@ -16,6 +16,15 @@ private struct StubPhonemizer: KokoroPhonemizer {
 }
 
 final class KokoroTextProcessorTests: XCTestCase {
+    /// Returns the repository root from this test file's absolute path.
+    private var repoRoot: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+    }
+
     /// Verifies bundled vocab lookup drops unknown characters like the Gist path.
     func testTokenizationDropsUnknownPhonemeCharacters() throws {
         let processor = try KokoroTextProcessor(phonemizer: StubPhonemizer(phonemes: "h🙂."))
@@ -65,7 +74,7 @@ final class KokoroTextProcessorTests: XCTestCase {
         let expectedAttentionMask = Array(repeating: Int32(1), count: expectedInputIDs.count)
             + Array(repeating: Int32(0), count: 16)
         let processor = try KokoroTextProcessor(phonemizer: StubPhonemizer(phonemes: phonemes))
-        var voiceTable = try makeVoiceTable()
+        var voiceTable = VoiceTable(voicesDirectory: repoRoot.appendingPathComponent("kokoro.js/voices"))
         let refS = try voiceTable.refS(voiceID: .afHeart, phonemeCount: phonemes.utf16.count)
 
         let sdkPrepared = try processor.prepare(
@@ -128,7 +137,7 @@ final class KokoroTextProcessorTests: XCTestCase {
 
     /// Verifies real voice `.bin` files use the fleet phoneme-count row rule.
     func testVoiceTableSelectsRowsByPhonemeUTF16Count() throws {
-        var table = try makeVoiceTable()
+        var table = VoiceTable(voicesDirectory: repoRoot.appendingPathComponent("kokoro.js/voices"))
 
         let rowForZero = try table.refS(voiceID: .afHeart, phonemeCount: 0)
         let rowForOne = try table.refS(voiceID: .afHeart, phonemeCount: 1)
@@ -141,9 +150,7 @@ final class KokoroTextProcessorTests: XCTestCase {
 
     /// Verifies missing voices surface a typed loader error.
     func testVoiceTableRejectsMissingVoice() {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try! FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        var table = VoiceTable(voicesDirectory: directory)
+        var table = VoiceTable(voicesDirectory: repoRoot.appendingPathComponent("kokoro.js/voices"))
 
         XCTAssertThrowsError(try table.refS(voiceID: "missing_voice", phonemeCount: 1)) { error in
             XCTAssertEqual(error as? KokoroVoiceTableError, .missingVoice("missing_voice"))
@@ -152,29 +159,10 @@ final class KokoroTextProcessorTests: XCTestCase {
 
     /// Verifies public voice IDs cannot escape the configured voice directory.
     func testVoiceTableRejectsPathLikeVoiceID() {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try! FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        var table = VoiceTable(voicesDirectory: directory)
+        var table = VoiceTable(voicesDirectory: repoRoot.appendingPathComponent("kokoro.js/voices"))
 
         XCTAssertThrowsError(try table.refS(voiceID: "../af_heart", phonemeCount: 1)) { error in
             XCTAssertEqual(error as? KokoroVoiceTableError, .missingVoice("../af_heart"))
         }
-    }
-
-    /// Creates a deterministic three-row voice table fixture.
-    private func makeVoiceTable() throws -> VoiceTable {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        var values: [Float] = []
-        for row in 0..<3 {
-            values.append(contentsOf: (0..<PipelineConstants.voiceEmbeddingDim).map { Float(row * 1000 + $0) })
-        }
-        var data = Data()
-        for value in values {
-            var bits = value.bitPattern.littleEndian
-            withUnsafeBytes(of: &bits) { data.append(contentsOf: $0) }
-        }
-        try data.write(to: directory.appendingPathComponent("af_heart.bin"))
-        return VoiceTable(voicesDirectory: directory)
     }
 }

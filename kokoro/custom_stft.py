@@ -165,19 +165,56 @@ class CustomSTFT(nn.Module):
         )
 
         # Precompute inverse DFT basis functions for reconstruction.
-        # Simplified approach: uniform scaling without DC/Nyquist special handling.
-        # Provides good reconstruction quality for neural vocoder applications.
-        # Perfect reconstruction possible with additional DC/Nyquist logic if needed.
-        inv_scale = 1.0 / self.n_fft
+        #
+        # The spectrum is one-sided (onesided=True), so interior bins
+        # k = 1 .. n_fft/2 - 1 represent BOTH +k and -k of the full spectrum
+        # and must carry 2/N; only DC (k=0) and Nyquist (k=n_fft/2) appear once
+        # and carry 1/N. A uniform 1/N here reconstructs every interior bin at
+        # half amplitude — audibly, a broad mid-band spectral tilt in the
+        # vocoder output. Root-caused 2026-07-14: with n_fft=20 at 24 kHz the
+        # interior bins cover 1.2-10.8 kHz, and the shipped Core ML generator
+        # rendered that range at 0.35-0.48x of the PyTorch reference energy
+        # (see README/Notes/cs1-audio-quality-evaluation-2026-07-14.md).
         n = np.arange(self.n_fft)
         angle_t = 2 * np.pi * np.outer(n, k) / self.n_fft  # shape (n_fft, freq_bins)
         idft_cos = np.cos(angle_t).T  # => (freq_bins, n_fft)
         idft_sin = np.sin(angle_t).T  # => (freq_bins, n_fft)
 
+        onesided_scale = np.full((self.freq_bins, 1), 2.0 / self.n_fft)
+        onesided_scale[0, 0] = 1.0 / self.n_fft  # DC appears once
+        if self.n_fft % 2 == 0:
+            onesided_scale[-1, 0] = 1.0 / self.n_fft  # Nyquist appears once
+
+        # Overlap-add normalization. torch.istft divides the overlap-added
+        # signal by the window-power envelope sum_m(w^2[n - m*hop]). For a
+        # periodic Hann window that envelope is constant in steady state IFF
+        # n_fft is a multiple of the hop AND n_fft/hop >= 3. The >= 3 bound is
+        # not pedantry: w^2 for a periodic Hann contains a cos(4*pi*n/n_fft)
+        # term that only cancels across shifted copies when the overlap factor
+        # does not divide its harmonic index 2, so n_fft/hop = 2 leaves a
+        # +/-33% periodic ripple that this constant-scalar fold would bake
+        # into the audio. Every in-repo instantiation satisfies the condition
+        # with ratio 4: the Kokoro generator geometry n_fft=20/hop=5
+        # (kokoro/istftnet.py Generator, mirrored by the scripts/probe_*.py
+        # forensic scripts) and the 800/200 and n_fft//4 test geometries in
+        # tests/test_custom_stft.py. Only the first/last (n_fft - hop)
+        # samples sit below steady state, and the center trim in ``inverse``
+        # removes n_fft/2 of those on each side.
+        assert self.n_fft % self.hop_length == 0 and self.n_fft // self.hop_length >= 3, (
+            f"CustomSTFT constant-scalar OLA fold requires hop dividing n_fft "
+            f"with overlap factor >= 3 (got n_fft={self.n_fft}, "
+            f"hop={self.hop_length}); ratio 2 has a +/-33% window-power "
+            f"ripple that this fold would bake into the audio."
+        )
+        win_np = window_tensor.numpy()
+        window_power_sum = np.zeros(self.hop_length)
+        for offset in range(0, self.n_fft, self.hop_length):
+            window_power_sum += win_np[offset:offset + self.hop_length] ** 2
+        ola_norm = float(np.mean(window_power_sum))
+
         # Multiply by window again for typical overlap-add
-        # We also incorporate the scale factor 1/n_fft
-        inv_window = window_tensor.numpy() * inv_scale
-        backward_real = idft_cos * inv_window  # (freq_bins, n_fft)
+        inv_window = win_np * onesided_scale / ola_norm  # (freq_bins, n_fft)
+        backward_real = idft_cos * inv_window
         backward_imag = idft_sin * inv_window
 
         # Implement iSTFT using conv_transpose1d with hop_length stride.

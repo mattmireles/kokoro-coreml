@@ -88,3 +88,4 @@ locally:
 - [Core ML vs MLX vocoder scheduling](Core%20ML-MLX-Scheduling-1D-ConvTranspose-ISTFTNet-vocoders-guide.md)
 - [iPhone Core ML device lab runbook](iPhone-CoreML-device-lab-runbook.md)
 - [Core ML ANE compiler failure triage](CoreML-ANE-compiler-failure-triage-guide.md)
+- [Apple Silicon NVMe and energy measurement](apple-silicon-nvme-energy-measurement-guide.md)

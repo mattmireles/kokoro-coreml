@@ -23,12 +23,6 @@ public enum KokoroError: Error, Equatable, LocalizedError {
     /// A resource path escaped its expected root.
     case pathEscape(String)
 
-    /// A remote hosted manifest used an insecure URL without explicit opt-in.
-    case insecureManifestURL(URL)
-
-    /// A downloaded manifest or file exceeded configured safety limits.
-    case downloadTooLarge(path: String, bytes: Int, maxBytes: Int)
-
     /// The runtime manifest schema is not supported by this SDK.
     case unsupportedManifestSchema(Int)
 
@@ -76,10 +70,6 @@ public enum KokoroError: Error, Equatable, LocalizedError {
             return "Kokoro resource hash mismatch: \(path)."
         case .pathEscape(let path):
             return "Kokoro resource path escapes its root: \(path)."
-        case .insecureManifestURL(let url):
-            return "Kokoro hosted manifest must use HTTPS unless insecure local development mode is enabled: \(url.absoluteString)."
-        case .downloadTooLarge(let path, let bytes, let maxBytes):
-            return "Kokoro download is too large for configured limits: \(path) has \(bytes) bytes, maximum \(maxBytes)."
         case .unsupportedManifestSchema(let version):
             return "Kokoro runtime manifest schema is not supported: \(version)."
         case .unsupportedVoice(let voice):

@@ -681,11 +681,24 @@ func linearInterpolateInto(from input: [Double], count srcCount: Int, into outpu
 // MARK: - Random Number Generation
 
 /// Seeded RNG for reproducible benchmarks.
+///
+/// The raw xorshift64 step has an absorbing zero state: seeding with 0 made
+/// every draw return 0 forever. Through Box-Muller that turned the HNSF
+/// "Gaussian" noise into a deterministic DC + Nyquist impulse train — no
+/// broadband noise at all — which is exactly what the CS1 perceptual
+/// evaluation clips (rendered with --seed 0) suffered from on 2026-07-14.
+/// SplitMix64 scrambles any seed, including 0 and other small values, into a
+/// well-distributed nonzero xorshift state.
 struct SeededRNG: RandomNumberGenerator {
     private var state: UInt64
 
     init(seed: UInt64) {
-        self.state = seed
+        // SplitMix64 finalizer (Steele et al., "Fast Splittable PRNGs").
+        var z = seed &+ 0x9E37_79B9_7F4A_7C15
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        z ^= z >> 31
+        self.state = z == 0 ? 0x9E37_79B9_7F4A_7C15 : z
     }
 
     mutating func next() -> UInt64 {

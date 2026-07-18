@@ -8,11 +8,19 @@ import Foundation
 /// Suppress Core ML decoder transients on punctuation-owned duration spans.
 ///
 /// Kokoro's duration model assigns real time to punctuation tokens so pauses
-/// survive synthesis. The PyTorch reference renders those spans as near-silence,
-/// but the split Core ML decoder path can leave short impulses there. This
-/// post-process keeps the predicted timing intact while fading punctuation spans
-/// and adjacent punctuation-owned whitespace down to silence in the final
-/// waveform.
+/// survive synthesis. The PyTorch reference renders those spans as near-silence
+/// (measured -38 to -85 dBFS on the frozen 15s bench input), but the split
+/// Core ML decoder path can leave short impulses there. This post-process keeps
+/// the predicted timing intact while fading punctuation spans down to silence
+/// in the final waveform.
+///
+/// Scope is punctuation tokens ONLY. Whitespace tokens adjacent to punctuation
+/// were suppressed too until 2026-07-14, but those spans carry real speech —
+/// phrase-final decays and next-word onsets at -11 to -22 dBFS in the PyTorch
+/// reference — and zeroing them cut up to ~125 ms of audible speech at every
+/// phrase boundary. The CS1 perceptual evaluation heard that as "abrupt
+/// dropouts and hard cuts to silence" and failed the 15s bucket 3/3
+/// (see README/Notes/cs1-audio-quality-evaluation-2026-07-14.md).
 public func suppressPunctuationTokenAudio(
     _ audio: [Float],
     inputIds: [Int32],
@@ -50,19 +58,11 @@ public func suppressPunctuationTokenAudio(
 }
 
 private func shouldSuppressPunctuationSpan(inputIds: [Int32], tokenIndex: Int) -> Bool {
-    let tokenId = inputIds[tokenIndex]
-    if KokoroVocabulary.silentPunctuationTokenIds.contains(tokenId) {
-        return true
-    }
-    guard tokenId == KokoroVocabulary.whitespaceTokenId else {
-        return false
-    }
-
-    let previousIsPunctuation = tokenIndex > 0
-        && KokoroVocabulary.silentPunctuationTokenIds.contains(inputIds[tokenIndex - 1])
-    let nextIsPunctuation = tokenIndex + 1 < inputIds.count
-        && KokoroVocabulary.silentPunctuationTokenIds.contains(inputIds[tokenIndex + 1])
-    return previousIsPunctuation || nextIsPunctuation
+    // Punctuation tokens only. Whitespace spans — including whitespace next to
+    // punctuation — carry real speech (word onsets and phrase-final decays)
+    // and must never be silenced. See the doc comment on
+    // suppressPunctuationTokenAudio for the 2026-07-14 measurement.
+    KokoroVocabulary.silentPunctuationTokenIds.contains(inputIds[tokenIndex])
 }
 
 private func fadeToSilence(

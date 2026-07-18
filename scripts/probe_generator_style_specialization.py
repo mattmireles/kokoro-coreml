@@ -35,21 +35,7 @@ from probe_generator_exact_geometry import _compute_units, _load_kmodel, _metric
 from probe_generator_split import _duration_label_from_dump, _precision_arg, _remove_existing_package  # noqa: E402
 
 
-def _deployment_target(ct: Any, name: str) -> Any:
-    targets = {
-        "macos13": ct.target.macOS13,
-        "macos14": ct.target.macOS14,
-        "macos15": ct.target.macOS15,
-        "ios17": ct.target.iOS17,
-        "ios18": ct.target.iOS18,
-    }
-    try:
-        return targets[name.lower()]
-    except KeyError as exc:
-        raise ValueError(f"unsupported deployment target {name!r}") from exc
-
-
-def _make_frozen_adain(original: Any, style: Any, native_instance_norm: bool):
+def _make_frozen_adain(original: Any, style: Any):
     import torch
     import torch.nn as nn
 
@@ -60,16 +46,6 @@ def _make_frozen_adain(original: Any, style: Any, native_instance_norm: bool):
             super().__init__()
             self.num_features = int(source.num_features)
             self.eps = float(source.eps)
-            self.norm = (
-                nn.InstanceNorm1d(
-                    self.num_features,
-                    affine=False,
-                    track_running_stats=False,
-                    eps=self.eps,
-                )
-                if native_instance_norm
-                else None
-            )
             with torch.no_grad():
                 h = source.fc(style_tensor).view(1, 2 * self.num_features, 1)
                 gamma, beta = torch.chunk(h, chunks=2, dim=1)
@@ -78,13 +54,10 @@ def _make_frozen_adain(original: Any, style: Any, native_instance_norm: bool):
 
         def forward(self, x: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
             B, C, T = x.shape
+            mean = x.mean(dim=2, keepdim=True)
+            var = x.var(dim=2, unbiased=False, keepdim=True)
+            x_norm = (x - mean) / torch.sqrt(var + self.eps)
             assert C == self.num_features, f"AdaIN1d channel mismatch: got {C}, expected {self.num_features}"
-            if self.norm is not None:
-                x_norm = self.norm(x)
-            else:
-                mean = x.mean(dim=2, keepdim=True)
-                var = x.var(dim=2, unbiased=False, keepdim=True)
-                x_norm = (x - mean) / torch.sqrt(var + self.eps)
             gamma = self.gamma.expand(B, C, T)
             beta = self.beta.expand(B, C, T)
             return (1.0 + gamma) * x_norm + beta
@@ -92,16 +65,16 @@ def _make_frozen_adain(original: Any, style: Any, native_instance_norm: bool):
     return _FrozenAdaIN1d(original, style)
 
 
-def _freeze_adain_modules(module: Any, style: Any, native_instance_norm: bool) -> int:
+def _freeze_adain_modules(module: Any, style: Any) -> int:
     """Replace all AdaIN1d children with fixed-style equivalents."""
 
     count = 0
     for name, child in list(module.named_children()):
         if type(child).__name__ == "AdaIN1d":
-            setattr(module, name, _make_frozen_adain(child, style, native_instance_norm))
+            setattr(module, name, _make_frozen_adain(child, style))
             count += 1
         else:
-            count += _freeze_adain_modules(child, style, native_instance_norm)
+            count += _freeze_adain_modules(child, style)
     return count
 
 
@@ -158,30 +131,10 @@ def _predict_fused_inputs(tensors: dict[str, np.ndarray]) -> dict[str, np.ndarra
     }
 
 
-def _trim_or_pad_last_dim(array: np.ndarray, length: int | None) -> np.ndarray:
-    """Return ``array`` with its last dimension cropped or zero-padded."""
-
-    arr = np.asarray(array, dtype=np.float32)
-    if length is None:
-        return np.ascontiguousarray(arr)
-    if length <= 0:
-        raise ValueError(f"length must be positive, got {length}")
-    current = int(arr.shape[-1])
-    if current == length:
-        return np.ascontiguousarray(arr)
-    if current > length:
-        return np.ascontiguousarray(arr[..., :length])
-    out_shape = list(arr.shape)
-    out_shape[-1] = length
-    out = np.zeros(out_shape, dtype=np.float32)
-    out[..., :current] = arr
-    return out
-
-
-def _predict_style_inputs(tensors: dict[str, np.ndarray], har_time: int | None) -> dict[str, np.ndarray]:
+def _predict_style_inputs(tensors: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     return {
         "x_pre": tensors["x_pre_padded"].astype(np.float32),
-        "har": _trim_or_pad_last_dim(tensors["har_padded"], har_time),
+        "har": tensors["har_padded"].astype(np.float32),
     }
 
 
@@ -189,29 +142,21 @@ def _export_package(
     package: Path,
     tensors: dict[str, np.ndarray],
     precision: str,
-    deployment_target: str,
-    native_instance_norm_adain: bool,
-    har_time: int | None,
-    rewrite_ups_conv_transpose: bool,
 ) -> dict[str, Any]:
     import coremltools as ct
     import torch
 
-    from export_synth.wrappers import remove_dropout, rewrite_generator_ups_conv_transpose
+    from export_synth.wrappers import remove_dropout
 
     ref_s = torch.from_numpy(tensors["ref_s"].astype(np.float32))
     style = ref_s[:, :128].contiguous()
 
     kmodel = _load_kmodel()
     gen = kmodel.decoder.generator
-    rewritten_ups = 0
-    if rewrite_ups_conv_transpose:
-        rewritten_ups = rewrite_generator_ups_conv_transpose(gen)
-    frozen_adain_count = _freeze_adain_modules(gen, style, native_instance_norm_adain)
+    frozen_adain_count = _freeze_adain_modules(gen, style)
 
     x_pre_shape = tuple(int(v) for v in tensors["x_pre_padded"].shape)
-    har_input = _trim_or_pad_last_dim(tensors["har_padded"], har_time)
-    har_shape = tuple(int(v) for v in har_input.shape)
+    har_shape = tuple(int(v) for v in tensors["har_padded"].shape)
     x_pre = torch.zeros(x_pre_shape, dtype=torch.float32)
     har = torch.zeros(har_shape, dtype=torch.float32)
 
@@ -230,7 +175,7 @@ def _export_package(
         ],
         outputs=[ct.TensorType(name="waveform")],
         convert_to="mlprogram",
-        minimum_deployment_target=_deployment_target(ct, deployment_target),
+        minimum_deployment_target=ct.target.macOS13,
         compute_precision=_precision_arg(ct, precision),
         compute_units=ct.ComputeUnit.ALL,
     )
@@ -241,12 +186,7 @@ def _export_package(
     return {
         "package": str(package),
         "precision": precision,
-        "deployment_target": deployment_target,
-        "native_instance_norm_adain": native_instance_norm_adain,
-        "rewrite_ups_conv_transpose": rewrite_ups_conv_transpose,
-        "rewritten_ups_conv_transpose": rewritten_ups,
         "frozen_adain_count": frozen_adain_count,
-        "har_time": har_time,
         "removed_dropouts": removed_dropouts,
         "traced_samples": traced_samples,
         "x_pre_shape": list(x_pre_shape),
@@ -269,88 +209,70 @@ def _benchmark(
 ) -> dict[str, Any]:
     import coremltools as ct
 
-    compute_units = _compute_units(ct, args.compute_units)
-    models = {
-        "fused": ct.models.MLModel(str(args.fused_package), compute_units=compute_units),
-        "style_specialized": ct.models.MLModel(str(style_package), compute_units=compute_units),
-    }
-    if args.comparison_package is not None:
-        if not args.comparison_package.is_dir():
-            raise FileNotFoundError(f"missing comparison package: {args.comparison_package}")
-        models[args.comparison_label] = ct.models.MLModel(
-            str(args.comparison_package),
-            compute_units=compute_units,
-        )
+    fused = ct.models.MLModel(
+        str(args.fused_package),
+        compute_units=_compute_units(ct, args.compute_units),
+    )
+    style_model = ct.models.MLModel(
+        str(style_package),
+        compute_units=_compute_units(ct, args.compute_units),
+    )
     fused_inputs = _predict_fused_inputs(tensors)
-    style_inputs = _predict_style_inputs(tensors, args.har_time)
-    input_by_name = {
-        "fused": fused_inputs,
-        "style_specialized": style_inputs,
-        args.comparison_label: fused_inputs,
-    }
+    style_inputs = _predict_style_inputs(tensors)
 
-    first_ms: dict[str, float] = {}
-    warm_times: dict[str, list[float]] = {}
-    outputs: dict[str, np.ndarray] = {}
-    for name, model in models.items():
-        inputs = input_by_name[name]
-        first_out, first = _predict(model, inputs)
-        first_ms[name] = first
-        last = first_out
-        for _ in range(max(0, args.warmup)):
-            last, _ = _predict(model, inputs)
-        times: list[float] = []
-        for _ in range(max(1, args.iterations)):
-            last, elapsed = _predict(model, inputs)
-            times.append(elapsed)
-        outputs[name] = last
-        warm_times[name] = times
+    fused_first, fused_first_ms = _predict(fused, fused_inputs)
+    style_first, style_first_ms = _predict(style_model, style_inputs)
+
+    for _ in range(max(0, args.warmup)):
+        _predict(fused, fused_inputs)
+        _predict(style_model, style_inputs)
+
+    fused_times: list[float] = []
+    style_times: list[float] = []
+    last_fused = fused_first
+    last_style = style_first
+    for _ in range(max(1, args.iterations)):
+        last_fused, fused_ms = _predict(fused, fused_inputs)
+        last_style, style_ms = _predict(style_model, style_inputs)
+        fused_times.append(fused_ms)
+        style_times.append(style_ms)
 
     trim_len = int(tensors["waveform"].size)
-    fused_trim = outputs["fused"].reshape(-1)[:trim_len]
-    style_trim = outputs["style_specialized"].reshape(-1)[:trim_len]
+    fused_trim = last_fused.reshape(-1)[:trim_len]
+    style_trim = last_style.reshape(-1)[:trim_len]
 
-    medians = {name: float(statistics.median(times)) for name, times in warm_times.items()}
-    fused_median = medians["fused"]
-    style_median = medians["style_specialized"]
+    fused_median = float(statistics.median(fused_times))
+    style_median = float(statistics.median(style_times))
     speedup_vs_fused_pct = None
     if fused_median > 0:
         speedup_vs_fused_pct = 100.0 * (fused_median - style_median) / fused_median
-    speedup_vs_comparison_pct = None
-    comparison_metrics = None
-    if args.comparison_package is not None:
-        comparison_median = medians[args.comparison_label]
-        if comparison_median > 0:
-            speedup_vs_comparison_pct = 100.0 * (comparison_median - style_median) / comparison_median
-        comparison_trim = outputs[args.comparison_label].reshape(-1)[:trim_len]
-        comparison_metrics = _metrics(comparison_trim, style_trim)
 
-    metrics = {
-        "fused_vs_dump_full": _metrics(tensors["waveform_full"], outputs["fused"]),
-        "style_vs_dump_full": _metrics(tensors["waveform_full"], outputs["style_specialized"]),
-        "style_vs_fused_full": _metrics(outputs["fused"], outputs["style_specialized"]),
-        "fused_vs_dump_trimmed": _metrics(tensors["waveform"], fused_trim),
-        "style_vs_dump_trimmed": _metrics(tensors["waveform"], style_trim),
-        "style_vs_fused_trimmed": _metrics(fused_trim, style_trim),
-    }
-    if comparison_metrics is not None:
-        metrics[f"style_vs_{args.comparison_label}_trimmed"] = comparison_metrics
-
-    payload = {
+    return {
         "compute_units": args.compute_units,
         "warmup": int(max(0, args.warmup)),
         "iterations": int(max(1, args.iterations)),
-        "first_predict_ms": first_ms,
-        "warm_predict_times_ms": warm_times,
-        "warm_predict_median_ms": medians,
+        "first_predict_ms": {
+            "fused": float(fused_first_ms),
+            "style_specialized": float(style_first_ms),
+        },
+        "warm_predict_times_ms": {
+            "fused": fused_times,
+            "style_specialized": style_times,
+        },
+        "warm_predict_median_ms": {
+            "fused": fused_median,
+            "style_specialized": style_median,
+        },
         "speedup_vs_fused_pct": speedup_vs_fused_pct,
-        "metrics": metrics,
+        "metrics": {
+            "fused_vs_dump_full": _metrics(tensors["waveform_full"], last_fused),
+            "style_vs_dump_full": _metrics(tensors["waveform_full"], last_style),
+            "style_vs_fused_full": _metrics(last_fused, last_style),
+            "fused_vs_dump_trimmed": _metrics(tensors["waveform"], fused_trim),
+            "style_vs_dump_trimmed": _metrics(tensors["waveform"], style_trim),
+            "style_vs_fused_trimmed": _metrics(fused_trim, style_trim),
+        },
     }
-    if args.comparison_package is not None:
-        payload["comparison_package"] = str(args.comparison_package)
-        payload["comparison_label"] = args.comparison_label
-        payload["speedup_vs_comparison_pct"] = speedup_vs_comparison_pct
-    return payload
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
@@ -373,15 +295,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         if not style_package.is_dir():
             raise SystemExit(f"--skip-export requested but package is missing: {style_package}")
     else:
-        export_report = _export_package(
-            style_package,
-            tensors,
-            args.precision,
-            args.deployment_target,
-            args.native_instance_norm_adain,
-            args.har_time,
-            args.rewrite_ups_conv_transpose,
-        )
+        export_report = _export_package(style_package, tensors, args.precision)
 
     benchmark = _benchmark(args, tensors, style_package)
     metrics = benchmark["metrics"]["style_vs_fused_trimmed"]
@@ -427,13 +341,6 @@ def main() -> None:
         help="Shipping fused HAR-post package to compare against.",
     )
     parser.add_argument(
-        "--comparison-package",
-        type=Path,
-        default=None,
-        help="Optional three-input package to benchmark with fused inputs, such as the production rewrite package.",
-    )
-    parser.add_argument("--comparison-label", default="comparison")
-    parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path("outputs/generator_style_specialization"),
@@ -446,19 +353,6 @@ def main() -> None:
         default="fp16",
         choices=("fp16", "float16", "fp32", "float32"),
         help="Core ML conversion precision for the style-specialized package.",
-    )
-    parser.add_argument("--deployment-target", default="macos13")
-    parser.add_argument("--native-instance-norm-adain", action="store_true")
-    parser.add_argument(
-        "--har-time",
-        type=int,
-        default=None,
-        help="Optional static HAR time axis for the style-specialized package.",
-    )
-    parser.add_argument(
-        "--rewrite-ups-conv-transpose",
-        action="store_true",
-        help="Rewrite main generator ConvTranspose1d upsamples as zero insertion plus conv1d before export.",
     )
     parser.add_argument("--compute-units", default="cpuAndGPU")
     parser.add_argument("--warmup", type=int, default=3)
@@ -473,14 +367,6 @@ def main() -> None:
     report = run(args)
     med = report["benchmark"]["warm_predict_median_ms"]
     metrics = report["benchmark"]["metrics"]["style_vs_fused_trimmed"]
-    comparison = ""
-    if "speedup_vs_comparison_pct" in report["benchmark"]:
-        comparison = (
-            f"{report['benchmark']['comparison_label']}_median_ms="
-            f"{med[report['benchmark']['comparison_label']]:.3f} "
-            f"speedup_vs_{report['benchmark']['comparison_label']}_pct="
-            f"{report['benchmark']['speedup_vs_comparison_pct']:.2f} "
-        )
     print(
         "generator_style_specialization "
         f"passes={report['passes']} "
@@ -488,7 +374,6 @@ def main() -> None:
         f"fused_median_ms={med['fused']:.3f} "
         f"style_median_ms={med['style_specialized']:.3f} "
         f"speedup_vs_fused_pct={report['benchmark']['speedup_vs_fused_pct']:.2f} "
-        f"{comparison}"
         f"corr={metrics['correlation']} "
         f"snr_db={metrics['snr_db']:.2f} "
         f"max_abs={metrics['max_abs_error']:.6g} "

@@ -250,8 +250,8 @@ participation, not pipeline speed. Add `b,c` to `--configs` if needed.
 
 ## Canonical Docs
 
-- Bakeoff plan: `README/Plans/kokoro-bakeoff-v2.md`
-- Swift pipeline plan: `README/Plans/swift-prefix-rewrite-v1.md`
+- Bakeoff plan: `README/Plans/003-kokoro-bakeoff-plan.md`
+- Swift pipeline plan: `README/Plans/004-swift-prefix-rewrite-plan.md`
 - Harness: `scripts/bakeoff_harness.py`
 - Swift CLI: `swift/Sources/KokoroBenchmark/main.swift`
 - Performance notes: `README/Notes/performance-notes.md`

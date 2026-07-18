@@ -54,11 +54,6 @@ ENGLISH_VOICE_PATTERNS = [
 STARTER_BUCKET_SECONDS = [15]
 SDK_DURATION_TOKEN_SIZES = [32, 64, 128, 256, 320, 384, 512]
 STARTER_VOICES = ["af_heart"]
-SDK_PROFILE_CONFIG = json.loads((_REPO_ROOT / "sdk_profiles.json").read_text(encoding="utf-8"))
-SDK_DURATION_TOKEN_SIZES = list(SDK_PROFILE_CONFIG["duration_token_sizes"])
-STARTER_BUCKET_SECONDS = list(SDK_PROFILE_CONFIG["profiles"]["starter"]["buckets"])
-STARTER_VOICES = list(SDK_PROFILE_CONFIG["profiles"]["starter"]["voices"])
-FULL_BUCKET_SECONDS = list(SDK_PROFILE_CONFIG["profiles"]["full"]["buckets"])
 # Files to always skip (not model artifacts).
 # IMPORTANT: Do NOT add "*.json" here — it would exclude Manifest.json inside
 # .mlpackage directories, producing corrupt/incomplete packages.
@@ -244,9 +239,31 @@ def _sdk_required_packages(profile: str, voices: list[str], buckets: list[int]) 
     """Return model package directories required by an SDK profile."""
 
     if profile == "full":
-        buckets = FULL_BUCKET_SECONDS
-        duration_sizes = SDK_DURATION_TOKEN_SIZES
-    elif profile == "starter":
+        return [
+            "coreml/kokoro_duration_t32.mlpackage",
+            "coreml/kokoro_duration_t64.mlpackage",
+            "coreml/kokoro_duration_t128.mlpackage",
+            "coreml/kokoro_duration_t256.mlpackage",
+            "coreml/kokoro_duration_t320.mlpackage",
+            "coreml/kokoro_duration_t384.mlpackage",
+            "coreml/kokoro_duration_t512.mlpackage",
+            "coreml/kokoro_f0ntrain_t120.mlpackage",
+            "coreml/kokoro_f0ntrain_t280.mlpackage",
+            "coreml/kokoro_f0ntrain_t400.mlpackage",
+            "coreml/kokoro_f0ntrain_t600.mlpackage",
+            "coreml/kokoro_f0ntrain_t1200.mlpackage",
+            "coreml/kokoro_decoder_pre_3s.mlpackage",
+            "coreml/kokoro_decoder_pre_7s.mlpackage",
+            "coreml/kokoro_decoder_pre_10s.mlpackage",
+            "coreml/kokoro_decoder_pre_15s.mlpackage",
+            "coreml/kokoro_decoder_pre_30s.mlpackage",
+            "coreml/kokoro_decoder_har_post_3s.mlpackage",
+            "coreml/kokoro_decoder_har_post_7s.mlpackage",
+            "coreml/kokoro_decoder_har_post_10s.mlpackage",
+            "coreml/kokoro_decoder_har_post_15s.mlpackage",
+            "coreml/kokoro_decoder_har_post_30s.mlpackage",
+        ]
+    if profile == "starter":
         buckets = buckets or STARTER_BUCKET_SECONDS
         duration_sizes = SDK_DURATION_TOKEN_SIZES
     elif profile == "custom":
@@ -286,6 +303,7 @@ def _repo_files_for_patterns(repo_id: str, revision: str | None, patterns: list[
     """Return HF file metadata for the exact repo files matched by allow patterns."""
 
     from huggingface_hub import HfApi
+    from huggingface_hub.hf_api import RepoFile
 
     api = HfApi(token=token)
     files = []
@@ -296,6 +314,13 @@ def _repo_files_for_patterns(repo_id: str, revision: str | None, patterns: list[
         recursive=True,
         expand=True,
     ):
+        # `list_repo_tree(recursive=True)` yields both file (blob) and folder
+        # (tree) nodes for nested paths like `*.mlpackage/Data/...`. Folder
+        # nodes carry no size/sha256 and are never themselves a download
+        # target, so they must be skipped here rather than treated as a
+        # missing-digest error below.
+        if not isinstance(item, RepoFile):
+            continue
         path = getattr(item, "path", None)
         if not isinstance(path, str):
             continue
@@ -303,9 +328,6 @@ def _repo_files_for_patterns(repo_id: str, revision: str | None, patterns: list[
             continue
         size = getattr(item, "size", None)
         lfs = getattr(item, "lfs", None)
-        local = _REPO_ROOT / path
-        if size is None and lfs is None and local.is_dir():
-            continue
         sha256 = None
         if isinstance(lfs, dict):
             sha256 = lfs.get("sha256")
@@ -314,9 +336,11 @@ def _repo_files_for_patterns(repo_id: str, revision: str | None, patterns: list[
             sha256 = getattr(lfs, "sha256", None)
             size = size if size is not None else getattr(lfs, "size", None)
         if not sha256:
+            local = _REPO_ROOT / path
             if local.is_file():
                 sha256 = _sha256_file(local)
         if size is None:
+            local = _REPO_ROOT / path
             if local.is_file():
                 size = local.stat().st_size
         if size is None or not sha256:
@@ -463,8 +487,6 @@ def main() -> None:
             (rel_path, rel_path.removeprefix("coreml/").removesuffix(".mlpackage"))
             for rel_path in _sdk_required_packages(args.sdk_profile, sdk_voices, sdk_buckets)
         ]
-    elif args.voices and not args.coreml:
-        checks = []
     else:
         checks = [
             ("coreml/kokoro_duration.mlpackage", "Duration model (legacy fallback)"),
@@ -491,24 +513,21 @@ def main() -> None:
         else:
             print(f"  OK: {label}")
 
-    if checks:
-        # Also check all .mlpackage dirs under coreml/ for completeness.
-        import glob as globmod
-        print("\nPackage integrity check:")
-        for pkg_dir in sorted(globmod.glob(str(_REPO_ROOT / "coreml" / "*.mlpackage"))):
-            pkg = Path(pkg_dir)
-            name = pkg.name
-            manifest = pkg / "Manifest.json"
-            if not manifest.exists():
-                print(f"  INCOMPLETE: {name} — missing Manifest.json")
-                all_ok = False
-            else:
-                print(f"  OK: {name}")
-    else:
-        print("\nVoice-only download: skipped Core ML package integrity check.")
+    # Also check all .mlpackage dirs under coreml/ for completeness.
+    import glob as globmod
+    print("\nPackage integrity check:")
+    for pkg_dir in sorted(globmod.glob(str(_REPO_ROOT / "coreml" / "*.mlpackage"))):
+        pkg = Path(pkg_dir)
+        name = pkg.name
+        manifest = pkg / "Manifest.json"
+        if not manifest.exists():
+            print(f"  INCOMPLETE: {name} — missing Manifest.json")
+            all_ok = False
+        else:
+            print(f"  OK: {name}")
 
     if all_ok:
-        print("\nAll requested artifacts are present and complete. Pipeline is ready.")
+        print("\nAll models present and complete. Pipeline is ready.")
     else:
         print("\nSome models missing or incomplete. Check output above.")
         sys.exit(1)

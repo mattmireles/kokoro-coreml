@@ -7,9 +7,8 @@ description: Validate CoreML model numerical correctness against PyTorch referen
 
 ## Parent skill
 
-Entry point for all Core ML work: `~/.cursor/skills/coreml/SKILL.md` (cross-repo
-master; repo stub at [coreml](../coreml/SKILL.md)). Use this skill when the routed
-intent is **numerical parity**, not compute-unit profiling.
+Entry point for all Core ML work: [coreml](../coreml/SKILL.md). Use this skill
+when the routed intent is **numerical parity**, not compute-unit profiling.
 
 ## Repo gate
 
@@ -24,7 +23,7 @@ Read [references/repo-profiles.md](../references/repo-profiles.md).
 MLX/C++ parity per `CLAUDE.md` Part 3 — do not run this skill.
 
 **kokoro-coreml:** Typical layout is `coreml/` + `kokoro` package; see kokoro
-export scripts in `~/.cursor/skills/coreml/reference.md`.
+export scripts in [coreml/reference.md](../coreml/reference.md).
 
 ## Purpose
 
@@ -60,11 +59,6 @@ Before validating, consult:
 - `CLAUDE.md` Part 5 — Validate/Profile/Iterate checklist
 - kokoro sibling: `../kokoro-coreml/README/Notes/debug-notes.md` — bisection
   methodology (decoder ghost audio, stage isolation)
-- `README/Guides/apple-silicon/Kokoro-M1-HAR-STFT-contract-repair-guide.md` —
-  HAR/STFT contract repair when source tensors diverge
-- `README/Guides/apple-silicon/Kokoro-HAR-STFT-strict-repair-distillation-guide.md` —
-  strict repair adapter and distillation experiments
-- `README/Notes/har-stft-phase-contract.md` — phase contract for HAR/STFT parity
 
 ## Key Concepts
 

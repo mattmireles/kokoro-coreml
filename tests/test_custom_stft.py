@@ -17,14 +17,44 @@ def sample_audio():
 
 
 def test_stft_reconstruction(sample_audio):
-    """CustomSTFT is an export-friendly approximation; it does not match torch.istft bit-for-bit."""
+    """Round-trip must be near-transparent.
+
+    Before 2026-07-14 the inverse used uniform 1/n_fft scaling (no one-sided
+    doubling of interior bins, no overlap-add normalization), which passed a
+    10 dB threshold while reconstructing 1.2-10.8 kHz at half amplitude. The
+    threshold is deliberately strict so that regression cannot return.
+    """
     custom_stft = CustomSTFT(filter_length=800, hop_length=200, win_length=800)
     out = custom_stft(sample_audio).squeeze()
     inp = sample_audio.squeeze()
     noise = inp - out
     rms = lambda x: torch.sqrt(torch.mean(x**2))
     snr_db = 20 * torch.log10((rms(inp) + 1e-12) / (rms(noise) + 1e-12))
-    assert snr_db > 10.0, f"round-trip SNR too low: {snr_db.item():.2f} dB"
+    assert snr_db > 35.0, f"round-trip SNR too low: {snr_db.item():.2f} dB"
+
+
+def test_inverse_matches_torch_istft_on_inconsistent_spectrogram():
+    """The vocoder feeds the inverse a network-generated (non-consistent)
+    magnitude/phase pair, so parity must hold for arbitrary spectrograms, not
+    just round trips. Interior samples must match torch.istft exactly; edges
+    differ only by the constant-vs-exact overlap-add envelope."""
+    torch.manual_seed(1)
+    n_fft, hop = 20, 5  # Kokoro generator iSTFT geometry
+    frames = 200
+    magnitude = torch.rand(1, n_fft // 2 + 1, frames) + 0.1
+    phase = (torch.rand(1, n_fft // 2 + 1, frames) * 2 - 1) * np.pi
+
+    custom_stft = CustomSTFT(filter_length=n_fft, hop_length=hop, win_length=n_fft)
+    custom_out = custom_stft.inverse(magnitude, phase).reshape(-1)
+
+    window = torch.hann_window(n_fft, periodic=True)
+    torch_out = torch.istft(
+        magnitude * torch.exp(phase * 1j), n_fft, hop, n_fft, window=window
+    ).reshape(-1)
+
+    n = min(custom_out.shape[-1], torch_out.shape[-1])
+    interior = slice(n_fft, n - n_fft)
+    assert torch.allclose(custom_out[interior], torch_out[interior], atol=1e-5)
 
 
 def test_magnitude_phase_consistency(sample_audio):

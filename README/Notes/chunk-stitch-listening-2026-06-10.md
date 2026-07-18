@@ -56,7 +56,7 @@ model-generated transients or judge noise; not load-bearing.
   chunker, and it emits tail fragments below any minimum length. Both bugs
   live in `gist/packages/protocol/shared/kokoro-chunk-plan.js`.
 - For this repo's planned generator-internal overlap-add chunking
-  ([kokoro-iphone-performance-v1.md](../Plans/kokoro-iphone-performance-v1.md)
+  ([007-kokoro-iphone-performance-plan.md](../Plans/007-kokoro-iphone-performance-plan.md)
   Phase 5), this evidence raises the bar explicitly: those seams land
   mid-word at fixed intervals, so receptive-field overlap + crossfade are
   mandatory, and the same blind-judge protocol (boundaries undisclosed,

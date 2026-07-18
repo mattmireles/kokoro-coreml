@@ -1,7 +1,7 @@
 # External Bakeoff Phase 2 Run Log
 
 **Date:** 2026-06-05
-**Plan:** `README/Plans/kokoro-external-bakeoff-v1.md`
+**Plan:** `README/Plans/006-kokoro-external-bakeoff-plan.md`
 **Status:** M2 Studio, m2-air, and irvine-m1 now have Config F, MLX, Soniqo,
 and laishere JSON plus durable spot-check WAVs for every successful result
 cell; Phase 2 collection is complete, local hardware-placement evidence is

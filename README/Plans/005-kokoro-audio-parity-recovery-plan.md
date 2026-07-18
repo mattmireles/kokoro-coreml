@@ -520,7 +520,7 @@ and was slower than Config A at 15s/30s. Results are recorded in
 - [Core ML compute-unit scheduling guide](../Guides/apple-silicon/CoreML-Compute-Unit-Scheduling-guide.md)
 - [Plan workflow skills guide](../Skills/plan-workflow-skills-guide.md)
 - [Phase audit rubric](../Skills/phase-audit-rubric.md)
-- [Kokoro bakeoff v2 plan](kokoro-bakeoff-v2.md)
+- [Kokoro bakeoff v2 plan](003-kokoro-bakeoff-plan.md)
 
 ### Local Artifacts
 

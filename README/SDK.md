@@ -26,29 +26,28 @@ better than a broader SDK that fails under real app conditions.
 
 ## Install
 
-Use the repo root package from GitHub:
+Use the package under `swift-tts` from a local checkout:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/mattmireles/kokoro-coreml", revision: "<git-commit>")
+    .package(path: "../kokoro-coreml/swift-tts")
 ]
 ```
 
 Then add the library product:
 
 ```swift
-.product(name: "KokoroTTS", package: "kokoro-coreml")
+.product(name: "KokoroTTS", package: "swift-tts")
 ```
 
-For local development, use
-`.package(name: "kokoro-coreml", path: "../kokoro-coreml")` with the same
-product declaration. The repo also keeps `swift/` and `swift-tts/` subpackages
-for focused runtime tests, but app developers should depend on the root package
-so `KokoroTTS` and `KokoroPipeline` resolve together from any checkout path.
-
-Model binaries are hosted on Hugging Face and hydrated by the SDK bundle tools.
-This release does not use GitHub LFS. GitHub carries source, manifests, and
-small runtime resources; Hugging Face carries the model and voice binaries.
+SwiftPM uses the directory name `swift-tts` as the package identity for this
+local path dependency. For V1 this repo publishes source plus downloadable
+resource bundles. It does
+not publish a SwiftPM binary/resource artifact yet; choose that only after
+package size and Xcode resource behavior are measured. If you need a remote
+SwiftPM dependency before that, mirror this repo layout so `swift-tts` can still
+resolve its sibling `../swift` package, or publish both packages explicitly.
+Mirroring only `swift-tts` is not enough.
 
 The repo also includes `examples/KokoroConsumerFixture` and
 `examples/KokoroDemoApp` as integration fixtures.
@@ -57,12 +56,6 @@ The current public starter manifest is:
 
 ```text
 https://huggingface.co/mattmireles/kokoro-coreml/resolve/main/HostedManifest.json
-```
-
-Current public starter manifest SHA-256:
-
-```text
-3f072fe36743ab54fed0366c999c2ddabca98bd618809d66ac560888c1bbb0c1
 ```
 
 ## Build A Resource Bundle
@@ -124,16 +117,16 @@ Use `makePCMBuffer()` when AVFoundation is available.
 ## Use Downloaded Resources
 
 For apps that stage model assets after install, hydrate a hosted manifest into a
-writable cache. The SDK requires the expected hosted-manifest SHA-256 before it
-trusts any file list or per-file hashes. Production manifests must be served
-over HTTPS; local HTTP is only for explicit development fixtures.
+writable cache. In production, serve this manifest over HTTPS and pin either the
+HF revision or the `sdk/SDKReleaseManifest.json` checksum you expect; per-file
+hashes protect against transfer corruption, not a malicious replacement
+manifest.
 
 ```swift
 import KokoroTTS
 
 let resources = try await KokoroDownloadedModelStore(
     manifestURL: URL(string: "https://huggingface.co/mattmireles/kokoro-coreml/resolve/main/HostedManifest.json")!,
-    expectedManifestSHA256: "3f072fe36743ab54fed0366c999c2ddabca98bd618809d66ac560888c1bbb0c1",
     cacheDirectory: cacheURL
 ).hydrate()
 
@@ -141,9 +134,8 @@ let tts = try await KokoroTTS.load(resources: resources)
 let audio = try await tts.synthesize(articleText, voice: .afHeart)
 ```
 
-The downloader verifies the manifest hash before reading file entries, enforces
-file-count and byte-count limits, verifies each file hash, rejects path escapes
-and symlinked cache roots, and drops stale compiled-model cache entries when the
+The downloader verifies byte counts and SHA-256 hashes, rejects path escapes and
+symlinked cache roots, and drops stale compiled-model cache entries when the
 hosted manifest version changes.
 
 ## Playback
@@ -201,10 +193,7 @@ prompt.
 The demo supports both resource paths:
 
 ```bash
-KOKORO_ALLOW_INSECURE_LOCAL_MANIFEST=1 \
---resource-mode downloaded \
---manifest-url http://<mac-ip>:8766/HostedManifest.json \
---manifest-sha256 <sha256>
+--resource-mode downloaded --manifest-url http://<mac-ip>:8766/HostedManifest.json
 --resource-mode bundled --bundle-subdirectory KokoroRuntime
 ```
 

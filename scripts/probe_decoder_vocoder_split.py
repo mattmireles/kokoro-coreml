@@ -40,11 +40,6 @@ from probe_generator_dual_anchor_split import (  # noqa: E402
     _maybe_palettize,
     _patch_cos_snake,
 )
-from probe_generator_cos_snake import (  # noqa: E402
-    _deployment_target,
-    _patch_broadcast_adain,
-    _patch_native_instance_norm_adain,
-)
 from probe_generator_exact_geometry import _compute_units, _load_kmodel, _metrics  # noqa: E402
 from probe_generator_split import _duration_label_from_dump, _precision_arg, _remove_existing_package  # noqa: E402
 
@@ -194,23 +189,16 @@ def _export_packages(
     import coremltools as ct
     import torch
 
-    from export_synth.wrappers import remove_dropout, rewrite_generator_ups_conv_transpose
+    from export_synth.wrappers import remove_dropout
 
     if args.cos_snake:
         _patch_cos_snake()
-    if args.native_instance_norm_adain:
-        _patch_native_instance_norm_adain(args.broadcast_adain)
-    elif args.broadcast_adain:
-        _patch_broadcast_adain()
     if args.patch_resblock_scale:
         _patch_resblock_rsqrt()
 
     kmodel = _load_kmodel()
     decoder = kmodel.decoder
     gen = decoder.generator
-    rewritten_ups = 0
-    if args.rewrite_ups_conv_transpose:
-        rewritten_ups = rewrite_generator_ups_conv_transpose(gen)
 
     ref_s_shape = tuple(int(v) for v in tensors["ref_s"].shape)
     style_shape = (ref_s_shape[0], 128)
@@ -241,7 +229,7 @@ def _export_packages(
         ],
         outputs=[ct.TensorType(name=f"x_source_{idx}") for idx in range(len(source_shapes))],
         convert_to="mlprogram",
-        minimum_deployment_target=_deployment_target(ct, args.deployment_target),
+        minimum_deployment_target=ct.target.macOS13,
         compute_precision=_precision_arg(ct, args.noise_precision),
         compute_units=ct.ComputeUnit.ALL,
     )
@@ -277,7 +265,7 @@ def _export_packages(
         inputs=body_inputs,
         outputs=[ct.TensorType(name="anchor"), ct.TensorType(name="pre_tail")],
         convert_to="mlprogram",
-        minimum_deployment_target=_deployment_target(ct, args.deployment_target),
+        minimum_deployment_target=ct.target.macOS13,
         compute_precision=_precision_arg(ct, args.body_precision),
         compute_units=ct.ComputeUnit.ALL,
     )
@@ -298,7 +286,7 @@ def _export_packages(
         inputs=[ct.TensorType(name="pre_tail", shape=pre_tail_shape, dtype=np.float32)],
         outputs=[ct.TensorType(name="waveform")],
         convert_to="mlprogram",
-        minimum_deployment_target=_deployment_target(ct, args.deployment_target),
+        minimum_deployment_target=ct.target.macOS13,
         compute_precision=_precision_arg(ct, args.tail_precision),
         compute_units=ct.ComputeUnit.ALL,
     )
@@ -312,11 +300,6 @@ def _export_packages(
         "tail_package": str(tail_package),
         "cos_snake": bool(args.cos_snake),
         "patch_resblock_scale": bool(args.patch_resblock_scale),
-        "broadcast_adain": bool(args.broadcast_adain),
-        "native_instance_norm_adain": bool(args.native_instance_norm_adain),
-        "deployment_target": args.deployment_target,
-        "rewrite_ups_conv_transpose": bool(args.rewrite_ups_conv_transpose),
-        "rewritten_upsample_layers": int(rewritten_ups),
         "palettize_noise": bool(args.palettize_noise),
         "palettize_body": bool(args.palettize_body),
         "noise_precision": args.noise_precision,
@@ -523,14 +506,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         label = f"{label}_cos"
     if args.patch_resblock_scale:
         label = f"{label}_rsqrt"
-    if args.native_instance_norm_adain:
-        label = f"{label}_native_in"
-    if args.broadcast_adain:
-        label = f"{label}_broadcast"
-    if args.rewrite_ups_conv_transpose:
-        label = f"{label}_ups_as_conv"
-    if args.deployment_target.lower() != "macos13":
-        label = f"{label}_{args.deployment_target.lower()}"
     if args.palettize_noise:
         label = f"{label}_noise_pal"
     if args.palettize_body:
@@ -605,18 +580,6 @@ def main() -> None:
     parser.add_argument("--anchor-mode", default="mean", choices=("mean", "slice_mean"))
     parser.add_argument("--cos-snake", action="store_true")
     parser.add_argument("--patch-resblock-scale", action="store_true")
-    parser.add_argument("--broadcast-adain", action="store_true")
-    parser.add_argument("--native-instance-norm-adain", action="store_true")
-    parser.add_argument(
-        "--rewrite-ups-conv-transpose",
-        action="store_true",
-        help="Rewrite main generator ConvTranspose1d upsamples as zero insertion plus Conv1d before export.",
-    )
-    parser.add_argument(
-        "--deployment-target",
-        default="macos13",
-        choices=("macos13", "macos14", "macos15", "ios17", "ios18"),
-    )
     parser.add_argument("--palettize-noise", action="store_true")
     parser.add_argument("--palettize-body", action="store_true")
     parser.add_argument("--noise-precision", default="fp32", choices=("fp16", "float16", "fp32", "float32"))

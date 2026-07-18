@@ -1,0 +1,2 @@
+Describe a quiet morning in a small workshop where an engineer is testing a new
+offline speech model on a laptop.
