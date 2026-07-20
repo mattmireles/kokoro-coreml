@@ -1,0 +1,521 @@
+# LFM2.5 Surgical Prefill Experiment Plan
+
+**Date:** 2026-07-20
+**Status:** Planned
+
+> Plan-of-record for the spec
+> `README/Notes/lfm2-surgical-experiment-spec-v1.1.md` (checked in alongside
+> this plan; source: Matt's v1.1 draft, 2026-07-20). The spec is the scientific contract;
+> this plan is the execution order. Where they conflict, the spec's hypotheses,
+> gates, and pre-registered criteria win; this plan's sequencing wins.
+
+## Executive Summary
+
+Decompose LFM2.5-350M (8 double-gated LIV conv blocks + 6 GQA blocks at the
+documented 230M layout; 350M interleaving must be read from the checkpoint)
+into per-block-class Core ML segments and measure whether surgical compute-unit
+placement (conv→ANE, GQA→GPU) beats every homogeneous placement on prefill
+latency and energy. Decode is measured only as a bandwidth-wall control
+(expected null). This is the third case study for the Surgical Inference paper
+(`Scratchpad/surgical-inference.md`), and the first on a model we did not port
+ourselves.
+
+Two standing decisions, made 2026-07-20:
+
+1. **Repo lifecycle:** the plan, Stage 0 code, and Stage 0 report live in
+   `kokoro-coreml` (precedent: the MoE prefetch experiment,
+   [009](./009-moe-ssd-dram-prefetch-plan.md), died at Stage 1 without ever
+   needing a repo). A new **public-from-first-commit** GitHub repo
+   `mattmireles/lfm2-surgical-coreml` is created only after Stage 0 passes.
+2. **Device sequencing:** the iPhone 15 Pro Max is Matt's daily-driver phone.
+   All Mac Studio, M1 Mini, and iPad Pro work runs first; the phone phase is
+   **last**, designed to run unattended overnight.
+
+## Problem Statement
+
+- **Symptom:** The Surgical Inference paper has two case studies (Kokoro-82M,
+  MRT2), both our own ports. A reviewer will discount the thesis until it
+  survives contact with a third-party model we did not shape.
+- **Root Cause:** No prior experiment tests per-block-class placement on a
+  hybrid conv/attention LLM where the architecture itself predicts which blocks
+  admit to the ANE.
+- **Impact:** Without this, the paper's central claim ("decompose and place
+  per-stage") generalizes from n=2 self-selected examples. LFM2.5 makes a
+  falsifiable prediction (conv→ANE wins, GQA and decode don't); either outcome
+  is publishable.
+
+## Goals and Non-Goals
+
+### Goals
+
+- [ ] **H1 (admission):** determine whether LFM2.5's double-gated short-conv
+      blocks compile to and are scheduled on the ANE under enumerated shapes at
+      fp16, with per-op dispatch evidence per device.
+- [ ] **H2 (prefill win):** find or refute a prompt-length regime where
+      surgical placement (C5) beats every homogeneous config on prefill
+      latency and/or energy per prompt token on A17 Pro.
+- [ ] **H3 (decode null, control):** show batch=1 decode tok/s is
+      placement-invariant within ±5%; anything larger gets a root-cause.
+- [ ] **H4 (sustained load):** measure degradation under ≥10 min continuous
+      prefill on iPad Pro M2 (primary) and iPhone 15 Pro Max (secondary).
+- [ ] Produce `stage0-report.md`, `stage1-report.md`, CSV results + plots, a
+      public `lfm2-surgical-coreml` repo, and a case-study-3 section for the
+      paper. A gate-triggered kill report satisfies this goal.
+
+### Non-Goals
+
+- No decode optimization, speculative decoding, or KV-cache tricks.
+- No training or fine-tuning; instruct checkpoint used as-is.
+- No quantization in v1 — fp16 weights end-to-end. Quantization changes
+  bytes-moved and ANE admission simultaneously; one variable at a time.
+- No Core ML stateful models for conv state in v1 — explicit I/O tensors only.
+  Stateful models are a follow-up ablation.
+- No Android/Snapdragon comparison; no Core AI (`.aimodel`) port in v1.
+- No iPhone 12 Pro (A14) run unless a mobile-OS 1st-gen-ANE datapoint proves
+  necessary (M1 Mini covers the ANE generation).
+
+## Scope and Constraints
+
+- **Scope (pre-spin-out):** new tooling under `scripts/lfm2_surgical/`,
+  generated artifacts under `outputs/lfm2_surgical/` (uncommitted), reports
+  under `README/Notes/`.
+- **Scope (post-spin-out):** conversion scripts, segment models, Swift
+  harness, and Stage 1+ reports live in `mattmireles/lfm2-surgical-coreml`
+  (public from first commit). Stage 0 scripts are copied there so the public
+  repo reproduces the whole chain. The paper and program memory stay here.
+- **Constraints:** iPhone 15 Pro Max is unavailable until every other phase is
+  complete; phone runs happen overnight, unattended where possible.
+- **Constraints:** LFM2.5 weights are under LFM Open License v1.0 (fine for
+  research); our code is MIT. The public repo README must carry the
+  attribution split.
+- **Guardrails:** No Kokoro export, bakeoff, or Swift runtime path in this
+  repo is modified. This is a parallel experiment lane.
+
+## Ground Truth Contracts (Do Not Violate)
+
+- **No dispatch table, no claim.** Every reported number is accompanied by a
+  per-op dispatch table captured **on the device that produced it** (Xcode
+  Performance Report or `scripts/dump_device_compute_plan.py`). macOS and
+  iPadOS/iOS schedulers differ per OS build; an admission result on one device
+  certifies nothing about another.
+- **Real checkpoint only.** Never a `tiny-random-*` fixture — randomly
+  initialized weights make every downstream metric meaningless (MoE Stage 1
+  postmortem, [009](./009-moe-ssd-dram-prefetch-plan.md)).
+- **Enumerated shapes only.** Range-flexible shapes demote ops off the ANE.
+  Buckets are frozen at {128, 256, 512, 1024, 2048} prompt tokens.
+- **Cold and warm are separate.** First-run ANE compilation is reported
+  separately, never averaged into steady-state numbers (benchmark hygiene
+  guide).
+- **Release builds only for cross-framework ratios.** Debug tax is asymmetric
+  across frameworks (`README/Notes/iphone-release-build-mlx-comparison.md`).
+- **Run order is a thermal treatment on fanless devices.** Counterbalance
+  config order; 10-min cooldown between thermal runs; log
+  `ProcessInfo.thermalState` continuously; discard runs that enter `.serious`.
+- **The port is not the contribution.** CoreML-LLM already runs LFM2.5 on the
+  ANE. Our contribution is per-block-class placement, the prefill crossover
+  curve, and the decode null. If their monolith dominates everywhere, that is
+  the publishable result — record it, don't hide it.
+- **Pre-registered criteria are frozen** (§ Success Criteria) before any
+  Stage 2 run. No post-hoc goalpost moves.
+- **A kill decision is a valid successful outcome.** Any gate failure ends in
+  a written negative-result report, not silent abandonment.
+
+## Already Shipped (Do Not Re-Solve)
+
+- **Dispatch evidence tooling:** `scripts/dump_device_compute_plan.py`,
+  `scripts/inspect_coreml_compute_plan.m`, and the `coreml-profile` skill.
+- **Compute-unit scheduling knowledge:**
+  `README/Guides/apple-silicon/CoreML-Compute-Unit-Scheduling-guide.md`.
+- **ANE layout/op compatibility:**
+  `README/Guides/apple-silicon/CoreML-ANE-transformer-layout-op-compatibility-guide.md`
+  and `CoreML-ANE-compiler-failure-triage-guide.md`.
+- **Split-graph packaging patterns:**
+  `README/Guides/apple-silicon/CoreML-split-graphs-multifunction-packaging-guide.md`.
+- **Benchmark hygiene + device lab protocol:**
+  `Apple-Silicon-warmed-inference-benchmark-hygiene-guide.md`,
+  `iPhone-CoreML-device-lab-runbook.md`.
+- **powermetrics discipline:**
+  `apple-silicon-nvme-energy-measurement-guide.md` (within-machine
+  comparisons only — never compare joules across devices).
+- **Decomposition-tax control precedent:**
+  `README/Notes/monolithic-coreml-control-experiment.md` (Kokoro monolith
+  control; the G1a measurement mirrors it).
+
+## Fresh Baseline (Current State)
+
+- **Architecture:** No LFM2.5 code, exports, or measurements exist in this
+  repo. CoreML-LLM (john-rocky) has a monolithic LFM2.5-350M ANE port with
+  published power/thermal data — unread as of this writing.
+- **Metrics:** None. Liquid's published numbers are CPU llama.cpp Q4_0; their
+  sub-100 ms TTFT target is the external reference line.
+- **Known gaps (Phase 0 closes these):** LFM2.5-350M layer interleaving
+  (230M layout is documented; 350M must be read from the checkpoint config),
+  CoreML-LLM's conv-state and KV-cache strategy, exact device/OS inventory.
+
+## Solution Overview
+
+```text
+Stage 0 (this repo)              Stage 1+ (new public repo)
++---------------------+          +----------------------------+
+| single conv block   |  gates   | embed | conv-run | GQA-run |
+| single GQA block    | G0a-c    |  seg  |  seg(s)  |  seg(s) | ... | lm_head
+| admission + parity  | ------>  |  per-segment computeUnits  |
++---------------------+          |  Swift orchestrator        |
+     Mac Studio + iPad           +----------------------------+
+                                   Mac Studio -> M1 Mini -> iPad -> iPhone (last)
+```
+
+Configs (frozen): C1 all-CPU, C2 all-GPU, C3 all-ANE-permitted
+(`.cpuAndNeuralEngine`), C4 `.all`, **C5 conv→ANE + GQA→GPU (thesis)**,
+C6 conv→GPU + GQA→ANE (inversion control — must lose to C5 if the mechanism
+is what we claim). External baselines: llama.cpp Q4_0 GGUF (context only,
+different precision) and CoreML-LLM's monolith.
+
+## Implementation Phases
+
+> Do one phase at a time. Verify before proceeding. Phases 0–4 never touch the
+> iPhone.
+
+### Phase 0: Prior-Art Diff and Inventory Freeze (½–1 day, Mac Studio)
+
+**Goal:** Freeze the facts needed to interpret Stage 0; kill re-derivation.
+
+**Tasks:**
+
+- [x] Check the spec into the repo:
+      `README/Notes/lfm2-surgical-experiment-spec-v1.1.md` (done at plan
+      creation, 2026-07-20).
+- [ ] Read CoreML-LLM's LFM2.5 conversion path (conv state handling, KV
+      strategy, shape strategy, quantization). Write a one-page diff summary
+      into `README/Notes/lfm2-stage0-report.md` (started now, finished in
+      Phase 1) with a reuse-vs-rewrite decision for the converter.
+- [ ] Pull `LiquidAI/LFM2.5-350M` config from HF and record the **actual**
+      layer interleaving (conv vs GQA order) plus hidden dim, kernel size k,
+      GQA head layout. If 350M isolation is awkward, record the fallback
+      decision to `LFM2.5-230M`.
+- [ ] Record the device/OS inventory: Mac Studio (M2 Ultra), M1 Mini, iPad
+      Pro 11" M2, iPhone 15 Pro Max — exact OS builds, coremltools and Xcode
+      versions. Confirm the M1 Mini and iPad are physically available and on
+      the OS builds we will measure on.
+- [ ] Record the license posture: LFM Open License v1.0 for weights, MIT for
+      our code.
+
+**Verification:** `lfm2-stage0-report.md` contains the converter decision, the
+interleaving table, and the device inventory. No export code written yet.
+
+---
+
+### Phase 1: Stage 0 — Single-Block Admission Gate (1–2 days, Mac Studio + iPad)
+
+**Goal:** Kill cheaply. Prove or refute ANE admission for the LIV conv block
+before any decomposition work.
+
+**Tasks:**
+
+- [ ] `scripts/lfm2_surgical/extract_blocks.py` — load the real checkpoint,
+      extract one double-gated LIV conv block and one GQA block (prefill
+      form: no cache read, full-sequence attention) as standalone
+      `nn.Module`s with flat tensor I/O.
+- [ ] `scripts/lfm2_surgical/export_blocks.py` — trace and convert each block
+      with coremltools ≥ 8.x, fp16, `convert_to="mlprogram"`, **enumerated
+      shapes** over {128, 256, 512, 1024, 2048}. ANE-friendly layout per the
+      transformer layout guide (last axis = sequence).
+- [ ] Admission check on **Mac Studio ANE** (valid here: admission is a
+      toolchain property) and **iPad Pro M2** (mobile-OS scheduler proxy):
+      per-op dispatch per bucket via Xcode Performance Report and
+      `scripts/dump_device_compute_plan.py`. Tables into the report.
+- [ ] `scripts/lfm2_surgical/check_numerics.py` — fp16 Core ML block outputs
+      vs fp32 PyTorch on 32 real prompts; report max-abs and cosine per
+      bucket.
+- [ ] Write go/no-go into `README/Notes/lfm2-stage0-report.md`.
+
+**Kill gates (any one → stop and write the negative-result report):**
+
+- **G0a (provisional):** <80% of conv-block ops dispatch to ANE at bucket
+  ≤512 on Mac Studio **and** iPad Pro. The spec defines G0a on A17; since the
+  phone runs last, Mac+iPad is the early kill signal and **G0a is confirmed
+  on-phone at the start of Phase 5** before any headline measurement. If the
+  phone contradicts the iPad, the phone verdict governs and Phase 5 stops at
+  the admission step.
+- **G0b:** converter rejects enumerated shapes / forces range shapes for the
+  conv block.
+- **G0c:** fp16 divergence > 1e-2 max-abs on block outputs with no
+  identifiable fixable op.
+
+**Verification:** report contains per-op dispatch tables per bucket per
+device, the numerics table, and an explicit go/no-go line.
+
+---
+
+### Phase 2: Public Repo Spin-Out (½ day; only after Phase 1 passes)
+
+**Goal:** Create `mattmireles/lfm2-surgical-coreml`, public from the first
+commit, so every Stage 1+ artifact is born reproducible.
+
+**Tasks:**
+
+- [ ] `gh repo create mattmireles/lfm2-surgical-coreml --public` with MIT
+      LICENSE, README carrying the LFM Open License v1.0 weights attribution,
+      and links back to the Surgical Inference paper repos (kokoro-coreml,
+      magenta-realtime-2-iphone HF).
+- [ ] Copy `scripts/lfm2_surgical/` (Stage 0 scripts) into the new repo;
+      kokoro-coreml keeps the originals frozen as the Stage 0 record.
+- [ ] Adapt this repo's `CLAUDE.md` (PyTorch→Core ML field guide) for the new
+      repo; link back to this repo's `README/Guides/apple-silicon/` rather
+      than duplicating them.
+- [ ] Copy the spec and `lfm2-stage0-report.md` into the new repo's docs.
+
+**Verification:** fresh clone of the public repo reproduces the Stage 0
+exports from the HF checkpoint with documented commands.
+
+---
+
+### Phase 3: Stage 1 — Full Decomposition + Correctness (3–5 days, Mac Studio, new repo)
+
+**Goal:** Working segmented pipeline, token-exact against PyTorch, with the
+decomposition tax measured.
+
+**Tasks:**
+
+- [ ] Partition the layer stack into contiguous same-class segments per the
+      Phase 0 interleaving table. Each segment: hidden states
+      `[1, L_bucket, d]` fp16 in/out; conv rolling buffer `[1, d, k-1]` as
+      explicit I/O; GQA prefill segments emit K/V as outputs (seed the decode
+      cache), no cache inputs at prefill. Embedding and LM head as separate
+      small models.
+- [ ] Export all segments with enumerated shapes over the frozen buckets
+      (`export_segments.py` in the new repo).
+- [ ] Swift orchestrator (macOS/iOS shared core): per-segment
+      `MLModelConfiguration.computeUnits`, prompt → embedding → segments →
+      logits, signpost timing per segment, end-to-end TTFT hook.
+- [ ] **Equivalence test:** greedy-decode 64 tokens on 32 prompts;
+      token-exact vs fp32 PyTorch; every mismatch inspected at logit level and
+      either attributed to fp16 or treated as a bug.
+- [ ] **Decomposition tax measurement (G1a):** monolithic-GPU export vs
+      segmented-all-GPU, same bucket 512, same prompts.
+
+**Kill gates:**
+
+- **G1a:** segment-boundary I/O overhead > 30% of total prefill at bucket 512
+  (all-GPU vs monolithic-GPU) — the tax swamps any possible placement win.
+- **G1b:** end-to-end token mismatch not attributable to fp16.
+
+**Verification:** `stage1-report.md` in the new repo with equivalence results
+and the measured tax; harness runs all six configs on the Mac.
+
+---
+
+### Phase 4: Stage 2a — Non-Phone Measurement (3–4 days, M1 Mini + iPad Pro M2)
+
+**Goal:** Everything measurable without the daily-driver phone: mechanism
+evidence (power rails), the H4 primary result, and full protocol shakedown so
+the phone phase is a solved, scriptable procedure.
+
+**Tasks:**
+
+- [ ] Fixed protocol for all runs: same prompts, OS build recorded, airplane
+      mode / network quiesced, minimum brightness, battery 60–80% where
+      applicable, no case, 10-min cooldowns, ambient logged, counterbalanced
+      config order, thermal state logged continuously.
+- [ ] **iPad Pro M2 dispatch tables** for every segment × config actually
+      reported from the iPad (per-device dispatch rule).
+- [ ] **iPad prefill + decode matrix:** C1–C6 × buckets {128…2048}, N=20,
+      median + IQR, cold/warm separated; decode 128 tokens (H3 datapoint).
+- [ ] **H4 primary (iPad):** 10-min continuous prefill loop at bucket 512,
+      throughput per 30 s, configs C2/C3/C5, `thermalState` logged.
+- [ ] **M1 Mini rail attribution:** C2/C3/C5/C6 under
+      `sudo powermetrics --samplers cpu_power,gpu_power,ane_power,thermal`;
+      report ANE/GPU/CPU package power per config. Appendix-only figure —
+      evidence that C5's delta is watts moving between rails, not a scheduler
+      artifact. Within-machine comparison only.
+- [ ] **External baselines built + shaken down:** llama.cpp Q4_0 GGUF and the
+      CoreML-LLM monolith running on iPad/Mac with the same prompt set.
+- [ ] Freeze the Phase 5 run script end-to-end (one command per overnight
+      batch, results to JSON/CSV) and rehearse it fully on the iPad.
+
+**Verification:** iPad results tables + H4 curves + M1 rail figure exist under
+the new repo's results dir; the phone-phase script has completed a full
+dry-run on iPad with zero manual intervention between runs.
+
+---
+
+### Phase 5: Stage 2b — iPhone 15 Pro Max, Overnight (LAST; 1–3 nights)
+
+**Goal:** All headline numbers. Runs only when Phases 0–4 are complete, on
+Matt's schedule (phone on the desk while he sleeps).
+
+**Tasks:**
+
+- [ ] **Night 0 setup (minutes, attended):** install Release build, trust
+      profile, Developer Mode, airplane mode, min brightness, no case,
+      battery 60–80%, per the device-lab runbook.
+- [ ] **Admission confirmation first:** per-op dispatch tables on the phone
+      for every segment × bucket. This confirms G0a on A17. If <80% conv-op
+      ANE dispatch at bucket ≤512, stop here and write the divergence finding
+      (Mac/iPad admitted, phone didn't — that per-OS-build delta is itself a
+      result).
+- [ ] **Headline matrix:** C1–C6 × buckets, N=20, median + IQR, cold/warm
+      separated; TTFT vs the 100 ms line; decode 128 tokens per config (H3).
+- [ ] **Energy:** fixed 500-prompt batches per config → battery-drain deltas
+      and Instruments Energy Log → J/prompt-token.
+- [ ] **H4 secondary:** 10-min sustained prefill, C2/C3/C5, thermal state
+      logged; compare degradation vs the iPad curves.
+- [ ] **External baselines on-phone:** llama.cpp GGUF (context) and
+      CoreML-LLM monolith, same prompts.
+- [ ] Runs that hit `.serious` thermal state are auto-discarded and re-queued
+      by the run script (this logic was rehearsed in Phase 4).
+
+**Verification:** every phone number in the results CSV has a same-device
+dispatch table, thermal log, and cold/warm labeling. Foreground/unlock policy
+per the runbook honored for GPU-containing configs (screen-lock behavior for
+overnight runs is validated during the Phase 4 rehearsal — see Open
+Questions).
+
+---
+
+### Phase 6: Analysis, Write-Up, Publication (2 days)
+
+**Goal:** Turn measurements into the case study and the public artifact.
+
+**Tasks:**
+
+- [ ] The crossover figure: prefill latency vs bucket, all configs, one plot.
+- [ ] Per-segment attribution: which segments moved, by how much (mechanism,
+      not just aggregate).
+- [ ] H3 check: decode across configs; anything outside ±5% root-caused
+      before write-up.
+- [ ] Honest decomposition-tax accounting (G1a number) inside every C5/C6
+      total.
+- [ ] Evaluate the pre-registered criteria verbatim; write strong / weak /
+      negative verdict accordingly.
+- [ ] HF repo `mattmireles/lfm2.5-350m-surgical-coreml`: segment models,
+      conversion scripts, reproduction README, license notes.
+- [ ] Case-study-3 section drafted into `Scratchpad/surgical-inference.md`;
+      results notes + pointers recorded here in `README/Notes/`.
+
+**Verification:** a stranger can go from the public repos to every figure.
+
+## Executable Memory
+
+- Stage 0 proof: `python scripts/lfm2_surgical/export_blocks.py --all-buckets`
+  then `python scripts/dump_device_compute_plan.py <block.mlpackage>` —
+  dispatch tables match the report.
+- Numerics proof: `python scripts/lfm2_surgical/check_numerics.py --prompts 32`
+  — max-abs ≤ 1e-2 per gate G0c.
+- Not testable by command: iPhone overnight protocol — proven by the Phase 4
+  iPad dry-run log plus the phone-phase artifacts (dispatch tables + thermal
+  logs per run).
+
+## Success Criteria
+
+### Pre-Registered Outcome Criteria (frozen before any Stage 2 run)
+
+- **Strong:** C5 beats the best homogeneous config by ≥15% prefill latency or
+  ≥20% energy at ≥2 buckets on A17 Pro, **and** C6 does not.
+- **Weak / publishable negative:** C3 monolith wins everywhere → "monolithic
+  ANE placement suffices for hybrid conv/GQA models at 350M scale;
+  decomposition tax exceeds placement benefit" + the decode null. Written up
+  with the same rigor.
+- **H3 control:** decode within ±5% across configs; violations investigated,
+  not celebrated.
+
+### Hard Requirements (Must Pass)
+
+- [ ] Every reported number has a same-device per-op dispatch table.
+- [ ] Real trained checkpoint only; no random-weight fixtures anywhere.
+- [ ] Enumerated shapes on every exported model; no range shapes.
+- [ ] Cold vs warm never mixed; Release builds for all cross-framework rows.
+- [ ] iPhone 15 Pro Max untouched until Phases 0–4 are verified complete.
+- [ ] Any gate failure produces a written kill report in the repo.
+
+### Definition of Done
+
+- [ ] One of: full results through Phase 6, or a gate-triggered kill report
+      (`lfm2-stage0-report.md` / `stage1-report.md`) with the negative finding.
+- [ ] Public GitHub + HF repos live (if past Phase 2) with reproduction docs.
+- [ ] Paper case-study section drafted or explicitly cancelled with reasons.
+
+## Open Questions
+
+### Resolved
+
+- **Q:** This repo or a new one?
+- **A:** Plan + Stage 0 here; new public repo at Phase 2, only after
+  admission passes. Precedent: 009 died at Stage 1 with zero repo overhead.
+- **Q:** Public or private new repo?
+- **A:** Public from first commit (decided 2026-07-20) — MRT2's retroactive
+  public-sync pain (`README/Notes/mrt2-public-repo-sync-2026-07-14.md`) is
+  the cautionary tale.
+- **Q:** GitHub repo name vs the spec's HF name?
+- **A:** GitHub: `lfm2-surgical-coreml` (survives a 230M fallback). HF model
+  artifacts keep the spec's `lfm2.5-350m-surgical-coreml`.
+- **Q:** How does the A17-defined gate G0a work if the phone runs last?
+- **A:** Split: Mac Studio + iPad Pro provisional kill in Phase 1; on-phone
+  confirmation as the first step of Phase 5, before any headline run. Phone
+  verdict governs.
+
+### Unresolved
+
+- **Q:** 350M or 230M?
+- **Options:** 350M (spec primary) unless its layer isolation is awkward, then
+  230M (documented 8+6 layout). Decided in Phase 0 from the checkpoint config.
+- **Q:** Can GPU-containing configs (C2, C4, C5, C6) run overnight with the
+  screen locked, given the runbook's foreground-Metal policy?
+- **Options:** (a) keep display on at min brightness with autolock off —
+  changes the energy baseline, must be constant across configs; (b) run
+  ANE/CPU configs locked and GPU configs in an attended evening block.
+  Current lean: (a), validated during the Phase 4 iPad rehearsal; whichever
+  is chosen must be identical for every config so deltas stay meaningful.
+- **Q:** Reuse CoreML-LLM's converter or write ours?
+- **Options:** reuse if their conv-state and shape strategy fit per-segment
+  export; else our own `coremltools` path informed by their choices. Decided
+  by the Phase 0 diff.
+
+## References
+
+### Internal
+
+- [Spec v1.1 (checked in at Phase 0)](../Notes/lfm2-surgical-experiment-spec-v1.1.md)
+- [MoE prefetch plan — staging/kill-gate precedent](./009-moe-ssd-dram-prefetch-plan.md)
+- [Compute-unit scheduling guide](../Guides/apple-silicon/CoreML-Compute-Unit-Scheduling-guide.md)
+- [ANE transformer layout & op compatibility](../Guides/apple-silicon/CoreML-ANE-transformer-layout-op-compatibility-guide.md)
+- [ANE compiler failure triage](../Guides/apple-silicon/CoreML-ANE-compiler-failure-triage-guide.md)
+- [Split graphs & multifunction packaging](../Guides/apple-silicon/CoreML-split-graphs-multifunction-packaging-guide.md)
+- [Warmed-inference benchmark hygiene](../Guides/apple-silicon/Apple-Silicon-warmed-inference-benchmark-hygiene-guide.md)
+- [iPhone device lab runbook](../Guides/apple-silicon/iPhone-CoreML-device-lab-runbook.md)
+- [powermetrics / energy measurement](../Guides/apple-silicon/apple-silicon-nvme-energy-measurement-guide.md)
+- [Monolithic control experiment (Kokoro)](../Notes/monolithic-coreml-control-experiment.md)
+- [Release-build / thermal confound findings](../Notes/iphone-release-build-mlx-comparison.md)
+- [Plan workflow skills guide](../Skills/plan-workflow-skills-guide.md)
+
+### External
+
+- [LFM2 Technical Report, arXiv:2511.23404](https://arxiv.org/abs/2511.23404)
+- [LFM2.5-230M architecture blog (8 LIV conv + 6 GQA)](https://www.liquid.ai/blog/lfm2-5-230m)
+- [LiquidAI on Hugging Face (weights, LFM Open License v1.0)](https://huggingface.co/LiquidAI)
+- [CoreML-LLM (john-rocky) — prior LFM2.5 ANE port](https://github.com/john-rocky/CoreML-LLM)
+- [coremltools flexible input shapes (enumerated vs range)](https://apple.github.io/coremltools/docs-guides/source/flexible-inputs.html)
+- [Apple: Deploying Transformers on the ANE](https://machinelearning.apple.com/research/neural-engine-transformers)
+- [HeteroInfer, arXiv:2501.14794 (related work, must-cite)](https://arxiv.org/abs/2501.14794)
+- [Liquid AI sub-100 ms TTFT target (job post)](https://jobs.ashbyhq.com/liquid-ai/1ed0e32c-11f4-4f93-bfab-bdfac37f0b1b)
+
+## Degradation and Rollback
+
+- **If G0a/G0b/G0c fails:** stop; `lfm2-stage0-report.md` becomes the
+  negative admission finding; no repo is created; paper gains a paragraph,
+  not a case study.
+- **If G1a/G1b fails:** stop; `stage1-report.md` records that decomposition
+  tax or numerics kill the approach at 350M scale — the "weak/publishable
+  negative" framing applies.
+- **If the phone contradicts the iPad on admission:** the per-OS-build
+  scheduler divergence is written up as a finding; headline claims restrict
+  to devices with confirming dispatch tables.
+- **Rollback (this repo):** delete `scripts/lfm2_surgical/`,
+  `outputs/lfm2_surgical/`, and the two Notes files. No Kokoro path is
+  touched.
+
+---
+
+> SIMPLER IS BETTER. The experiment's whole design is one variable at a time:
+> placement at fp16 first; quantization, stateful models, and bigger
+> checkpoints only as follow-ups.
