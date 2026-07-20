@@ -58,6 +58,12 @@ The current public starter manifest is:
 https://huggingface.co/mattmireles/kokoro-coreml/resolve/main/HostedManifest.json
 ```
 
+Current public starter manifest SHA-256:
+
+```text
+3f072fe36743ab54fed0366c999c2ddabca98bd618809d66ac560888c1bbb0c1
+```
+
 ## Build A Resource Bundle
 
 Download the model snapshot and build a starter bundle:
@@ -99,7 +105,12 @@ Bundle the generated resource directory with your app, then load it explicitly:
 ```swift
 import KokoroTTS
 
-let resources = KokoroResourceProvider.directory(bundleURL)
+// Pass a writable compiledModelsDirectory for app/package bundles so Core ML
+// compilation does not attempt to write inside a read-only resource tree.
+let resources = KokoroResourceProvider.directory(
+    bundleURL,
+    compiledModelsDirectory: cacheURL
+)
 let tts = try await KokoroTTS.load(resources: resources)
 try await tts.prewarm(text: "Hello world.", voice: .afHeart)
 let audio = try await tts.synthesize("Hello world.", voice: .afHeart)
@@ -108,8 +119,10 @@ let buffer = try audio.makePCMBuffer()
 
 `KokoroTTS.load` validates manifests, hashes, vocab, and hn-NSF weights without
 compiling Core ML models or initializing Misaki/MLX on the caller's main actor.
-Call `prewarm(...)` from app startup or another background task to compile and
-cache the selected models before the first user-visible synthesis.
+Bundles must declare verified Hugging Face provenance
+(`hf_provenance_verified: true` and `hf_download_manifest_sha256`). Call
+`prewarm(...)` from app startup or another background task to compile and cache
+the selected models before the first user-visible synthesis.
 
 `KokoroAudio.samples` is mono Float PCM. `KokoroAudio.sampleRate` is `24000`.
 Use `makePCMBuffer()` when AVFoundation is available.
@@ -117,16 +130,16 @@ Use `makePCMBuffer()` when AVFoundation is available.
 ## Use Downloaded Resources
 
 For apps that stage model assets after install, hydrate a hosted manifest into a
-writable cache. In production, serve this manifest over HTTPS and pin either the
-HF revision or the `sdk/SDKReleaseManifest.json` checksum you expect; per-file
-hashes protect against transfer corruption, not a malicious replacement
-manifest.
+writable cache. The SDK requires the expected hosted-manifest SHA-256 before it
+trusts any file list or per-file hashes. Production manifests must be served
+over HTTPS; local HTTP is only for explicit development fixtures.
 
 ```swift
 import KokoroTTS
 
 let resources = try await KokoroDownloadedModelStore(
     manifestURL: URL(string: "https://huggingface.co/mattmireles/kokoro-coreml/resolve/main/HostedManifest.json")!,
+    expectedManifestSHA256: "3f072fe36743ab54fed0366c999c2ddabca98bd618809d66ac560888c1bbb0c1",
     cacheDirectory: cacheURL
 ).hydrate()
 
@@ -134,8 +147,9 @@ let tts = try await KokoroTTS.load(resources: resources)
 let audio = try await tts.synthesize(articleText, voice: .afHeart)
 ```
 
-The downloader verifies byte counts and SHA-256 hashes, rejects path escapes and
-symlinked cache roots, and drops stale compiled-model cache entries when the
+The downloader verifies the manifest hash before reading file entries, enforces
+file-count and byte-count limits, verifies each file hash, rejects path escapes
+and symlinked cache roots, and drops stale compiled-model cache entries when the
 hosted manifest version changes.
 
 ## Playback
@@ -193,7 +207,10 @@ prompt.
 The demo supports both resource paths:
 
 ```bash
---resource-mode downloaded --manifest-url http://<mac-ip>:8766/HostedManifest.json
+KOKORO_ALLOW_INSECURE_LOCAL_MANIFEST=1 \
+--resource-mode downloaded \
+--manifest-url http://<mac-ip>:8766/HostedManifest.json \
+--manifest-sha256 <sha256>
 --resource-mode bundled --bundle-subdirectory KokoroRuntime
 ```
 

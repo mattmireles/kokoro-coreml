@@ -171,10 +171,13 @@ node scripts/validate_sdk_bundle.mjs /tmp/kokoro-sdk-starter
 ```
 
 Downloaded-resource apps can hydrate the top-level starter
-`HostedManifest.json` with `KokoroDownloadedModelStore`. Production apps should
-serve manifests over HTTPS and pin the expected HF revision or
-`sdk/SDKReleaseManifest.json` checksum. Bundled-resource apps can use
-`KokoroResourceProvider.directory`, `.appBundle`, or `.packageBundle`.
+`HostedManifest.json` with `KokoroDownloadedModelStore`. Pass
+`expectedManifestSHA256` for the exact manifest bytes (current public starter
+digest: `3f072fe36743ab54fed0366c999c2ddabca98bd618809d66ac560888c1bbb0c1`).
+Production apps must serve manifests over HTTPS. Bundled-resource apps can use
+`KokoroResourceProvider.directory`, `.appBundle`, or `.packageBundle`, and
+should supply a writable `compiledModelsDirectory` so compilation does not write
+into the app resource tree.
 
 Previous snippets that used `KokoroPipeline` directly are now low-level
 examples. Keep them for benchmarking and graph work; use `KokoroTTS` for app

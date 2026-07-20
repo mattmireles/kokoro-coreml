@@ -16,6 +16,8 @@ const files = {
   synthesisOptions: 'swift-tts/Sources/KokoroTTS/KokoroSynthesisOptions.swift',
   manifestDecoder: 'swift-tts/Sources/KokoroTTS/KokoroRuntimeManifest.swift',
   manifestSchema: 'schemas/KokoroRuntimeManifest.schema.json',
+  downloadedStore: 'swift-tts/Sources/KokoroTTS/KokoroDownloadedModelStore.swift',
+  errors: 'swift-tts/Sources/KokoroTTS/KokoroErrors.swift',
   buildBundle: 'scripts/build_sdk_bundle.mjs',
   downloadModels: 'scripts/download_models.py',
   jsPrep: 'scripts/kokoro-prepare-input.mjs',
@@ -217,5 +219,19 @@ for (const file of docs) {
 
 requireIncludes(sources.sdkReadme, files.sdkReadme, '.product(name: "KokoroTTS", package: "swift-tts")');
 requireIncludes(sources.modelCard, files.modelCard, 'matching Git release commit');
+requireIncludes(sources.sdkReadme, files.sdkReadme, 'expectedManifestSHA256');
+requireIncludes(sources.modelCard, files.modelCard, 'expectedManifestSHA256');
+requireIncludes(sources.downloadedStore, files.downloadedStore, 'expectedManifestSHA256');
+requireIncludes(sources.downloadedStore, files.downloadedStore, 'allowInsecureLocalDevelopment');
+requireIncludes(sources.errors, files.errors, 'insecureManifestURL');
+requireIncludes(sources.errors, files.errors, 'downloadTooLarge');
+
+const manifestHashMatch = sources.sdkReadme.match(/expectedManifestSHA256:\s*"([0-9a-f]{64})"/);
+if (!manifestHashMatch) {
+  fail(`${files.sdkReadme} is missing expectedManifestSHA256 in the downloaded-resource snippet`);
+}
+if (!sources.modelCard.includes(manifestHashMatch[1])) {
+  fail(`${files.modelCard} is missing the documented hosted-manifest SHA-256`);
+}
 
 console.log('SDK drift check passed');
