@@ -1,7 +1,7 @@
 # LFM2.5 Surgical Prefill Experiment Plan
 
 **Date:** 2026-07-20
-**Status:** Planned
+**Status:** In Progress (Phase 0 complete; Phase 1 in progress)
 
 > Plan-of-record for the spec
 > `README/Notes/lfm2-surgical-experiment-spec-v1.1.md` (checked in alongside
@@ -43,6 +43,24 @@ Two standing decisions, made 2026-07-20:
   per-stage") generalizes from n=2 self-selected examples. LFM2.5 makes a
   falsifiable prediction (conv→ANE wins, GQA and decode don't); either outcome
   is publishable.
+
+## Mode Definitions
+
+These are placement configurations, not runtime modes. They are the independent
+variable of the whole experiment and are **frozen before any Stage 2 run**.
+
+| Mode | Behavior | Why it matters |
+| --- | --- | --- |
+| `C1` | Conv and GQA segments both `.cpuOnly`. | Floor; llama.cpp-comparable reference point. |
+| `C2` | Both `.cpuAndGPU`. | Homogeneous GPU baseline; also the G1a decomposition-tax control. |
+| `C3` | Both `.cpuAndNeuralEngine`. | Homogeneous ANE baseline; approximates the CoreML-LLM monolith. |
+| `C4` | Both `.all`. | "Let Core ML decide" — the do-nothing baseline any win must beat. |
+| **`C5`** | **Conv → ANE, GQA → GPU.** | **The thesis.** Per-block-class placement matching each class's shape/state behavior. |
+| `C6` | Conv → GPU, GQA → ANE. | Inversion control. Must lose to C5, or the mechanism is not what we claim. |
+
+External baselines run alongside these, same prompts and device: llama.cpp
+Q4_0 GGUF (different precision — reported as context, never head-to-head) and
+the CoreML-LLM `lfm2.5-350m` monolith.
 
 ## Goals and Non-Goals
 
@@ -165,39 +183,74 @@ Stage 0 (this repo)              Stage 1+ (new public repo)
                                    Mac Studio -> M1 Mini -> iPad -> iPhone (last)
 ```
 
-Configs (frozen): C1 all-CPU, C2 all-GPU, C3 all-ANE-permitted
-(`.cpuAndNeuralEngine`), C4 `.all`, **C5 conv→ANE + GQA→GPU (thesis)**,
-C6 conv→GPU + GQA→ANE (inversion control — must lose to C5 if the mechanism
-is what we claim). External baselines: llama.cpp Q4_0 GGUF (context only,
-different precision) and CoreML-LLM's monolith.
+Every phase measures the same six placement configs (see Mode Definitions).
+The experiment is one variable at a time: placement at fp16 first, with
+quantization, stateful models, and larger checkpoints deferred to follow-ups.
 
 ## Implementation Phases
 
 > Do one phase at a time. Verify before proceeding. Phases 0–4 never touch the
 > iPhone.
 
+### Required Skills
+
+Use the workflow skills explicitly when executing this plan:
+
+- **Whole plan:** `execute-plan` for normal phase-by-phase implementation. Use
+  `execute-plan-hardcore` only if the user explicitly asks for the
+  post-execution audit-to-A loop.
+- **Every phase:** `phase-audit` before moving on. If delegated review is
+  unavailable, run the local rubric in `README/Skills/phase-audit-rubric.md`.
+- **Plan and docs edits:** `markdown` for this plan, `write-notes` for
+  measurement evidence under `README/Notes/`, `documentation` for docstrings
+  on the new scripts, and `david-ogilvy` only for reader-facing README copy in
+  the public repo.
+- **Git side effects:** `git-commit` per phase; `git-push` and `deploy` only
+  when the user authorizes push/release.
+
+| Phase | Required skills | Why |
+| --- | --- | --- |
+| Phase 0 | `coreml`, `guide-ingest`, `write-notes`, `phase-audit` | Read CoreML-LLM's conversion path and the LFM2.5 config, then land it as durable prior-art knowledge rather than a chat summary. |
+| Phase 1 | `coreml`, `coreml-profile`, `coreml-validate`, `ilya-sutskever`, `debug`, `phase-audit` | The admission gate is exactly `coreml-profile`'s job (dispatch, silent fallback) and `coreml-validate`'s job (fp16 vs fp32 parity); `ilya-sutskever` keeps the block isolation simple. |
+| Phase 2 | `markdown`, `david-ogilvy`, `documentation`, `git-commit`, `phase-audit` | The repo is public from the first commit, so the README is reader-facing copy and the scripts need real docstrings before strangers read them. |
+| Phase 3 | `ilya-sutskever`, `coreml`, `coreml-validate`, `debug`, `documentation`, `phase-audit` | Segment boundaries and state I/O are architecture judgment calls; token-exact equivalence is a parity check. |
+| Phase 4 | `coreml-profile`, `coreml`, `debug`, `write-notes`, `phase-audit` | Per-device dispatch tables plus rail attribution are profiling work; each device's results become a note. |
+| Phase 5 | `coreml-profile`, `coreml`, `debug`, `write-notes`, `phase-audit` | On-phone G0a confirmation is a dispatch question before it is a latency question. |
+| Phase 6 | `markdown`, `write-notes`, `david-ogilvy`, `documentation`, `deploy`, `phase-audit` | Figures, the case-study section, public reproduction docs, and release artifacts. |
+
+**Skills that do not apply here, despite looking relevant:**
+
+- `bakeoff` and `audio-judge` are Kokoro-specific (TTS harness, audio quality).
+  This experiment has no audio and its own harness. Do not reach for them
+  during Phases 4–5 just because they are the repo's benchmarking skills.
+- The `coreml` router detects workspace by repo; from Phase 2 onward the work
+  happens in `lfm2-surgical-coreml`, which it will treat as an unknown
+  workspace. Use it for its Core ML guide links, not its repo routing.
+
 ### Phase 0: Prior-Art Diff and Inventory Freeze (½–1 day, Mac Studio)
 
 **Goal:** Freeze the facts needed to interpret Stage 0; kill re-derivation.
+
+**Required skills:** `coreml`, `guide-ingest`, `write-notes`, `phase-audit`.
 
 **Tasks:**
 
 - [x] Check the spec into the repo:
       `README/Notes/lfm2-surgical-experiment-spec-v1.1.md` (done at plan
       creation, 2026-07-20).
-- [ ] Read CoreML-LLM's LFM2.5 conversion path (conv state handling, KV
+- [x] Read CoreML-LLM's LFM2.5 conversion path (conv state handling, KV
       strategy, shape strategy, quantization). Write a one-page diff summary
       into `README/Notes/lfm2-stage0-report.md` (started now, finished in
       Phase 1) with a reuse-vs-rewrite decision for the converter.
-- [ ] Pull `LiquidAI/LFM2.5-350M` config from HF and record the **actual**
+- [x] Pull `LiquidAI/LFM2.5-350M` config from HF and record the **actual**
       layer interleaving (conv vs GQA order) plus hidden dim, kernel size k,
       GQA head layout. If 350M isolation is awkward, record the fallback
       decision to `LFM2.5-230M`.
-- [ ] Record the device/OS inventory: Mac Studio (M2 Ultra), M1 Mini, iPad
+- [x] Record the device/OS inventory: Mac Studio (M2 Ultra), M1 Mini, iPad
       Pro 11" M2, iPhone 15 Pro Max — exact OS builds, coremltools and Xcode
       versions. Confirm the M1 Mini and iPad are physically available and on
       the OS builds we will measure on.
-- [ ] Record the license posture: LFM Open License v1.0 for weights, MIT for
+- [x] Record the license posture: LFM Open License v1.0 for weights, MIT for
       our code.
 
 **Verification:** `lfm2-stage0-report.md` contains the converter decision, the
@@ -209,6 +262,9 @@ interleaving table, and the device inventory. No export code written yet.
 
 **Goal:** Kill cheaply. Prove or refute ANE admission for the LIV conv block
 before any decomposition work.
+
+**Required skills:** `coreml`, `coreml-profile`, `coreml-validate`,
+`ilya-sutskever`, `debug`, `phase-audit`.
 
 **Tasks:**
 
@@ -252,6 +308,9 @@ device, the numerics table, and an explicit go/no-go line.
 **Goal:** Create `mattmireles/lfm2-surgical-coreml`, public from the first
 commit, so every Stage 1+ artifact is born reproducible.
 
+**Required skills:** `markdown`, `david-ogilvy`, `documentation`,
+`git-commit`, `phase-audit`.
+
 **Tasks:**
 
 - [ ] `gh repo create mattmireles/lfm2-surgical-coreml --public` with MIT
@@ -274,6 +333,9 @@ exports from the HF checkpoint with documented commands.
 
 **Goal:** Working segmented pipeline, token-exact against PyTorch, with the
 decomposition tax measured.
+
+**Required skills:** `ilya-sutskever`, `coreml`, `coreml-validate`, `debug`,
+`documentation`, `phase-audit`.
 
 **Tasks:**
 
@@ -311,6 +373,9 @@ and the measured tax; harness runs all six configs on the Mac.
 evidence (power rails), the H4 primary result, and full protocol shakedown so
 the phone phase is a solved, scriptable procedure.
 
+**Required skills:** `coreml-profile`, `coreml`, `debug`, `write-notes`,
+`phase-audit`. Not `bakeoff` — that harness is Kokoro's.
+
 **Tasks:**
 
 - [ ] Fixed protocol for all runs: same prompts, OS build recorded, airplane
@@ -344,6 +409,9 @@ dry-run on iPad with zero manual intervention between runs.
 **Goal:** All headline numbers. Runs only when Phases 0–4 are complete, on
 Matt's schedule (phone on the desk while he sleeps).
 
+**Required skills:** `coreml-profile`, `coreml`, `debug`, `write-notes`,
+`phase-audit`.
+
 **Tasks:**
 
 - [ ] **Night 0 setup (minutes, attended):** install Release build, trust
@@ -376,6 +444,9 @@ Questions).
 ### Phase 6: Analysis, Write-Up, Publication (2 days)
 
 **Goal:** Turn measurements into the case study and the public artifact.
+
+**Required skills:** `markdown`, `write-notes`, `david-ogilvy`,
+`documentation`, `deploy`, `phase-audit`.
 
 **Tasks:**
 
@@ -499,6 +570,20 @@ Questions).
 - [HeteroInfer, arXiv:2501.14794 (related work, must-cite)](https://arxiv.org/abs/2501.14794)
 - [Liquid AI sub-100 ms TTFT target (job post)](https://jobs.ashbyhq.com/liquid-ai/1ed0e32c-11f4-4f93-bfab-bdfac37f0b1b)
 
+## Performance and Latency Budget
+
+Targets, not predictions. "Current" is empty by design — filling it is the
+experiment. Prefill buckets are prompt-token counts on A17 Pro, C5.
+
+| Operation | Target | Source of target | Current |
+| --- | --- | --- | --- |
+| TTFT (prefill + first decode step) | <100 ms | Liquid AI's published edge target | Unmeasured |
+| Prefill @ bucket 512, C5 vs best homogeneous | ≥15% faster | Pre-registered strong criterion | Unmeasured |
+| Energy per prompt token, C5 vs best homogeneous | ≥20% lower | Pre-registered strong criterion | Unmeasured |
+| Decode tok/s spread across C1–C6 | within ±5% | H3 bandwidth-wall control | Unmeasured |
+| Segment-boundary I/O overhead @ bucket 512 | <30% of prefill | Gate G1a | Unmeasured |
+| Conv-block ops dispatched to ANE @ bucket ≤512 | ≥80% | Gate G0a | Unmeasured |
+
 ## Degradation and Rollback
 
 - **If G0a/G0b/G0c fails:** stop; `lfm2-stage0-report.md` becomes the
@@ -514,7 +599,125 @@ Questions).
   `outputs/lfm2_surgical/`, and the two Notes files. No Kokoro path is
   touched.
 
----
+## Monitoring and Observability
+
+**Metrics to Track:**
+
+- `conv_ops_ane_dispatch_fraction` / `gqa_ops_ane_dispatch_fraction` — per
+  bucket, per device; the G0a gate and the evidence behind every claim.
+- `prefill_latency_ms_median` / `_iqr` — per config, per bucket, cold and warm
+  recorded separately.
+- `ttft_ms` — prefill plus first decode step, against the 100 ms line.
+- `decode_tokens_per_second` — per config; the H3 control.
+- `joules_per_prompt_token` — iPhone headline, from fixed 500-prompt batches.
+- `ane_power_watts` / `gpu_power_watts` / `cpu_power_watts` — M1 Mini rail
+  attribution only; within-machine comparison, never cross-device.
+- `sustained_throughput_by_30s_bucket` — H4 degradation curves.
+- `thermal_state` — sampled continuously; `.serious` invalidates the run.
+- `peak_memory_bytes` — per config.
+- `segment_boundary_overhead_fraction` — the G1a decomposition tax, carried
+  inside every C5/C6 total.
+
+**Artifacts to Preserve:**
+
+- `outputs/lfm2_surgical/stage0/dispatch_<device>_<bucket>.json`
+- `outputs/lfm2_surgical/stage0/numerics.json`
+- `outputs/lfm2_surgical/stage1/equivalence.json`
+- `outputs/lfm2_surgical/stage1/decomposition_tax.json`
+- `outputs/lfm2_surgical/stage2/<device>_results.csv`
+- `outputs/lfm2_surgical/stage2/powermetrics_m1_<config>.txt`
+- `outputs/lfm2_surgical/stage2/thermal_<device>_<config>.jsonl`
+
+## Phase Dependencies
+
+```text
+Phase 0 (inventory, prior-art diff)
+   |
+   v
+Phase 1 (Stage 0 admission)  --[G0a/G0b/G0c]--> KILL: negative-result report
+   |
+   v
+Phase 2 (public repo spin-out)
+   |
+   v
+Phase 3 (Stage 1 decomposition)  --[G1a/G1b]--> KILL: negative-result report
+   |
+   v
+Phase 4 (M1 Mini rails || iPad matrix + H4 + phone-protocol rehearsal)
+   |
+   v
+Phase 5 (iPhone 15 Pro Max, overnight)  <-- LAST, blocked on Phase 4 complete
+   |
+   v
+Phase 6 (analysis, figures, write-up, publication)
+```
+
+Strictly serial except inside Phase 4, where M1 Mini rail attribution and the
+iPad matrix are independent and can interleave. The Phase 4 → Phase 5 edge is
+a hard barrier: the phone is a daily driver and its protocol must already be a
+rehearsed, one-command script before the first night.
+
+## Files Likely to Change
+
+Pre-spin-out (this repo). Everything from Phase 3 onward lands in
+`mattmireles/lfm2-surgical-coreml` instead.
+
+| File | Change Type | Notes |
+| --- | --- | --- |
+| `README/Plans/010-lfm2-surgical-prefill-plan.md` | Modify | Phase checkboxes and Debug Notes as work proceeds. |
+| `README/Notes/lfm2-surgical-experiment-spec-v1.1.md` | Created | Frozen scientific contract; edit only via a version bump. |
+| `README/Notes/lfm2-stage0-report.md` | Create | Prior-art diff, dispatch tables, numerics, go/no-go. |
+| `scripts/lfm2_surgical/extract_blocks.py` | Create | Isolates one LIV conv block and one GQA block from the real checkpoint. |
+| `scripts/lfm2_surgical/export_blocks.py` | Create | Traces and converts each block, fp16, enumerated shapes. |
+| `scripts/lfm2_surgical/check_numerics.py` | Create | fp16 Core ML vs fp32 PyTorch on 32 real prompts. |
+| `tests/test_lfm2_surgical_tools.py` | Create | Guards schema and bucket-freeze invariants. |
+| `outputs/lfm2_surgical/**` | Create | Generated artifacts; stays uncommitted. |
+| `Scratchpad/surgical-inference.md` | Modify | Phase 6 only: case-study-3 section. |
+
+## Risks and Mitigations
+
+- **LIV op lowering:** the double-gated conv may lower to op sequences the ANE
+  compiler rejects or splits → Stage 0 per-op dispatch tables are the
+  diagnostic. Manual re-expression of the gating is permitted only if it is
+  numerics-preserving and documented.
+- **Scheduler opacity:** `.cpuAndNeuralEngine` is a permission, not a command;
+  Core ML may silently fall back → no dispatch table, no claim. This is a
+  ground-truth contract, not a best effort.
+- **Enumerated-shape memory blow-up:** each shape may precompile a variant →
+  watch model load time and package size at Stage 0, before five buckets
+  become five segments' worth of variants.
+- **Thermal confounds on the phone:** overnight batches on a fanless daily
+  driver → enforced cooldowns, continuous `thermalState` logging, auto-discard
+  and re-queue of `.serious` runs, counterbalanced config order.
+- **Daily-driver availability:** the phone is needed for real life → Phase 5
+  is last, scripted, and rehearsed end-to-end on the iPad in Phase 4 so a
+  night costs setup minutes, not debugging hours.
+- **Prior art dominates:** CoreML-LLM's monolith may beat every surgical
+  config → that is the pre-registered weak/publishable-negative outcome.
+  Record it; do not search for a configuration that rescues the thesis.
+- **Decomposition tax swamps the win:** segment-boundary I/O may exceed any
+  placement benefit → measured explicitly as G1a and carried inside every
+  C5/C6 total rather than reported separately.
+
+## Debug Notes
+
+Append real issues encountered during implementation with fixes.
+
+### 2026-07-20 - Plan Skill Routing
+
+**Problem:** The first draft of this plan named phases, gates, and files but
+never told the executor which repo skills to invoke, so `execute-plan` would
+have had to guess at profiling, validation, notes, and docs routing.
+**Root Cause:** Same gap [008](./008-kokoro-drop-in-sdk-plan.md) hit on
+2026-06-28; the canonical template has no Required Skills section, so it is
+easy to omit when following the template literally.
+**Fix:** Added a `Required Skills` section under `Implementation Phases` with
+a per-phase table, a `Required skills:` line on every phase, and an explicit
+do-not-use note for `bakeoff` / `audio-judge` (Kokoro-specific, and tempting
+during the measurement phases).
+**Files:** `README/Plans/010-lfm2-surgical-prefill-plan.md`
+
+## Critical Reminder
 
 > SIMPLER IS BETTER. The experiment's whole design is one variable at a time:
 > placement at fp16 first; quantization, stateful models, and bigger
