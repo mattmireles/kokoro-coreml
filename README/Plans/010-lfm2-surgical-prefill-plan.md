@@ -1,7 +1,7 @@
 # LFM2.5 Surgical Prefill Experiment Plan
 
 **Date:** 2026-07-20
-**Status:** In Progress (Phases 0-1 complete; Phase 2 next)
+**Status:** In Progress (Phases 0-2 complete; Phase 3 next)
 
 > Plan-of-record for the spec
 > `README/Notes/lfm2-surgical-experiment-spec-v1.1.md` (checked in alongside
@@ -319,19 +319,28 @@ commit, so every Stage 1+ artifact is born reproducible.
 
 **Tasks:**
 
-- [ ] `gh repo create mattmireles/lfm2-surgical-coreml --public` with MIT
+- [x] `gh repo create mattmireles/lfm2-surgical-coreml --public` with MIT
       LICENSE, README carrying the LFM Open License v1.0 weights attribution,
       and links back to the Surgical Inference paper repos (kokoro-coreml,
       magenta-realtime-2-iphone HF).
-- [ ] Copy `scripts/lfm2_surgical/` (Stage 0 scripts) into the new repo;
+- [x] Copy `scripts/lfm2_surgical/` (Stage 0 scripts) into the new repo;
       kokoro-coreml keeps the originals frozen as the Stage 0 record.
-- [ ] Adapt this repo's `CLAUDE.md` (PyTorch→Core ML field guide) for the new
+- [x] Adapt this repo's `CLAUDE.md` (PyTorch→Core ML field guide) for the new
       repo; link back to this repo's `README/Guides/apple-silicon/` rather
       than duplicating them.
-- [ ] Copy the spec and `lfm2-stage0-report.md` into the new repo's docs.
+- [x] Copy the spec and `lfm2-stage0-report.md` into the new repo's docs.
 
 **Verification:** fresh clone of the public repo reproduces the Stage 0
 exports from the HF checkpoint with documented commands.
+
+**Phase audit:** Grade A. Public repository
+[`mattmireles/lfm2-surgical-coreml`](https://github.com/mattmireles/lfm2-surgical-coreml)
+is live on `main` at `34f1b7b`. A fresh Python 3.11 environment installed the
+checked-in pins, all 10 tests passed, all 12 packages rebuilt from the pinned
+checkpoint, all 25 numerical cells passed, and the Transformers 5.5 oracle
+matched exactly through layers 0-2. Core ML regenerated package UUIDs, but all
+12 `weight.bin` payloads are byte-identical to the frozen Phase 1 artifacts.
+Architecture, correctness risk, and complexity debt are all grade A.
 
 ---
 
@@ -797,6 +806,21 @@ cache is keyed by team, bundle, and profile, so later signing changes cannot
 silently reuse an app built with different credentials.
 **Files:** `scripts/xcode_clang_probe_wrapper.zsh`,
 `scripts/dump_device_compute_plan.py`
+
+### 2026-07-20 - Public Fresh-Clone Core ML UUID Drift
+
+**Problem:** A fresh clone reproduced every export, but the regenerated
+`.mlpackage` tree hashes did not equal the Phase 1 package hashes.
+**Root Cause:** coremltools assigns new package item and root-model UUIDs on
+each conversion. Those UUIDs appear in `Manifest.json` and the serialized
+model, so a semantically identical rebuild is not container-byte-identical.
+**Fix:** Verified the independent invariants instead of pretending the package
+container is reproducible: exact checkpoint/config/tokenizer identities, all
+12 `weight.bin` files byte-identical, all 25 numerical cells passing, and the
+Transformers 5.5 oracle exact through layers 0-2. The public report also now
+creates its own `.venv-hf`; it no longer references the private repo's ignored
+Transformers checkout.
+**Files:** public `README.md`, public `docs/stage0-report.md`
 
 ## Critical Reminder
 
