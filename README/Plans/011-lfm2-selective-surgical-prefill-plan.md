@@ -1,7 +1,7 @@
 # LFM2.5 Selective Six-Piece Prefill Experiment Plan
 
 **Date:** 2026-07-20  
-**Status:** Ready for execution
+**Status:** Complete — terminal `KILL` at G0d on 2026-07-20
 
 > This is a new, independently gated follow-up to
 > [plan 010](./010-lfm2-surgical-prefill-plan.md). It does not reopen, amend,
@@ -96,15 +96,17 @@ pre-registration are required before testing another split.
 
 ### Goals
 
-- [ ] Determine whether `M_ALL` already obtains useful heterogeneous internal
+- [x] Determine whether `M_ALL` already obtains useful heterogeneous internal
   scheduling without public model boundaries.
 - [ ] Measure the isolated ANE-versus-GPU latency delta of the three existing
-  two-convolution packages on real layer-entry tensors.
+  two-convolution packages on real layer-entry tensors. **Cancelled at G0d:**
+  every ANE-permitted pair failed correctness before timing.
 - [ ] Measure the exact decomposition tax of six packages and five layer-stack
-  boundaries at bucket 512.
+  boundaries at bucket 512. **Cancelled at terminal G0d.**
 - [ ] Determine whether `S6_SELECTIVE` beats the best no-boundary monolithic
   policy on physical M2 iPad and, only if justified, A17 Pro iPhone.
-- [ ] Publish a reproducible positive or negative report with same-device
+  **Cancelled at terminal G0d; neither device was benchmarked.**
+- [x] Publish a reproducible positive or negative report with same-device
   dispatch, package hashes, paired timing, and numerical evidence.
 
 ### Non-Goals
@@ -219,6 +221,75 @@ existing packages. It executes layers 8-15 internally in checkpoint order and
 emits the same final hidden state plus convolution states 9/11/13/15 and K/V
 pairs 8/10/12/14 required by the existing full-prefill contract.
 
+## Execution Amendment: Bucket-512 Pair Evidence
+
+**Frozen:** 2026-07-20, after G0a and before any conv-pair latency sample.
+
+G0a showed that the fixed-512 monolith under `.all` does obtain heterogeneous
+placement, but it is slower and numerically different from `M_GPU`; therefore
+the pair-economics branch remains live. At that point an evidence contradiction
+became operative: the reusable conv-pair packages are enumerated with bucket
+128 as their default, while public `MLComputePlan` has no input-shape or
+enumerated-index selector. Their compute plans cannot honestly prove G0b at
+bucket 512.
+
+Phase 0 therefore materializes exactly three fixed-512 twins from the existing
+enumerated pair packages before collecting any pair latency. The same fixed twin
+is loaded under `.cpuAndGPU` and `.cpuAndNeuralEngine`, timed under both
+policies, numerically compared with its enumerated source at bucket 512, and
+hash-bound to both compute plans. This changes no layer, partition point,
+compute-unit policy, threshold, prompt, precision, or checkpoint equation. It
+only makes the registered bucket observable and keeps the one-artifact-per-pair
+contract literal.
+
+The amendment is based on the external Max report at:
+
+- `/Users/mm/Documents/GitHub/llm-workflows/outputs/create-guide/core-ml-mlcomputeplan-for-non-default-enumeratedshapes-specializations/2026-07-21T04-19-00-642Z/raw-report.md`
+
+The raw report's version claim was corrected locally: both `MLComputePlan` and
+`materialize_dynamic_shape_mlmodel` exist in the frozen coremltools 8.3.0
+environment. The materialization utility re-runs Core ML MIL optimization and
+re-serializes a new package, so a fixed twin is not treated as hash-equivalent
+to its source. It becomes the exact timed and profiled artifact instead.
+
+## Terminal Execution Evidence
+
+Phase 0 completed on Mac Studio M2 Ultra, macOS 26.5.2 build `25F84`, using
+Release Swift, direct fp16 `MLMultiArray`, three warmups, N=20 for G0a, and
+coremltools 8.3.0.
+
+- **G0a failed:** `M_GPU` median `35.539 ms`; `M_ALL` median `53.281 ms`;
+  registered difference `-17.742 ms`, paired 95% interval
+  `[-18.694, -17.065] ms`. `M_ALL` placed 308/784 operations on ANE but changed
+  top token `941 -> 1470` with final-logit `max_abs = 10.0859375`.
+- **Host-noise preflight passed:** load `4.7085` across 24 logical processors
+  (`0.1962` per processor), 59% system memory free, no other process at or above
+  50% CPU, and nominal thermal state. All 19 used package hashes are bound in
+  the final Phase 0 payload.
+- **G0b passed:** every fixed-512 ANE-permitted pair placed 58/58 costed
+  operations on ANE. Every materialized twin matched its enumerated source
+  exactly at bucket 512 (`max_abs = 0.0`).
+- **G0d failed:** pair-boundary GPU-versus-ANE `max_abs` was `0.288086`,
+  `0.154297`, and `0.073975`; final-logit `max_abs` was `7.826172`, `9.095703`,
+  and `3.377930`. Pair 6-7 changed final top token `941 -> 509`.
+- **G0c cancelled:** correctness failed before conv-pair timing. Tail export,
+  six-piece measurement, all iPad phases, and all iPhone phases were cancelled.
+  Although the gate labels list G0c before G0d, the frozen ground-truth
+  contract "Correctness before speed" requires this preflight ordering.
+- **Regression passed:** the frozen Stage 1 replay retained direct fp16
+  boundaries, bit-exact paired logits, and its terminal G1a `KILL` at `38.32%`
+  decomposition tax.
+- **Terminal phase audit passed:** the independent post-fix audit found no
+  blocking issues and graded Architecture A, Correctness risk A, and Complexity
+  debt A. It independently verified all 19 artifact hashes, all 10 compute-plan
+  evidence hashes, the G0a statistics, G0d cancellation, and Stage 1 replay.
+
+Authoritative generated payloads remain ignored at
+`outputs/lfm2_surgical/selective/phase0_mac.json` and
+`outputs/lfm2_surgical/selective/stage1_replay.json` in the public repo. The
+tracked result is
+`/Users/mm/Documents/GitHub/lfm2-surgical-coreml/docs/selective-split-report.md`.
+
 ## Implementation Phases
 
 > Execute one phase at a time. Run a phase audit before committing or moving
@@ -242,7 +313,7 @@ pairs 8/10/12/14 required by the existing full-prefill contract.
   external mechanism. The checked-in LFM2 export, split-graph, scheduling, and
   benchmark-hygiene guides already cover this experiment.
 
-### Phase 0: Zero-Boundary and Conv-Pair Economics (Mac, no export)
+### Phase 0: Zero-Boundary and Conv-Pair Economics (Mac)
 
 **Goal:** Establish that ANE placement has enough isolated value to justify
 one new package and prove that `.all` does not already solve the problem more
@@ -253,25 +324,30 @@ simply.
 
 **Tasks:**
 
-- [ ] Add a selective benchmark entry point without changing the frozen Stage
+- [x] Add a selective benchmark entry point without changing the frozen Stage
   1 executable. It may reuse extracted internal support, but the old Stage 1
   command must still produce exact paired logits and a G1a KILL.
-- [ ] Load the existing fixed-512 monolith twice, once as `M_GPU` and once as
+- [x] Load the existing fixed-512 monolith twice, once as `M_GPU` and once as
   `M_ALL`. Keep embedding and head `.cpuAndGPU` in both candidates.
-- [ ] Capture package-hash-bound compute plans for both policies on the Mac.
-- [ ] Run Release Swift N=20 after three warmups, alternating `M_GPU/M_ALL` and
+- [x] Capture package-hash-bound compute plans for both policies on the Mac.
+- [x] Run Release Swift N=20 after three warmups, alternating `M_GPU/M_ALL` and
   `M_ALL/M_GPU`; record every sample, median, IQR, paired difference, and final
   logits.
-- [ ] Generate the real layer-entry hidden tensors for conv pairs 0-1, 3-4,
+- [x] Materialize exactly three fixed-512 pair twins from the reusable
+  enumerated packages. Verify each twin against its source at bucket 512 before
+  it may enter timing or dispatch evidence.
+- [x] Generate the real layer-entry hidden tensors for conv pairs 0-1, 3-4,
   and 6-7 outside timed regions by running the frozen prompt through the
   preceding GPU packages.
-- [ ] Load each existing conv-pair package under `.cpuAndGPU` and
+- [ ] Load each fixed-512 conv-pair twin under `.cpuAndGPU` and
   `.cpuAndNeuralEngine`. Benchmark each pair with N=20, three warmups, and
-  alternating order on its real layer-entry tensor.
+  alternating order on its real layer-entry tensor. **Correctness preflight
+  ran for all three; timing was cancelled at G0d.**
 - [ ] Record per-pair GPU median, ANE median, paired delta, 95% paired bootstrap
   confidence interval, output `max_abs`, top token where applicable, package
-  hash, and same-host dispatch.
-- [ ] Write the Phase 0 table and verdict to
+  hash, and same-host dispatch. **Numerics, hashes, and dispatch were recorded;
+  latency statistics were correctly not collected.**
+- [x] Write the Phase 0 table and verdict to
   `docs/selective-split-report.md` in the public repo.
 
 **Gates:**
@@ -294,13 +370,18 @@ simply.
 - **G0d — pair numerics:** GPU and ANE outputs must retain the same top token
   and `max_abs <= 1e-2`. Unexplained failure kills the placement path.
 
-**Verification:** No new Core ML package exists. The report contains the
-monolithic scheduler table, all three pair tables, hash-bound dispatch, exact
-commands, and one explicit `GO`, `KILL`, or `NO SPLIT NEEDED` verdict.
+**Verification:** No new checkpoint export or tail package exists. The only new
+Core ML artifacts are the three fixed-512 pair twins frozen by the execution
+amendment. The report contains the monolithic scheduler table, all three pair
+tables, source-versus-twin parity, hash-bound dispatch, exact commands, and one
+explicit `GO`, `KILL`, or `NO SPLIT NEEDED` verdict.
 
 ---
 
 ### Phase 1: One Tail Package and Exact Six-Piece Mac Gate
+
+**Execution:** Cancelled by terminal G0d. No tail package or six-piece
+measurement was created.
 
 **Goal:** Replace the 12-boundary estimate with the exact five-boundary cost.
 
@@ -357,6 +438,8 @@ artifact hashes, and an explicit verdict.
 
 ### Phase 2: Physical iPad Fixed-512 Decision Gate
 
+**Execution:** Cancelled by terminal G0d. The ready iPad was not benchmarked.
+
 **Goal:** Decide on the mobile-OS/M2 proxy whether this split is large enough
 to justify a bucket matrix and eventual daily-driver phone use.
 
@@ -401,6 +484,9 @@ public repo. A failed gate means no additional buckets and no iPhone.
 
 ### Phase 3: Enumerated Tail and Non-Phone Crossover Check
 
+**Execution:** Cancelled by terminal G0d. No enumerated tail or monolith was
+exported.
+
 **Goal:** Require a repeatable short-prompt regime, not a single bucket-512
 anomaly, before the phone is touched.
 
@@ -441,6 +527,8 @@ freezes the on-phone command before Phase 4.
 ---
 
 ### Phase 4: A17 Pro iPhone Confirmation (Last)
+
+**Execution:** Cancelled by terminal G0d. The daily-driver iPhone was untouched.
 
 **Goal:** Confirm or refute the selective split on the target phone only after
 the iPad has already demonstrated a material regime.
@@ -496,20 +584,25 @@ package hashes, raw samples, thermal state, and correctness evidence.
 
 **Tasks:**
 
-- [ ] Complete `docs/selective-split-report.md` in the public repo with the
+- [x] Complete `docs/selective-split-report.md` in the public repo with the
   terminal gate, commands, hashes, raw-result paths, tables, and limitations.
-- [ ] Add `README/Notes/lfm2-selective-split-result.md` in `kokoro-coreml` as
+- [x] Add `README/Notes/lfm2-selective-split-result.md` in `kokoro-coreml` as
   the repo-memory pointer and interpretation. Keep local experimental judgment
   in Notes, not Guides.
-- [ ] Update this plan's status, checkboxes, measured values, and terminal
+- [x] Update this plan's status, checkboxes, measured values, and terminal
   verdict.
-- [ ] Link the new report from the public README without rewriting or diluting
+- [x] Link the new report from the public README without rewriting or diluting
   `docs/stage1-report.md`.
-- [ ] Update the paper only if its wording clearly distinguishes the failed
+- [x] Update the paper only if its wording clearly distinguishes the failed
   13-segment partition from this independently registered six-piece result.
-- [ ] Run public repo tests, Swift build/tests, the old Stage 1 replay, Markdown
+  **Not applicable:** the public experiment repo contains no paper artifact.
+- [x] Run public repo tests, Swift build/tests, the old Stage 1 replay, Markdown
   checks, memory health, and secret scan before calling the tree publishable.
-- [ ] Do not publish generated checkpoint-derived packages unless separately
+  **Evidence:** 15/15 Python tests passed; both Release Swift executables built;
+  `swift test` found no Swift test target; Stage 1 replay retained fp16 exactness
+  and `KILL`; Markdown structure passed with wide-table line length disabled;
+  memory health graded A at 100%; TruffleHog found zero secrets in both diffs.
+- [x] Do not publish generated checkpoint-derived packages unless separately
   authorized and the existing LFM license/attribution path is followed.
 
 **Verification:** A stranger can reproduce the terminal gate from the public
@@ -531,6 +624,8 @@ requires it; responsibilities may not expand.
 - Modify `scripts/lfm2_surgical/segments.py` with one layers-8-15 composite.
 - Modify `scripts/lfm2_surgical/export_segments.py` with fixed/enumerated
   selective-tail scopes and one enumerated-monolith scope used only after G2.
+- Add `scripts/lfm2_surgical/materialize_fixed_pairs.py` for the Phase 0
+  bucket-512 evidence amendment.
 - Extend `tests/test_lfm2_surgical_tools.py` for the composite spec, outputs,
   shape contract, and CLI scope.
 - Add `docs/selective-split-report.md`.
@@ -550,11 +645,17 @@ entry points. The executor updates them if the final CLI differs.
 ```bash
 cd /Users/mm/Documents/GitHub/lfm2-surgical-coreml
 
-# Phase 0: no new Core ML export.
+# Phase 0: materialize only the three fixed-512 pair twins.
+.venv/bin/python scripts/lfm2_surgical/materialize_fixed_pairs.py \
+  --stage1-dir outputs/lfm2_surgical/stage1 \
+  --out-dir outputs/lfm2_surgical/selective/fixed_pairs_512
+
 swift build -c release
 .build/release/lfm2-selective-benchmark phase0 \
   --stage1-dir outputs/lfm2_surgical/stage1 \
   --input-json outputs/lfm2_surgical/stage1/g1a_input_512.json \
+  --dispatch-dir outputs/lfm2_surgical/selective/phase0_dispatch \
+  --fixed-pair-dir outputs/lfm2_surgical/selective/fixed_pairs_512 \
   --warmups 3 --runs 20 \
   --out outputs/lfm2_surgical/selective/phase0_mac.json
 
@@ -643,18 +744,18 @@ measures `S6_GPU`. The actual savings required to beat the monolith are
 
 ### Hard Requirements
 
-- [ ] Exactly the frozen six-piece partition; no exploratory alternatives.
-- [ ] Real checkpoint and real prompt only.
-- [ ] One shared artifact set per candidate pair; compute configuration is the
+- [x] Exactly the frozen six-piece partition; no exploratory alternatives.
+- [x] Real checkpoint and real prompt only.
+- [x] One shared artifact set per candidate pair; compute configuration is the
   only placement variable.
-- [ ] Release Swift and direct fp16 boundaries govern every gate.
-- [ ] Same-device dispatch, package hash, raw samples, and correctness for every
+- [x] Release Swift and direct fp16 boundaries govern every gate.
+- [x] Same-device dispatch, package hash, raw samples, and correctness for every
   reported result.
-- [ ] Best monolithic policy is always the baseline.
-- [ ] Stop at the first failed continuation gate.
-- [ ] iPhone remains untouched until G3 passes and the user confirms
+- [x] Best monolithic policy is always the baseline.
+- [x] Stop at the first failed continuation gate.
+- [x] iPhone remains untouched until G3 passes and the user confirms
   availability.
-- [ ] Positive and negative outcomes receive equally reproducible reports.
+- [x] Positive and negative outcomes receive equally reproducible reports.
 
 ### Definition of Done
 
@@ -710,16 +811,14 @@ as run when it was cancelled.
 - **What proves the mechanism?** Same-segmentation `S6_SELECTIVE` versus
   `S6_GPU`, plus same-device dispatch.
 
-### Unresolved Until Execution
+### Resolved by Execution
 
-- Does `.all` choose heterogeneous devices inside the fixed monolith on the
-  current macOS/iPadOS/iOS builds?
-- Are the three conv pairs faster under `.cpuAndNeuralEngine`, not merely
-  admissible?
-- Does the layers-8-15 mixed tail remain fully GPU-preferred on mobile OS?
-- Is five-boundary cost small enough on both Mac and iPad?
-
-Those are measured questions. None requires further design choice.
+- `.all` chose heterogeneous placement on the Mac but was slower and
+  numerically invalid versus `.cpuAndGPU`.
+- All three fixed pairs admitted fully to ANE, but none passed the correctness
+  gate required before latency measurement.
+- Tail placement and five-boundary cost remain intentionally unmeasured because
+  G0d made them irrelevant to this preregistration.
 
 ## References
 
@@ -728,6 +827,7 @@ Those are measured questions. None requires further design choice.
 - [Plan 010 terminal experiment](./010-lfm2-surgical-prefill-plan.md)
 - [Stage 1 negative-result note](../Notes/lfm2-stage1-negative-result.md)
 - [LFM2 surgical prefill guide](../Guides/apple-silicon/LFM2-surgical-prefill-CoreML-guide.md)
+- [Enumerated-shape compute-plan specialization](../Guides/apple-silicon/CoreML-enumerated-shape-compute-plan-specialization-guide.md)
 - [Core ML compute-unit scheduling guide](../Guides/apple-silicon/CoreML-Compute-Unit-Scheduling-guide.md)
 - [Split-graph and multifunction packaging guide](../Guides/apple-silicon/CoreML-split-graphs-multifunction-packaging-guide.md)
 - [Warmed-inference benchmark hygiene guide](../Guides/apple-silicon/Apple-Silicon-warmed-inference-benchmark-hygiene-guide.md)
