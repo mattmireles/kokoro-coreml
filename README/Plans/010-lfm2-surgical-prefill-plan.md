@@ -1,7 +1,7 @@
 # LFM2.5 Surgical Prefill Experiment Plan
 
 **Date:** 2026-07-20
-**Status:** In Progress (Phase 0 complete; Phase 1 in progress)
+**Status:** In Progress (Phases 0-1 complete; Phase 2 next)
 
 > Plan-of-record for the spec
 > `README/Notes/lfm2-surgical-experiment-spec-v1.1.md` (checked in alongside
@@ -159,7 +159,7 @@ the CoreML-LLM `lfm2.5-350m` monolith.
   `README/Notes/monolithic-coreml-control-experiment.md` (Kokoro monolith
   control; the G1a measurement mirrors it).
 
-## Fresh Baseline (Current State)
+## Fresh Baseline (At Plan Creation, 2026-07-20)
 
 - **Architecture:** No LFM2.5 code, exports, or measurements exist in this
   repo. CoreML-LLM (john-rocky) has a monolithic LFM2.5-350M ANE port with
@@ -183,9 +183,11 @@ Stage 0 (this repo)              Stage 1+ (new public repo)
                                    Mac Studio -> M1 Mini -> iPad -> iPhone (last)
 ```
 
-Every phase measures the same six placement configs (see Mode Definitions).
-The experiment is one variable at a time: placement at fp16 first, with
-quantization, stateful models, and larger checkpoints deferred to follow-ups.
+Stage 2 and later measurement phases compare the same six placement configs
+(see Mode Definitions). Stage 0 instead isolates one conv block and one GQA
+block to decide whether the full matrix is worth building. The experiment is
+one variable at a time: placement at fp16 first, with quantization, stateful
+models, and larger checkpoints deferred to follow-ups.
 
 ## Implementation Phases
 
@@ -268,31 +270,32 @@ before any decomposition work.
 
 **Tasks:**
 
-- [ ] `scripts/lfm2_surgical/extract_blocks.py` — load the real checkpoint,
+- [x] `scripts/lfm2_surgical/extract_blocks.py` — load the real checkpoint,
       extract one double-gated LIV conv block and one GQA block (prefill
       form: no cache read, full-sequence attention) as standalone
       `nn.Module`s with flat tensor I/O.
-- [ ] `scripts/lfm2_surgical/export_blocks.py` — trace and convert each block
+- [x] `scripts/lfm2_surgical/export_blocks.py` — trace and convert each block
       with coremltools ≥ 8.x, fp16, `convert_to="mlprogram"`, **enumerated
       shapes** over {128, 256, 512, 1024, 2048}. ANE-friendly layout per the
       transformer layout guide (last axis = sequence).
-- [ ] Admission check on **Mac Studio ANE** (valid here: admission is a
+- [x] Admission check on **Mac Studio ANE** (valid here: admission is a
       toolchain property) and **iPad Pro M2** (mobile-OS scheduler proxy):
       per-op dispatch per bucket via Xcode Performance Report and
       `scripts/dump_device_compute_plan.py`. Tables into the report.
-- [ ] `scripts/lfm2_surgical/check_numerics.py` — fp16 Core ML block outputs
+- [x] `scripts/lfm2_surgical/check_numerics.py` — fp16 Core ML block outputs
       vs fp32 PyTorch on 32 real prompts; report max-abs and cosine per
       bucket.
-- [ ] Write go/no-go into `README/Notes/lfm2-stage0-report.md`.
+- [x] Write go/no-go into `README/Notes/lfm2-stage0-report.md`.
 
 **Kill gates (any one → stop and write the negative-result report):**
 
-- **G0a (provisional):** <80% of conv-block ops dispatch to ANE at bucket
-  ≤512 on Mac Studio **and** iPad Pro. The spec defines G0a on A17; since the
-  phone runs last, Mac+iPad is the early kill signal and **G0a is confirmed
-  on-phone at the start of Phase 5** before any headline measurement. If the
-  phone contradicts the iPad, the phone verdict governs and Phase 5 stops at
-  the admission step.
+- **G0a (provisional):** kill if **either** the Mac Studio or iPad Pro places
+  <80% of conv-block ops on the ANE at any gate bucket {128, 256, 512}. Both
+  proxies must pass all three buckets. The spec defines G0a on A17; since the
+  phone runs last, Mac+iPad is the provisional early gate and **G0a is
+  confirmed on-phone at the start of Phase 5** before any headline
+  measurement. If the phone contradicts the proxies, the phone verdict
+  governs and Phase 5 stops at admission.
 - **G0b:** converter rejects enumerated shapes / forces range shapes for the
   conv block.
 - **G0c:** fp16 divergence > 1e-2 max-abs on block outputs with no
@@ -300,6 +303,9 @@ before any decomposition work.
 
 **Verification:** report contains per-op dispatch tables per bucket per
 device, the numerics table, and an explicit go/no-go line.
+
+**Phase audit:** Grade A. All 12 iPad plans match the current package hashes
+and their Mac counterparts; G0a/G0b/G0c pass with no blocking finding.
 
 ---
 
@@ -469,8 +475,10 @@ Questions).
 ## Executable Memory
 
 - Stage 0 proof: `python scripts/lfm2_surgical/export_blocks.py --all-buckets`
-  then `python scripts/dump_device_compute_plan.py <block.mlpackage>` —
-  dispatch tables match the report.
+  then `python scripts/dump_device_compute_plan.py --package
+  <block.mlpackage> --compute-units <CPU_AND_NE|CPU_AND_GPU> --out
+  <dispatch.json>` — dispatch tables match the report. Mobile runs additionally
+  pass `--device-type ipad --device-name iDesk`.
 - Numerics proof: `python scripts/lfm2_surgical/check_numerics.py --prompts 32`
   — max-abs ≤ 1e-2 per gate G0c.
 - Not testable by command: iPhone overnight protocol — proven by the Phase 4
@@ -524,12 +532,17 @@ Questions).
 - **A:** Split: Mac Studio + iPad Pro provisional kill in Phase 1; on-phone
   confirmation as the first step of Phase 5, before any headline run. Phone
   verdict governs.
+- **Q:** 350M or 230M?
+- **A:** 350M. The frozen checkpoint isolates cleanly and contains 16 layers:
+  10 conv and 6 GQA in the measured `C C A C C A C C A C A C A C A C`
+  order.
+- **Q:** Reuse CoreML-LLM's converter or write ours?
+- **A:** Use a small direct `coremltools` path informed by its shape and
+  layout choices. CoreML-LLM's monolithic converter is not a clean
+  per-block admission harness.
 
 ### Unresolved
 
-- **Q:** 350M or 230M?
-- **Options:** 350M (spec primary) unless its layer isolation is awkward, then
-  230M (documented 8+6 layout). Decided in Phase 0 from the checkpoint config.
 - **Q:** Can GPU-containing configs (C2, C4, C5, C6) run overnight with the
   screen locked, given the runbook's foreground-Metal policy?
 - **Options:** (a) keep display on at min brightness with autolock off —
@@ -537,10 +550,6 @@ Questions).
   ANE/CPU configs locked and GPU configs in an attended evening block.
   Current lean: (a), validated during the Phase 4 iPad rehearsal; whichever
   is chosen must be identical for every config so deltas stay meaningful.
-- **Q:** Reuse CoreML-LLM's converter or write ours?
-- **Options:** reuse if their conv-state and shape strategy fit per-segment
-  export; else our own `coremltools` path informed by their choices. Decided
-  by the Phase 0 diff.
 
 ## References
 
@@ -582,7 +591,7 @@ experiment. Prefill buckets are prompt-token counts on A17 Pro, C5.
 | Energy per prompt token, C5 vs best homogeneous | ≥20% lower | Pre-registered strong criterion | Unmeasured |
 | Decode tok/s spread across C1–C6 | within ±5% | H3 bandwidth-wall control | Unmeasured |
 | Segment-boundary I/O overhead @ bucket 512 | <30% of prefill | Gate G1a | Unmeasured |
-| Conv-block ops dispatched to ANE @ bucket ≤512 | ≥80% | Gate G0a | Unmeasured |
+| Conv-block ops dispatched to ANE @ bucket ≤512 | ≥80% | Gate G0a | Mac Studio: 100% (28/28); iPad M2: 100% (27/27), each at 128/256/512; A17 confirmation pending Phase 5 |
 
 ## Degradation and Rollback
 
@@ -620,7 +629,7 @@ experiment. Prefill buckets are prompt-token counts on A17 Pro, C5.
 
 **Artifacts to Preserve:**
 
-- `outputs/lfm2_surgical/stage0/dispatch_<device>_<bucket>.json`
+- `outputs/lfm2_surgical/stage0/dispatch_<device>_<block>_<bucket>.json`
 - `outputs/lfm2_surgical/stage0/numerics.json`
 - `outputs/lfm2_surgical/stage1/equivalence.json`
 - `outputs/lfm2_surgical/stage1/decomposition_tax.json`
@@ -716,6 +725,78 @@ a per-phase table, a `Required skills:` line on every phase, and an explicit
 do-not-use note for `bakeoff` / `audio-judge` (Kokoro-specific, and tempting
 during the measurement phases).
 **Files:** `README/Plans/010-lfm2-surgical-prefill-plan.md`
+
+### 2026-07-20 - CPU-Only FP16 Runtime Trap
+
+**Problem:** Core ML CPU-only validation of the fp16 block package terminated
+with `SIGTRAP` before producing parity evidence.
+**Root Cause:** The CPU-only runtime path on this host/toolchain does not
+provide a usable fp16 execution oracle for this package.
+**Fix:** Kept the exported graph and precision unchanged and ran validation
+with `CPU_AND_GPU`, comparing every output against the fp32 PyTorch reference.
+The gate is numerical parity, not CPU placement.
+**Files:** `scripts/lfm2_surgical/check_numerics.py`,
+`README/Notes/lfm2-stage0-report.md`
+
+### 2026-07-20 - RMSNorm Re-expression
+
+**Problem:** Reusing a LayerNorm-based RMS diagnostic exceeded the numerical
+budget for the conv block.
+**Root Cause:** The doubled `[x, -x]` LayerNorm rewrite is equivalent to
+RMSNorm in exact arithmetic, but its compiled fp16 reduction and normalization
+path accumulated enough rounding to push the live conv state over G0c.
+**Fix:** Exported the simpler direct
+`x * rsqrt(mean(x^2) + eps) * weight` composite. The final MIL operations
+remain fp16; no unsupported fp32-accumulation claim is retained.
+**Files:** `scripts/lfm2_surgical/blocks.py`,
+`scripts/lfm2_surgical/export_blocks.py`
+
+### 2026-07-20 - Actual-Activation GQA Drift
+
+**Problem:** The isolated GQA block passed a synthetic probe but its exposed
+key output drifted on the real layer-2 activation path.
+**Root Cause:** K RMSNorm and RoPE rounding compounded after the K projection
+and before the cache-format transpose.
+**Fix:** Kept only three named TorchScript module scopes in fp32
+(`operator_norm`, `attention_positioning`, `ffn_norm`) and inserted explicit
+fp16 boundaries after each island. Attention scores, mask, softmax,
+projections, residuals, and MLP remain fp16.
+**Files:** `scripts/lfm2_surgical/blocks.py`,
+`scripts/lfm2_surgical/export_blocks.py`,
+`tests/test_lfm2_surgical_tools.py`
+
+### 2026-07-20 - CoreDevice Tunnel-State Drift
+
+**Problem:** coremltools 8.3 reported the paired iPad as disconnected after a
+CoreDevice usage assertion ended, despite a usable live tunnel.
+**Root Cause:** `Device.get_connected_devices()` consumed stale cached tunnel
+state from `devicectl list devices`.
+**Fix:** Reacquire identifier-specific `devicectl device info details`, then
+fail closed on identifier, UDID, type, Developer Mode, DDI, pairing, and
+tunnel before repairing only the frozen in-memory connection state.
+**Files:** `scripts/dump_device_compute_plan.py`,
+`tests/test_lfm2_surgical_tools.py`
+
+### 2026-07-20 - Xcode SwiftBuild Clang Probe Deadlock
+
+**Problem:** Xcode 26.6 stalled while creating the model-runner build
+description at `clang -v -E -dM`.
+**Root Cause:** The `-v -E -dM` probe path deadlocked during build-description
+generation; pipe saturation is the leading inference, not a directly observed
+Xcode diagnosis.
+**Fix:** Added a narrow compiler wrapper that removes `-v` only for the
+`-E -dM` probe. That single change advances the build to Apple signing. iDesk
+was then registered through the existing App Store Connect key after explicit
+authorization. A new wildcard iOS development profile includes only iDesk and
+the two existing development certificates; no certificate was created,
+revoked, or rotated. The runner accepts that explicit profile UUID and uses
+manual signing, which Xcode 26 requires for this headless branch. The signed
+runner produced all 12 iPad compute plans: conv 27/27 ANE and GQA 84/84 GPU for
+the canonical enumerated packages and every fixed diagnostic bucket. Its local
+cache is keyed by team, bundle, and profile, so later signing changes cannot
+silently reuse an app built with different credentials.
+**Files:** `scripts/xcode_clang_probe_wrapper.zsh`,
+`scripts/dump_device_compute_plan.py`
 
 ## Critical Reminder
 

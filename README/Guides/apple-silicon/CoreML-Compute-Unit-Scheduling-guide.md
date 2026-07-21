@@ -14,6 +14,7 @@ April 14, 2026
 - **[Core ML vs MLX vocoder scheduling (ConvTranspose / iSTFT)](Core%20ML-MLX-Scheduling-1D-ConvTranspose-ISTFTNet-vocoders-guide.md)**: Fixed per-inference handoff cost, ISTFTNet boundary placement, dual-output ANE anchor, and why MLX short-bucket wins do not imply ANE is beatable.
 - **[Core ML ANE compiler failure triage](CoreML-ANE-compiler-failure-triage-guide.md)**: Execution-plan failures, compute-unit matrix discipline, and silent fallback separation.
 - **[iPhone Core ML device lab runbook](iPhone-CoreML-device-lab-runbook.md)**: Physical-device setup, foreground policy, and evidence capture for warmed iPhone Core ML rows.
+- **[LFM2.5 surgical prefill export](LFM2-surgical-prefill-CoreML-guide.md)**: Short-convolution state semantics, synchronized multi-input enumerated shapes, and per-bucket segment admission.
 
 The landscape of on-device machine learning execution on Apple Silicon is defined by a delicate interplay between high-level software abstraction and rigid, heterogeneous hardware architecture. Core ML serves as the primary orchestration layer, designed to seamlessly distribute mathematical operations across the Central Processing Unit (CPU), Graphics Processing Unit (GPU), and the highly specialized Apple Neural Engine (ANE).1 However, beneath this polished abstraction lies a complex, opaque scheduling heuristic characterized by stringent hardware constraints, volatile graph partitioning logic, and a pervasive phenomenon known within the engineering community as "silent fallback".2
 

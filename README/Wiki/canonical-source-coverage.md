@@ -1,6 +1,6 @@
 ---
 title: Canonical Source Coverage
-last_synced: 2026-07-15
+last_synced: 2026-07-21
 coverage_index: true
 ---
 
@@ -35,6 +35,7 @@ This is a deterministic coverage index, not a current-belief page. It lists read
 - [README/Guides/apple-silicon/Kokoro-M1-vocoder-partition-boundary-guide.md](../Guides/apple-silicon/Kokoro-M1-vocoder-partition-boundary-guide.md)
 - [README/Guides/apple-silicon/Kokoro-M1-vocoder-runtime-boundary-guide.md](../Guides/apple-silicon/Kokoro-M1-vocoder-runtime-boundary-guide.md)
 - [README/Guides/apple-silicon/Kokoro-to-CoreML-conversion.md](../Guides/apple-silicon/Kokoro-to-CoreML-conversion.md)
+- [README/Guides/apple-silicon/LFM2-surgical-prefill-CoreML-guide.md](../Guides/apple-silicon/LFM2-surgical-prefill-CoreML-guide.md)
 - [README/Guides/apple-silicon/apple-silicon-nvme-energy-measurement-guide.md](../Guides/apple-silicon/apple-silicon-nvme-energy-measurement-guide.md)
 - [README/Guides/apple-silicon/iPhone-CoreML-device-lab-runbook.md](../Guides/apple-silicon/iPhone-CoreML-device-lab-runbook.md)
 - [README/Guides/apple-silicon/pytorch-mps.md](../Guides/apple-silicon/pytorch-mps.md)
@@ -76,6 +77,9 @@ This is a deterministic coverage index, not a current-belief page. It lists read
 - [README/Notes/kokoro-drop-in-sdk-v1.md](../Notes/kokoro-drop-in-sdk-v1.md)
 - [README/Notes/kokoro-restarted-guide-triage-2026-06-06.md](../Notes/kokoro-restarted-guide-triage-2026-06-06.md)
 - [README/Notes/kokoro-runtime-boundary.md](../Notes/kokoro-runtime-boundary.md)
+- [README/Notes/lfm2-prefill-coreml-research-brief.md](../Notes/lfm2-prefill-coreml-research-brief.md)
+- [README/Notes/lfm2-stage0-report.md](../Notes/lfm2-stage0-report.md)
+- [README/Notes/lfm2-surgical-experiment-spec-v1.1.md](../Notes/lfm2-surgical-experiment-spec-v1.1.md)
 - [README/Notes/moe-ssd-dram-prefetch-guide-triage-2026-06-29.md](../Notes/moe-ssd-dram-prefetch-guide-triage-2026-06-29.md)
 - [README/Notes/moe-ssd-dram-prefetch-prior-art-create-guide-brief.md](../Notes/moe-ssd-dram-prefetch-prior-art-create-guide-brief.md)
 - [README/Notes/moe-ssd-dram-prefetch-results.md](../Notes/moe-ssd-dram-prefetch-results.md)

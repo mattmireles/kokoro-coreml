@@ -89,4 +89,3 @@ Avoid generic SEO tutorials and unsupported claims about ANE placement.
 - Primary-source references with stable links and version/commit identifiers.
 - Mark speculation separately from evidence-backed behavior.
 - Text only: no charts, images, diagrams, or generated visualizations.
-

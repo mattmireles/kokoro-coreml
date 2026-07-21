@@ -1,0 +1,5 @@
+# Isolated environment for check_hf_reference.py. Transformers 5.5 carries
+# official LFM2.5 model code; keep it separate from the coremltools 8.3 export
+# environment frozen in requirements-stage0.txt.
+torch==2.6.0
+transformers==5.5.0
