@@ -391,29 +391,29 @@ frozen model artifacts or Stage 1 behavior.
 
 **Tasks:**
 
-- [ ] Add a versioned `A17ParityResult` schema with device, app, checkpoint,
+- [x] Add a versioned `A17ParityResult` schema with device, app, checkpoint,
   prompt, artifact, dispatch-reference, oracle, per-output, suffix-logit, token,
   repetition, and verdict fields.
-- [ ] Extract only the minimal package loading, real pair-entry, output-copy,
+- [x] Extract only the minimal package loading, real pair-entry, output-copy,
   max-absolute-error, and common-suffix helpers from `SelectiveRuntime.swift`
   for reuse. Preserve the plan-011 executable's output byte-for-byte under its
   regression replay.
-- [ ] Add a parity-only runtime that accepts exactly one of the three frozen
+- [x] Add a parity-only runtime that accepts exactly one of the three frozen
   pair names and enforces the first-use plus five-warmed sequence internally.
-- [ ] Add the headless SwiftUI iPhone app and XcodeGen spec, using a local
+- [x] Add the headless SwiftUI iPhone app and XcodeGen spec, using a local
   package dependency on `LFM2SurgicalRuntime` and iOS 18 or later.
-- [ ] Add a resource-staging script that copies rather than mutates the source
+- [x] Add a resource-staging script that copies rather than mutates the source
   packages, verifies all package-tree hashes, and refuses unregistered pair or
   bucket input.
-- [ ] Add a host orchestrator that targets the frozen CoreDevice identifier,
+- [x] Add a host orchestrator that targets the frozen CoreDevice identifier,
   builds Release with the explicit profile, installs, launches, retrieves the
   durable JSON, and validates it before reporting a verdict.
-- [ ] Keep generated `.xcodeproj`, staged `.mlmodelc`/`.mlpackage` resources,
+- [x] Keep generated `.xcodeproj`, staged `.mlmodelc`/`.mlpackage` resources,
   DerivedData, `.app`, and result payloads ignored.
-- [ ] Add tests for manifest validation, frozen pair order, hash mismatch,
+- [x] Add tests for manifest validation, frozen pair order, hash mismatch,
   result row count, threshold boundary, NaN/infinity, output-name completeness,
   token mismatch, dispatch mismatch, and state-machine stop behavior.
-- [ ] Replay the old Stage 1 and plan-011 Phase 0 commands to prove the shared
+- [x] Replay the old Stage 1 and plan-011 Phase 0 commands to prove the shared
   helper refactor did not change their terminal classifications.
 
 **Gate P1:** Continue only if tests pass, Release app builds and signs for the
@@ -422,6 +422,38 @@ replays retain their prior results. Do not launch the app in this phase.
 
 **Verification:** The app has no timing code, the orchestrator can request only
 one frozen pair, and all generated or credential-bearing material is ignored.
+
+**Executed 2026-07-21:** Gate P1 passed without installing or launching the
+app. The public repo now contains a versioned untimed result contract, the
+single-pair state machine, a foreground SwiftUI runner, a checked-in XcodeGen
+spec, deterministic resource staging, and a fail-closed exact-device host
+orchestrator. The build-only C6-7 manifest staged and rehashed all 16 frozen
+packages. The Release iPhone app built with Xcode 26.6, passed strict codesign
+verification, embedded profile UUID
+`173c72a0-1f63-4748-95bd-bd195ca1580f`, and retained the exact application
+identifier `6ETYBAJKY8.com.mattmireles.LFM2A17Parity`. Its ignored build
+provenance is
+`outputs/lfm2_surgical/a17_parity/app-build-provenance.json` (file SHA-256
+`2db55da2d79fda4ebf3952c5ca1b4b7855a14d351c7388a1a4386468aa72b204`).
+
+All 27 Python tests passed, the Release Swift package built, `git diff
+--check` passed, and static scans found no A17 clock or prohibited performance
+field. Generated resources, the generated project, DerivedData, signed app,
+profile copy, and result payloads are ignored. The Stage 1 replay retained
+bit-exact fp16 logits (`outputMaxAbs = 0`) and terminal `KILL`; ignored evidence
+is `outputs/lfm2_surgical/a17_parity/regression/stage1_replay.json` (file
+SHA-256 `50d85a478a50d46203a3adc8cc1c561ed12a1831ac25289632677dbce1995830`).
+The plan-011 Phase 0 replay retained terminal G0d `KILL`, the C6-7 token change
+`941 -> 509`, and zero pair timing rows; ignored evidence is
+`outputs/lfm2_surgical/a17_parity/regression/plan011_phase0_replay.json` (file
+SHA-256 `32f515043926a133bc32618d0654b94626c38d7137333b9ff7325c0f4070275c`).
+The latter replay ran only after terminating a leaked set of 1,133 probe
+children from `Usage Helper`, waiting for the frozen quiet-host gate to pass,
+briefly pausing that exact helper, and resuming it immediately afterward.
+The audited public implementation is commit `a30820b`. The final independent
+phase audit found no remaining issues and graded Architecture A, Correctness
+risk A, and Complexity debt A. A post-commit replay of all 27 Python tests
+passed and the public tracked tree was clean.
 
 ---
 
