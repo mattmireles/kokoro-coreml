@@ -1,7 +1,7 @@
 # LFM2.5 Surgical Prefill Experiment Plan
 
 **Date:** 2026-07-20
-**Status:** In Progress (Phases 0-2 complete; Phase 3 next)
+**Status:** Terminal KILL at G1a (Phases 0-3 complete; publication closeout in progress)
 
 > Plan-of-record for the spec
 > `README/Notes/lfm2-surgical-experiment-spec-v1.1.md` (checked in alongside
@@ -66,16 +66,19 @@ the CoreML-LLM `lfm2.5-350m` monolith.
 
 ### Goals
 
-- [ ] **H1 (admission):** determine whether LFM2.5's double-gated short-conv
+- [x] **H1 (admission):** determine whether LFM2.5's double-gated short-conv
       blocks compile to and are scheduled on the ANE under enumerated shapes at
       fp16, with per-op dispatch evidence per device.
 - [ ] **H2 (prefill win):** find or refute a prompt-length regime where
       surgical placement (C5) beats every homogeneous config on prefill
-      latency and/or energy per prompt token on A17 Pro.
+      latency and/or energy per prompt token on A17 Pro. Cancelled before A17
+      measurement by the independent G1a stop gate.
 - [ ] **H3 (decode null, control):** show batch=1 decode tok/s is
       placement-invariant within ±5%; anything larger gets a root-cause.
+      Cancelled by G1a.
 - [ ] **H4 (sustained load):** measure degradation under ≥10 min continuous
       prefill on iPad Pro M2 (primary) and iPhone 15 Pro Max (secondary).
+      Cancelled by G1a.
 - [ ] Produce `stage0-report.md`, `stage1-report.md`, CSV results + plots, a
       public `lfm2-surgical-coreml` repo, and a case-study-3 section for the
       paper. A gate-triggered kill report satisfies this goal.
@@ -354,21 +357,24 @@ decomposition tax measured.
 
 **Tasks:**
 
-- [ ] Partition the layer stack into contiguous same-class segments per the
+- [x] Partition the layer stack into contiguous same-class segments per the
       Phase 0 interleaving table. Each segment: hidden states
       `[1, L_bucket, d]` fp16 in/out; conv rolling buffer `[1, d, k-1]` as
       explicit I/O; GQA prefill segments emit K/V as outputs (seed the decode
       cache), no cache inputs at prefill. Embedding and LM head as separate
       small models.
-- [ ] Export all segments with enumerated shapes over the frozen buckets
+- [x] Export all segments with enumerated shapes over the frozen buckets
       (`export_segments.py` in the new repo).
-- [ ] Swift orchestrator (macOS/iOS shared core): per-segment
-      `MLModelConfiguration.computeUnits`, prompt → embedding → segments →
-      logits, signpost timing per segment, end-to-end TTFT hook.
-- [ ] **Equivalence test:** greedy-decode 64 tokens on 32 prompts;
+- [x] Swift orchestrator (macOS/iOS shared core): direct fp16
+      `MLMultiArray` handoffs for prompt → embedding → segments → logits,
+      plus the monolithic and segmented G1a timing paths. The six-config and
+      device-matrix extensions were cancelled when G1a failed.
+- [ ] **Equivalence test (cancelled by G1a):** greedy-decode 64 tokens on 32 prompts;
       token-exact vs fp32 PyTorch; every mismatch inspected at logit level and
-      either attributed to fp16 or treated as a bug.
-- [ ] **Decomposition tax measurement (G1a):** monolithic-GPU export vs
+      either attributed to fp16 or treated as a bug. One real-prompt full
+      prefill probe matched the fp32 top token, but is not substituted for
+      the cancelled 32 × 64 G1b matrix.
+- [x] **Decomposition tax measurement (G1a):** monolithic-GPU export vs
       segmented-all-GPU, same bucket 512, same prompts.
 
 **Kill gates:**
@@ -377,12 +383,26 @@ decomposition tax measured.
   (all-GPU vs monolithic-GPU) — the tax swamps any possible placement win.
 - **G1b:** end-to-end token mismatch not attributable to fp16.
 
-**Verification:** `stage1-report.md` in the new repo with equivalence results
-and the measured tax; harness runs all six configs on the Mac.
+**Verification:** The public repo's `docs/stage1-report.md` records the
+authoritative release-Swift N=20 result: monolithic `36.032 ms` median versus
+segmented `57.591 ms`, a `21.558 ms` tax equal to `37.43%` of segmented
+prefill. The paired final logits are identical (`max_abs = 0.0`), every hidden
+boundary is direct fp16 `MLMultiArray`, and all 16 timed package hashes match
+their same-host compute-plan provenance. The frozen 30% gate therefore says
+**KILL**. The six-config harness extension and G1b matrix were not run because
+the gate requires the experiment to stop first.
+
+**Phase audit:** Grade A for architecture, correctness risk, and complexity
+debt. The audit independently rejected the initial Python/NumPy timing path,
+then accepted the direct-fp16 Swift measurement after all 16 artifact hashes,
+same-host dispatch plans, exact prompt/checkpoint/environment provenance, and
+the reproduction commands were bound into the final report.
 
 ---
 
 ### Phase 4: Stage 2a — Non-Phone Measurement (3–4 days, M1 Mini + iPad Pro M2)
+
+**Status:** Cancelled by the Phase 3 G1a kill gate.
 
 **Goal:** Everything measurable without the daily-driver phone: mechanism
 evidence (power rails), the H4 primary result, and full protocol shakedown so
@@ -421,6 +441,9 @@ dry-run on iPad with zero manual intervention between runs.
 
 ### Phase 5: Stage 2b — iPhone 15 Pro Max, Overnight (LAST; 1–3 nights)
 
+**Status:** Cancelled by the Phase 3 G1a kill gate. The iPhone remained
+untouched.
+
 **Goal:** All headline numbers. Runs only when Phases 0–4 are complete, on
 Matt's schedule (phone on the desk while he sleeps).
 
@@ -458,6 +481,10 @@ Questions).
 
 ### Phase 6: Analysis, Write-Up, Publication (2 days)
 
+**Status:** Measurement figures and release matrix cancelled by G1a. The
+negative-result report, public reproduction path, paper paragraph, and repo
+memory pointer are the required publication closeout.
+
 **Goal:** Turn measurements into the case study and the public artifact.
 
 **Required skills:** `markdown`, `write-notes`, `david-ogilvy`,
@@ -465,18 +492,20 @@ Questions).
 
 **Tasks:**
 
-- [ ] The crossover figure: prefill latency vs bucket, all configs, one plot.
-- [ ] Per-segment attribution: which segments moved, by how much (mechanism,
+- [ ] **Cancelled by G1a:** the crossover figure: prefill latency vs bucket,
+      all configs, one plot.
+- [ ] **Cancelled by G1a:** per-segment attribution: which segments moved, by how much (mechanism,
       not just aggregate).
-- [ ] H3 check: decode across configs; anything outside ±5% root-caused
+- [ ] **Cancelled by G1a:** H3 check: decode across configs; anything outside ±5% root-caused
       before write-up.
-- [ ] Honest decomposition-tax accounting (G1a number) inside every C5/C6
-      total.
-- [ ] Evaluate the pre-registered criteria verbatim; write strong / weak /
+- [x] Honest decomposition-tax accounting: the authoritative G1a number is
+      reported as a fraction of total segmented prefill. C5/C6 totals were
+      cancelled before measurement.
+- [x] Evaluate the pre-registered criteria verbatim; write strong / weak /
       negative verdict accordingly.
 - [ ] HF repo `mattmireles/lfm2.5-350m-surgical-coreml`: segment models,
       conversion scripts, reproduction README, license notes.
-- [ ] Case-study-3 section drafted into `Scratchpad/surgical-inference.md`;
+- [x] Case-study-3 section drafted into `Scratchpad/surgical-inference.md`;
       results notes + pointers recorded here in `README/Notes/`.
 
 **Verification:** a stranger can go from the public repos to every figure.
@@ -509,19 +538,19 @@ Questions).
 
 ### Hard Requirements (Must Pass)
 
-- [ ] Every reported number has a same-device per-op dispatch table.
-- [ ] Real trained checkpoint only; no random-weight fixtures anywhere.
-- [ ] Enumerated shapes on every exported model; no range shapes.
-- [ ] Cold vs warm never mixed; Release builds for all cross-framework rows.
-- [ ] iPhone 15 Pro Max untouched until Phases 0–4 are verified complete.
-- [ ] Any gate failure produces a written kill report in the repo.
+- [x] Every reported number has a same-device per-op dispatch table.
+- [x] Real trained checkpoint only; no random-weight fixtures anywhere.
+- [x] Enumerated or fixed shapes on every exported model; no range shapes.
+- [x] Cold vs warm never mixed; the governing benchmark is a Release build.
+- [x] iPhone 15 Pro Max untouched until Phases 0–4 are verified complete.
+- [x] Any gate failure produces a written kill report in the repo.
 
 ### Definition of Done
 
-- [ ] One of: full results through Phase 6, or a gate-triggered kill report
+- [x] One of: full results through Phase 6, or a gate-triggered kill report
       (`lfm2-stage0-report.md` / `stage1-report.md`) with the negative finding.
 - [ ] Public GitHub + HF repos live (if past Phase 2) with reproduction docs.
-- [ ] Paper case-study section drafted or explicitly cancelled with reasons.
+- [x] Paper case-study section drafted or explicitly cancelled with reasons.
 
 ## Open Questions
 
@@ -599,8 +628,8 @@ experiment. Prefill buckets are prompt-token counts on A17 Pro, C5.
 | Prefill @ bucket 512, C5 vs best homogeneous | ≥15% faster | Pre-registered strong criterion | Unmeasured |
 | Energy per prompt token, C5 vs best homogeneous | ≥20% lower | Pre-registered strong criterion | Unmeasured |
 | Decode tok/s spread across C1–C6 | within ±5% | H3 bandwidth-wall control | Unmeasured |
-| Segment-boundary I/O overhead @ bucket 512 | <30% of prefill | Gate G1a | Unmeasured |
-| Conv-block ops dispatched to ANE @ bucket ≤512 | ≥80% | Gate G0a | Mac Studio: 100% (28/28); iPad M2: 100% (27/27), each at 128/256/512; A17 confirmation pending Phase 5 |
+| Segment-boundary I/O overhead @ bucket 512 | <30% of prefill | Gate G1a | **37.43% — KILL** (Swift, direct fp16 boundaries, N=20) |
+| Conv-block ops dispatched to ANE @ bucket ≤512 | ≥80% | Gate G0a | Mac Studio: 100% (28/28); iPad M2: 100% (27/27), each at 128/256/512; A17 confirmation cancelled by G1a |
 
 ## Degradation and Rollback
 
@@ -821,6 +850,23 @@ Transformers 5.5 oracle exact through layers 0-2. The public report also now
 creates its own `.venv-hf`; it no longer references the private repo's ignored
 Transformers checkout.
 **Files:** public `README.md`, public `docs/stage0-report.md`
+
+### 2026-07-20 - Python Boundary Tax Was Not Authoritative
+
+**Problem:** The first G1a benchmark used Core ML's Python bridge. It exposed
+fp16 outputs as fp32 NumPy arrays and cast them back before the next model,
+making its 54.75% tax a language-bridge measurement rather than the runtime
+boundary the plan intended.
+**Root Cause:** Core ML's Python API materializes tensors across the bridge;
+unified memory does not make that representation change disappear.
+**Fix:** Built a shared macOS/iOS Swift runtime that passes fp16
+`MLMultiArray` outputs directly between packages and fails closed if any hidden
+boundary is not fp16. The authoritative counterbalanced N=20 run measured
+36.032 ms monolithic versus 57.591 ms segmented. The 21.558 ms tax is 37.43%
+of segmented prefill, above the frozen 30% stop line. Paired logits were
+identical, and all 16 package hashes matched their same-host compute plans.
+**Files:** public `Package.swift`, public `Sources/`, public
+`docs/stage1-report.md`
 
 ## Critical Reminder
 

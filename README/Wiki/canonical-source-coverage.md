@@ -79,6 +79,7 @@ This is a deterministic coverage index, not a current-belief page. It lists read
 - [README/Notes/kokoro-runtime-boundary.md](../Notes/kokoro-runtime-boundary.md)
 - [README/Notes/lfm2-prefill-coreml-research-brief.md](../Notes/lfm2-prefill-coreml-research-brief.md)
 - [README/Notes/lfm2-stage0-report.md](../Notes/lfm2-stage0-report.md)
+- [README/Notes/lfm2-stage1-negative-result.md](../Notes/lfm2-stage1-negative-result.md)
 - [README/Notes/lfm2-surgical-experiment-spec-v1.1.md](../Notes/lfm2-surgical-experiment-spec-v1.1.md)
 - [README/Notes/moe-ssd-dram-prefetch-guide-triage-2026-06-29.md](../Notes/moe-ssd-dram-prefetch-guide-triage-2026-06-29.md)
 - [README/Notes/moe-ssd-dram-prefetch-prior-art-create-guide-brief.md](../Notes/moe-ssd-dram-prefetch-prior-art-create-guide-brief.md)

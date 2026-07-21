@@ -12,7 +12,7 @@ On-device generative inference usually means choosing one backend: CPU for compa
 
 We evaluate on two structurally opposite generative workloads. Kokoro-82M, a feed-forward text-to-speech pipeline decomposed into four Core ML model families and three native Swift stages, runs **1.6–2.3× faster than MLX**, **2.0–4.0× faster than PyTorch MPS**, and **2.5–7.3× faster than PyTorch CPU** across three Macs, ships unchanged to iPhone — 30 s of audio in 3.7 s on an iPhone 15 Pro Max, beating the MLX Swift port on every bucket (1.25–1.44×, Release builds, thermally controlled) — and completes workloads that memory-exhaust the GPU frameworks. Magenta RealTime 2 (`mrt2_small`, 230M parameters), a live-music model with a hard 40 ms/frame streaming deadline, runs faster than real time on the same phone — a target its upstream GPU-only path does not attempt — and yields three findings we have not seen documented: the ANE admission cliff for streaming transformers is *in-graph state mutation*, not attention math; tensor layout determines FP16 *numerical survival* per compute unit, not just placement; and per-call cost on weight-bandwidth-bound stages is weight bytes ÷ DRAM bandwidth on every engine. Instruments traces and paired power profiles verify all-ANE placement with zero app-attributed GPU intervals and a 56% cut in CPU instructions versus a GPU control.
 
-Negative results are central. A monolithic Core ML export of the first workload does not exist as a valid artifact: conversion fails at the data-dependent alignment, and the strongest partial monolith is numerically invalid. The ANE independently rejected the first workload's largest dense stage on tensor geometry and every stateful variant of the second's transformer — and the decomposed pipelines win anyway. The active ingredients are decomposition, static per-stage compilation, deliberate placement, and validated host glue, not any single accelerator. Code, models, and benchmarks for the first case study are open source, as are the second's conversion exporters, validators, and validation receipts; the full artifact map is given in Appendix A.
+Negative results are central. A monolithic Core ML export of the first workload does not exist as a valid artifact: conversion fails at the data-dependent alignment, and the strongest partial monolith is numerically invalid. The ANE independently rejected the first workload's largest dense stage on tensor geometry and every stateful variant of the second's transformer — and the decomposed pipelines win anyway. A pre-registered third-model trial on LFM2.5-350M stopped before device placement: although its convolution blocks admitted to ANE and its attention blocks to GPU, 13 segment predictions consumed 37.43% of segmented prefill, beyond the frozen 30% boundary-tax gate (§7.3). The active ingredients are decomposition, static per-stage compilation, deliberate placement, and validated host glue, not any single accelerator. Code, models, and benchmarks for the first case study are open source, as are the second's conversion exporters, validators, and validation receipts; the full artifact map is given in Appendix A.
 
 **Keywords:** on-device inference, heterogeneous computing, Apple Silicon, Neural Engine, Core ML, model decomposition, generative models, text-to-speech, music generation, autoregressive streaming, MLX
 
@@ -650,6 +650,29 @@ The two case studies also disagree instructively about rewrites: Kokoro's op-lev
 
 ### 7.3 When Surgical Inference Is Worth the Effort
 
+#### Pre-registered third-model falsification: LFM2.5-350M
+
+We tested the boundary criterion directly on a third-party hybrid language
+model that we did not design or port upstream. LFM2.5-350M interleaves ten
+short-convolution layers and six GQA layers into 13 maximal same-class runs.
+Stage 0 confirmed the mechanism prediction on physical hardware: all 27
+costed convolution-block operations preferred ANE on an M2 iPad, while all 84
+GQA-block operations preferred GPU. The complete segmented pipeline still
+failed before heterogeneous placement was allowed to become the independent
+variable.
+
+At the frozen 512-token gate, a Release Swift runtime with direct fp16
+`MLMultiArray` handoffs measured 36.032 ms median for a one-prediction
+monolithic control and 57.591 ms for the 13-segment control. The 21.558 ms tax
+is 37.43% of segmented prefill, above the pre-registered 30% stop line. Both
+paths permitted the GPU throughout, paired final logits matched exactly, and
+all 16 packages were hash-bound to same-host compute-plan evidence. We
+therefore cancelled the six-policy, decode, energy, thermal, and phone
+matrices. The result does not say heterogeneous placement can never help this
+architecture; it says fine interleaving makes separate `prediction()` calls
+the wrong packaging boundary. Multifunction or fused execution is a new
+experiment, not a reinterpretation of this one.
+
 Surgical Inference required substantial engineering: per-bucket Core ML exports with numerical validation, a Swift package with custom DSP, per-stage compute-unit ablations, and a counterbalanced bakeoff harness. This effort is justified when:
 
 - **The workload is compute-bound and parallelizable.** Dense convolutional vocoders, image denoisers, and speech encoders fit. Memory-bandwidth-bound autoregressive transformers do not.
@@ -801,6 +824,15 @@ Pre-built `.mlpackage` binaries on the [Hugging Face mirror](https://huggingface
 - Paired ANE-vs-GPU power capture with the comparability gate: `scripts/run_power_profiler_pair_device.py` with `scripts/summarize_power_xctrace_exports.py`
 - Sustained-run log analyzer (duty cycle, backpressure share, underruns, thermal): `scripts/analyze_crossfade_runtime_host_log.py`
 - Investigation ledgers with per-run device log paths: `README/Notes/mrt2-coreml-proof-v1.md`, `README/Notes/mrt2-small-graph-teardown-v1.md`
+
+### A.3 Pre-Registered LFM2.5 Falsification
+
+The public [`lfm2-surgical-coreml`](https://github.com/mattmireles/lfm2-surgical-coreml)
+repository contains the pinned checkpoint contract, conversion scripts,
+shared Swift benchmark runtime, Stage 0 admission evidence, and terminal Stage
+1 negative-result report. Generated packages and measurement JSON remain
+uncommitted because the derived weights retain the LFM Open License; the
+report records exact package hashes and commands to regenerate all evidence.
 
 ## Appendix B: Benchmark Boundaries
 

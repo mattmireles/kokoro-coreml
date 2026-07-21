@@ -1,7 +1,8 @@
 # LFM2.5 Surgical Prefill Stage 0 Report
 
 **Date:** 2026-07-20
-**Status:** Phase 0 and Phase 1 complete; Stage 0 admission gates pass
+**Status:** Stage 0 admission gates pass; the experiment later terminated at
+Stage 1 gate G1a
 **Checkpoint:** `LiquidAI/LFM2.5-350M` at
 `b9d6e4e2d75f440b12a2b4d731c808004ecbbd89`
 **Prior art:** `john-rocky/CoreML-LLM` at
@@ -23,6 +24,11 @@ on the GPU. The iPad Pro M2 independently places all 27 costed conv-block
 operations on ANE and all 84 GQA-block operations on GPU for the canonical
 enumerated packages and every fixed-shape diagnostic twin. Stage 0 therefore
 passes G0a, G0b, and G0c and may proceed to Phase 2.
+
+The continuation is now closed. Stage 1's direct-fp16 Swift control measured a
+`37.43%` decomposition tax, above the frozen `30%` G1a stop line. See
+[`lfm2-stage1-negative-result.md`](lfm2-stage1-negative-result.md) for the
+terminal decision and public evidence.
 
 ## Upstream Converter Diff
 
