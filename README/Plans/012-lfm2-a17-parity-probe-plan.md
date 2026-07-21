@@ -1,7 +1,7 @@
 # LFM2.5 A17 Pro ANE Parity Probe Plan
 
 **Date:** 2026-07-20
-**Status:** In Progress
+**Status:** Complete — terminal `KILL` at Gate P2
 
 > This is one final, deliberately small diagnostic after
 > [plan 011](./011-lfm2-selective-surgical-prefill-plan.md) terminated at G0d.
@@ -75,16 +75,16 @@ generalization, or production path.
 
 ### Goals
 
-- [ ] Prove that each tested `.cpuAndNeuralEngine` package actually admits its
+- [x] Prove that each tested `.cpuAndNeuralEngine` package actually admits its
   heavy operations to the A17 Pro ANE on the same phone and OS build.
-- [ ] Compare all named pair outputs under `.cpuAndGPU` and
+- [x] Compare all named pair outputs under `.cpuAndGPU` and
   `.cpuAndNeuralEngine` using real layer-entry activations from the frozen
   prompt.
-- [ ] Propagate both outputs through the same untimed GPU suffix and compare
+- [x] Propagate both outputs through the same untimed GPU suffix and compare
   final logits and top token.
-- [ ] Preserve exact package hashes, app revision, signing identity, device
+- [x] Preserve exact package hashes, app revision, signing identity, device
   identity, OS build, raw per-repetition results, and dispatch evidence.
-- [ ] Stop at the first failed pair and publish the negative result as useful
+- [x] Stop at the first failed pair and publish the negative result as useful
   evidence.
 
 ### Non-Goals
@@ -300,8 +300,8 @@ instead of checking in a hand-edited project file.
 
 Add one minimal headless SwiftUI app to the public repo. It imports the existing
 `LFM2SurgicalRuntime` Swift package, loads only ignored build-staged resources,
-runs one explicitly named pair, and atomically writes a versioned JSON result
-to `Documents/a17-parity-result.json` before exiting its work loop.
+runs one explicitly named pair, and atomically writes a versioned pair-specific
+JSON result under `Documents/` before exiting its work loop.
 
 A narrow host-side command performs the mechanical workflow:
 
@@ -465,15 +465,16 @@ passed and the public tracked tree was clean.
 
 **Tasks:**
 
-- [ ] Capture same-phone `CPU_AND_GPU` and `CPU_AND_NE` compute plans for the
+- [x] Capture same-phone `CPU_AND_GPU` and `CPU_AND_NE` compute plans for the
   exact `C6-7` fixed-twin hash.
-- [ ] Validate the frozen dispatch gate and persist the two hash-bound JSON
+- [x] Validate the frozen dispatch gate and persist the two hash-bound JSON
   files before launching the parity app.
-- [ ] Run only `segment_04_conv_6_7` with the registered prompt and exact six
+- [x] Run only `segment_04_conv_6_7` with the registered prompt and exact six
   correctness comparisons.
-- [ ] Retrieve and validate the result before uninstalling, replacing, or
+- [x] Retrieve and validate the result before uninstalling, replacing, or
   rebuilding the app.
-- [ ] Write `c6-7-result.json` and update the draft public report with either
+- [x] Write the canonical C6-7 result envelope and update the public report
+  with either
   `INCONCLUSIVE`, `KILL`, or authorization for Phase 3.
 
 **Gate P2:**
@@ -487,6 +488,27 @@ passed and the public tracked tree was clean.
 package hash, dispatch files, all named outputs, all six comparisons, suffix
 logits, and tokens.
 
+**Executed 2026-07-21:** Gate P2 returned terminal `KILL` on the exact physical
+iPhone 15 Pro Max (`iPhone16,2`, A17 Pro), iOS 27.0 beta build `24A5380h`.
+The C6-7 GPU control preferred 54/56 costed operations on GPU, two on CPU, and
+zero on ANE; its dispatch file SHA-256 is
+`6855d7ec08195b63a05a5b566f666b187ef254d596f810f0961d9e1371f9a05d`.
+The ANE-permitted candidate preferred all 56/56 operations on ANE, including
+12/12 convolutions; its dispatch file SHA-256 is
+`1a3bb1f7143501fc8971bd0abb9f4e9142414e5bbc4e32032b8f9d32bd571470`.
+
+The GPU oracle passed with token `941`, and the enumerated source matched its
+fixed twin exactly in all six rows. Every GPU-versus-ANE row then reproduced
+the same error: pair-output `max_abs = 0.070068359375`, suffix-logit
+`max_abs = 3.6102294921875`, and token `941 -> 509`. First-use, warmed, and
+reversed-call-order rows were identical. The immutable result is
+`outputs/lfm2_surgical/a17_parity/pairs/segment_04_conv_6_7.result.json`;
+file SHA-256
+`6878e45d085ea0683c5f8ee864e13eb5a25f228f7a3245155c28b74ea44f5568`,
+canonical payload SHA-256
+`53fcae5d2502d6e9aae93fe1c85d0523ae378ae126a6ea877611308e574f6c20`.
+It records `performance_samples_recorded = 0`.
+
 ---
 
 ### Phase 3: Remaining Registered Pairs
@@ -499,12 +521,15 @@ three-pair set already selected by plan 011.
 **Tasks:**
 
 - [ ] Repeat the exact dispatch and six-comparison procedure for `C0-1`.
-- [ ] Stop immediately on `INCONCLUSIVE` or `KILL`.
+  **Cancelled:** C6-7 returned terminal `KILL` at Gate P2.
+- [x] Stop immediately on `INCONCLUSIVE` or `KILL`.
 - [ ] Only after `C0-1` passes, repeat the procedure for `C3-4`.
-- [ ] Preserve separate raw result and dispatch files for each pair; do not
+  **Cancelled:** C0-1 was not authorized.
+- [x] Preserve separate raw result and dispatch files for each pair; do not
   overwrite a passing earlier result during a later app build.
 - [ ] Produce a machine-readable aggregate that references rather than copies
   the three immutable pair-result hashes.
+  **Cancelled:** the aggregate is defined only for three passing pairs.
 
 **Gate P3:**
 
@@ -517,6 +542,10 @@ No outcome authorizes timing inside this plan.
 **Verification:** The aggregate verdict is mechanically derivable from three
 pair results and six compute-plan files, with no manually entered metric.
 
+**Execution outcome:** Phase 3 was correctly skipped. No C0-1 or C3-4 phone
+dispatch or result file exists, and the orchestrator rejects either command
+because the predecessor result is not `PAIR PASS`.
+
 ---
 
 ### Phase 4: Closeout and Publication
@@ -528,18 +557,18 @@ pair results and six compute-plan files, with no manually entered metric.
 
 **Tasks:**
 
-- [ ] Complete `docs/a17-parity-report.md` in the public repo with the frozen
+- [x] Complete `docs/a17-parity-report.md` in the public repo with the frozen
   hypothesis, device/OS, hashes, commands, raw-result paths, dispatch tables,
   all correctness rows, terminal gate, and limitations.
-- [ ] Add `README/Notes/lfm2-a17-parity-result.md` in `kokoro-coreml` with the
+- [x] Add `README/Notes/lfm2-a17-parity-result.md` in `kokoro-coreml` with the
   local interpretation and links to plans 010, 011, and this plan.
-- [ ] Update this plan's status, checkboxes, actual revisions, executed
+- [x] Update this plan's status, checkboxes, actual revisions, executed
   commands, evidence paths, and terminal verdict.
-- [ ] Link the report from the public README without weakening the terminal
+- [x] Link the report from the public README without weakening the terminal
   Stage 1 or selective reports.
-- [ ] Run public Python tests, Release Swift build, historical replays,
+- [x] Run public Python tests, Release Swift build, historical replays,
   Markdown checks, memory health, and secret scans over both diffs.
-- [ ] Keep every result phrased as device- and OS-specific.
+- [x] Keep every result phrased as device- and OS-specific.
 
 **Interpretation:**
 
@@ -555,6 +584,30 @@ pair results and six compute-plan files, with no manually entered metric.
 **Verification:** Public report, raw JSON, kokoro note, and this plan all state
 the same terminal verdict and explicitly say that no performance measurement
 occurred.
+
+**Executed 2026-07-21:** All 27 public Python tests passed, the public Swift
+package built in Release mode, `py_compile` and `git diff --check` passed, and
+both historical classifications reproduced: Stage 1 remained terminal `KILL`
+with bit-exact fp16 logits, while plan 011 Phase 0 remained terminal G0d
+`KILL` with zero pair timing rows. The final ignored replay files are
+`outputs/lfm2_surgical/a17_parity/regression/final_stage1_replay.json`
+(SHA-256
+`4821b226bd832f903ea7882797c024fe0dec8928fe57e1d2eb27adcca0abaece`)
+and
+`outputs/lfm2_surgical/a17_parity/regression/final_plan011_phase0_replay.json`
+(SHA-256
+`de86cfce83959613acf6fdc4b59d025bac6ee803dd37451d39986fb2e50b119c`).
+Markdown lint passed for both closeout documents and their routing pages.
+Memory health passed strict Grade A at 87/87 canonical sources, with the new
+note added to the generated coverage index. Scoped TruffleHog scans over both
+plan diffs found zero verified or unknown secrets. Mechanical envelope
+validation reproduced `KILL`, returned no authorized next pair, and confirmed
+that no later-pair result or dispatch artifact exists.
+
+The public closeout is commit
+`0fcfd70df7636c66cffd9775c3842b05a9d23fef`. The independent terminal phase
+audit found no remaining issues and graded Architecture A, Correctness risk A,
+and Complexity debt A.
 
 ## Intended Files
 
@@ -718,17 +771,18 @@ does not contain the exact phone UDID and bundle identifier.
 
 ### Hard Requirements
 
-- [ ] Exact checkpoint, prompt, bucket, precision, and fixed-twin hashes.
-- [ ] Exact physical `iPhone16,2` identity and live OS/build provenance.
-- [ ] Same-phone compute plans for both policies for every executed pair.
-- [ ] Heavy-operation ANE admission satisfies the frozen dispatch gate.
-- [ ] Real layer-entry activations and explicit states from the GPU oracle.
+- [x] Exact checkpoint, prompt, bucket, precision, and fixed-twin hashes.
+- [x] Exact physical `iPhone16,2` identity and live OS/build provenance.
+- [x] Same-phone compute plans for both policies for every executed pair.
+- [x] Heavy-operation ANE admission satisfies the frozen dispatch gate.
+- [x] Real layer-entry activations and explicit states from the GPU oracle.
 - [ ] Every named output and final logits stay within `1e-2` for all six
-  comparisons.
+  comparisons. **Failed:** C6-7 exceeded the threshold in every row.
 - [ ] GPU oracle and both substituted paths retain token `941`.
-- [ ] Stop at the first failed or uninterpretable pair.
-- [ ] Record no latency or performance claim.
-- [ ] Publish positive, negative, and inconclusive outcomes with equal rigor.
+  **Failed:** the ANE-permitted path returned token `509` in every row.
+- [x] Stop at the first failed or uninterpretable pair.
+- [x] Record no latency or performance claim.
+- [x] Publish positive, negative, and inconclusive outcomes with equal rigor.
 
 ### Definition of Done
 
@@ -791,11 +845,14 @@ explicitly rather than left ambiguous.
 
 ### Resolved During Execution
 
-- The exact installed provisioning-profile UUID and expiration.
-- The live iOS version/build at the moment of execution.
-- Whether each A17 compute plan satisfies the frozen admission gate.
-- Whether C6-7, then C0-1, then C3-4 retain parity.
-- The final `KILL`, `A17 PARITY PASS`, or `INCONCLUSIVE` verdict.
+- The installed profile was
+  `173c72a0-1f63-4748-95bd-bd195ca1580f`, expiring 2027-07-21.
+- The phone ran iOS 27.0 beta build `24A5380h`.
+- C6-7 passed the same-phone dispatch gate: the control used no ANE-preferred
+  operations, while the ANE candidate placed 56/56 costed operations on ANE.
+- C6-7 failed all six correctness rows and changed token `941 -> 509`; C0-1
+  and C3-4 were cancelled before phone dispatch.
+- The final verdict is terminal `KILL`. No performance sample was collected.
 
 None of these execution-derived values permits changing the experiment design.
 

@@ -78,6 +78,7 @@ This is a deterministic coverage index, not a current-belief page. It lists read
 - [README/Notes/kokoro-drop-in-sdk-v1.md](../Notes/kokoro-drop-in-sdk-v1.md)
 - [README/Notes/kokoro-restarted-guide-triage-2026-06-06.md](../Notes/kokoro-restarted-guide-triage-2026-06-06.md)
 - [README/Notes/kokoro-runtime-boundary.md](../Notes/kokoro-runtime-boundary.md)
+- [README/Notes/lfm2-a17-parity-result.md](../Notes/lfm2-a17-parity-result.md)
 - [README/Notes/lfm2-prefill-coreml-research-brief.md](../Notes/lfm2-prefill-coreml-research-brief.md)
 - [README/Notes/lfm2-selective-split-result.md](../Notes/lfm2-selective-split-result.md)
 - [README/Notes/lfm2-stage0-report.md](../Notes/lfm2-stage0-report.md)
