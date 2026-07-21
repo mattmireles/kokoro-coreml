@@ -15,6 +15,7 @@ April 14, 2026
 - **[Core ML ANE compiler failure triage](CoreML-ANE-compiler-failure-triage-guide.md)**: Execution-plan failures, compute-unit matrix discipline, and silent fallback separation.
 - **[iPhone Core ML device lab runbook](iPhone-CoreML-device-lab-runbook.md)**: Physical-device setup, foreground policy, and evidence capture for warmed iPhone Core ML rows.
 - **[LFM2.5 surgical prefill export](LFM2-surgical-prefill-CoreML-guide.md)**: Short-convolution state semantics, synchronized multi-input enumerated shapes, and per-bucket segment admission.
+- **[Enumerated-shape compute-plan specialization](CoreML-enumerated-shape-compute-plan-specialization-guide.md)**: Honest bucket-specific placement evidence when `MLComputePlan` cannot select a non-default specialization.
 
 The landscape of on-device machine learning execution on Apple Silicon is defined by a delicate interplay between high-level software abstraction and rigid, heterogeneous hardware architecture. Core ML serves as the primary orchestration layer, designed to seamlessly distribute mathematical operations across the Central Processing Unit (CPU), Graphics Processing Unit (GPU), and the highly specialized Apple Neural Engine (ANE).1 However, beneath this polished abstraction lies a complex, opaque scheduling heuristic characterized by stringent hardware constraints, volatile graph partitioning logic, and a pervasive phenomenon known within the engineering community as "silent fallback".2
 

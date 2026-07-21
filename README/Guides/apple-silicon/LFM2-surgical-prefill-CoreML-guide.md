@@ -135,7 +135,9 @@ each layer's state at the point where that layer runs.
 3. Compare every Core ML output with the independent fp32 reference on real
    prompts. Include convolution state and K/V outputs in the gate.
 4. Build fixed-shape diagnostic twins for each bucket. A compute plan for an
-   enumerated package may describe only its default specialization.
+   enumerated package may describe only its default specialization. Follow the
+   [bucket-specific compute-plan guide](CoreML-enumerated-shape-compute-plan-specialization-guide.md)
+   when the exact non-default bucket decides a gate.
 5. Capture per-op `MLComputePlan` placement on every claim-bearing device.
    `.cpuAndNeuralEngine` is permission to use the ANE, not proof of residency.
 6. Keep conversion, first-load compilation, warmed prediction, and sustained
@@ -159,6 +161,7 @@ requirement.
 ## Related documentation
 
 - [Core ML compute unit scheduling](CoreML-Compute-Unit-Scheduling-guide.md)
+- [Enumerated-shape compute-plan specialization](CoreML-enumerated-shape-compute-plan-specialization-guide.md)
 - [Core ML ANE compiler failure triage](CoreML-ANE-compiler-failure-triage-guide.md)
 - [Splitting Core ML graphs](Splitting-CoreML-Graphs-guide.md)
 - [Core ML ANE tensor layout](CoreML-ANE-tensor-layout-guide.md)
