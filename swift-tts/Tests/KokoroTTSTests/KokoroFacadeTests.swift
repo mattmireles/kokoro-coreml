@@ -112,8 +112,8 @@ final class KokoroFacadeTests: XCTestCase {
         _ = try await loadFacadeFromMainActor(resources: .directory(root))
     }
 
-    /// Verifies `KokoroTTS.prepare` recursively splits chunks that exceed token budget after phonemization.
-    func testFacadePrepareRecursivelySplitsOversizedTokenizedChunks() async throws {
+    /// Verifies preparation keeps every chunk inside the one prewarmed duration shape.
+    func testFacadePrepareRecursivelySplitsChunksBeyondRuntimeDurationShape() async throws {
         let root = try makeBundleRoot()
         let modelProvider = try KokoroSDKModelProvider(resources: .directory(root))
         let vocab = try modelProvider.vocab()
@@ -134,7 +134,11 @@ final class KokoroFacadeTests: XCTestCase {
         let prepared = try await tts.prepare(text, voice: .afHeart)
 
         XCTAssertGreaterThan(prepared.count, 1)
-        XCTAssertTrue(prepared.allSatisfy { ($0.numTokens ?? 0) <= PipelineConstants.maxCallerChunkTokens })
+        XCTAssertTrue(
+            prepared.allSatisfy {
+                ($0.numTokens ?? 0) <= KokoroTTS.runtimeDurationTokenLength
+            }
+        )
     }
 
     /// Verifies hosted manifest paths cannot escape the downloaded cache.
@@ -213,9 +217,12 @@ final class KokoroFacadeTests: XCTestCase {
 
     /// Verifies model package corruption is rejected before Core ML compiles it.
     func testModelProviderRejectsBadModelPackageTreeHash() throws {
-        let packagePath = "coreml/kokoro_duration_t32.mlpackage"
+        let packagePath = "coreml/kokoro_duration_t128.mlpackage"
         var entries = requiredPackageEntries()
-        entries[0] = [
+        let packageIndex = try XCTUnwrap(entries.firstIndex {
+            ($0["path"] as? String) == packagePath
+        })
+        entries[packageIndex] = [
             "path": packagePath,
             "tree_sha256": String(repeating: "0", count: 64),
             "file_count": 1,
@@ -241,8 +248,8 @@ final class KokoroFacadeTests: XCTestCase {
         }
     }
 
-    /// Verifies stale duration packages on disk are ignored unless the manifest lists them.
-    func testModelProviderFiltersDurationChoicesToManifestPackages() throws {
+    /// Verifies the facade exposes one padded runtime shape and ignores stale packages.
+    func testModelProviderSelectsSingleRuntimeDurationShape() throws {
         let root = try makeBundleRoot()
         try writeOneFilePackage(
             root: root,
@@ -252,7 +259,10 @@ final class KokoroFacadeTests: XCTestCase {
 
         let provider = try KokoroSDKModelProvider(resources: .directory(root))
 
-        XCTAssertEqual(provider.durationModelChoices().map(\.tokenLength), [32, 64, 128, 256, 320, 384, 512])
+        XCTAssertEqual(
+            provider.durationModelChoices().map(\.tokenLength),
+            [KokoroTTS.runtimeDurationTokenLength]
+        )
     }
 
     /// Verifies bundles fail fast when a manifest bucket has no matching stage model.
@@ -318,12 +328,12 @@ final class KokoroFacadeTests: XCTestCase {
         let root = try makeBundleRoot()
         let compiled = root.appendingPathComponent("compiled", isDirectory: true)
         let outside = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let linkedModel = compiled.appendingPathComponent("kokoro_duration_t32.mlmodelc", isDirectory: true)
+        let linkedModel = compiled.appendingPathComponent("kokoro_duration_t128.mlmodelc", isDirectory: true)
         try FileManager.default.createDirectory(at: compiled, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(at: linkedModel, withDestinationURL: outside)
-        try Data("\(modelPackageEntry(path: "coreml/kokoro_duration_t32.mlpackage", data: Data("duration-32".utf8))["tree_sha256"]!)\n".utf8)
-            .write(to: compiled.appendingPathComponent("kokoro_duration_t32.mlmodelc.kokoro-source-tree-sha256"))
+        try Data("\(modelPackageEntry(path: "coreml/kokoro_duration_t128.mlpackage", data: Data("duration-128".utf8))["tree_sha256"]!)\n".utf8)
+            .write(to: compiled.appendingPathComponent("kokoro_duration_t128.mlmodelc.kokoro-source-tree-sha256"))
         let provider = try KokoroSDKModelProvider(resources: .directory(root, compiledModelsDirectory: compiled))
         let choice = try XCTUnwrap(provider.durationModelChoices().first)
 

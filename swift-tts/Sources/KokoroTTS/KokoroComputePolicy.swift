@@ -15,15 +15,20 @@ public struct KokoroComputePolicy: Equatable, Sendable {
     /// Generator/HAR-post model compute units.
     public let generator: MLComputeUnits
 
-    /// Gist iPhone default policy.
+    /// Reliable staged iPhone policy.
+    ///
+    /// The padded duration graph can spend minutes in MPSGraph specialization
+    /// on recent iOS builds. Duration is a small fraction of end-to-end
+    /// latency, so keep that stage on CPU while preserving the measured
+    /// GPU/ANE policy for the acoustic models.
     public static let gistDefault = KokoroComputePolicy(
-        duration: .cpuAndGPU,
+        duration: .cpuOnly,
         f0ntrain: .cpuAndGPU,
         decoderPre: .cpuAndNeuralEngine,
         generator: .cpuAndGPU
     )
 
-    /// Reliable CPU-only fallback policy.
+    /// Explicit CPU-only policy for callers that intentionally choose it.
     public static let cpuOnly = KokoroComputePolicy(
         duration: .cpuOnly,
         f0ntrain: .cpuOnly,

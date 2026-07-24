@@ -17,7 +17,7 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
     /// Directory containing or caching compiled `.mlmodelc` models.
     let compiledModelsDirectory: URL
 
-    /// Lazy duration choices discovered from available model packages.
+    /// Single padded duration shape used by the starter runtime.
     private let durationChoices: [DurationModelChoice]
 
     /// Loaded Core ML model cache.
@@ -26,8 +26,8 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
     /// Manifest model-package paths already verified in this process.
     private var validatedModelPackages: Set<String> = []
 
-    /// Active compute-unit policy.
-    private var computePolicy: KokoroComputePolicy
+    /// Compute-unit policy selected for this facade.
+    private let computePolicy: KokoroComputePolicy
 
     /// Sidecar suffix tying reusable `.mlmodelc` output to a source tree hash.
     private static let compiledSourceHashSuffix = ".kokoro-source-tree-sha256"
@@ -66,7 +66,17 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
             manifest: manifest,
             durationChoices: durationChoices
         )
-        self.durationChoices = durationChoices
+        guard let runtimeDuration = durationChoices.first(where: {
+            $0.allowsPadding && $0.tokenLength == KokoroTTS.runtimeDurationTokenLength
+        }) else {
+            throw KokoroError.missingModel(
+                "kokoro_duration_t\(KokoroTTS.runtimeDurationTokenLength).mlpackage"
+            )
+        }
+        // The starter bundle has one 15-second acoustic bucket. Matching it
+        // with one padded duration shape avoids seven independent first-load
+        // and specialization paths during playback.
+        self.durationChoices = [runtimeDuration]
         self.manifest = manifest
         self.computePolicy = computePolicy
         try Self.validateFileDigests(rootURL: root, manifest: manifest)
@@ -120,30 +130,54 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
     ///   - actualTokens: Optional unpadded token count used to choose one
     ///     duration bucket. If omitted, every discovered duration model loads.
     ///   - bucketSeconds: Bucket seconds to load. Defaults to manifest buckets.
-    func prewarm(actualTokens: Int? = nil, bucketSeconds: [Int]? = nil) throws {
+    ///   - progress: Called immediately before each potentially blocking load.
+    func prewarm(
+        actualTokens: Int? = nil,
+        bucketSeconds: [Int]? = nil,
+        progress: ((String) -> Void)? = nil
+    ) throws {
         let selectedBuckets = bucketSeconds ?? availableBucketSeconds()
         if let actualTokens {
             let choice = try KokoroPipeline.selectDurationChoice(durationChoices, actualTokens: actualTokens)
-            _ = try durationModel(choice: choice)
+            _ = try model(
+                cacheKey: "duration.\(choice.cacheKey)",
+                url: choice.packageURL,
+                units: computePolicy.duration,
+                progress: progress
+            )
         } else {
             for choice in durationChoices {
-                _ = try durationModel(choice: choice)
+                _ = try model(
+                    cacheKey: "duration.\(choice.cacheKey)",
+                    url: choice.packageURL,
+                    units: computePolicy.duration,
+                    progress: progress
+                )
             }
         }
         for bucket in selectedBuckets {
             guard let tFrames = PipelineConstants.tFramesForBucket[bucket] else {
                 throw KokoroError.missingModel("bucket \(bucket)s")
             }
-            _ = try f0ntrainModel(tFrames: tFrames)
-            _ = try decoderPreModel(bucketSec: bucket)
-            _ = try generatorModel(bucketSec: bucket)
+            _ = try model(
+                cacheKey: "f0ntrain.\(tFrames)",
+                url: modelsDirectory.appendingPathComponent("kokoro_f0ntrain_t\(tFrames).mlpackage"),
+                units: computePolicy.f0ntrain,
+                progress: progress
+            )
+            _ = try model(
+                cacheKey: "decoder_pre.\(bucket)",
+                url: modelsDirectory.appendingPathComponent("kokoro_decoder_pre_\(bucket)s.mlpackage"),
+                units: computePolicy.decoderPre,
+                progress: progress
+            )
+            _ = try model(
+                cacheKey: "generator.\(bucket)",
+                url: modelsDirectory.appendingPathComponent("kokoro_decoder_har_post_\(bucket)s.mlpackage"),
+                units: computePolicy.generator,
+                progress: progress
+            )
         }
-    }
-
-    /// Switches all future model loads to CPU-only and clears loaded models.
-    func degradeToCPUOnly() {
-        computePolicy = .cpuOnly
-        models.removeAll()
     }
 
     /// Returns the bundle voice directory.
@@ -172,10 +206,16 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
     }
 
     /// Loads or returns a cached Core ML model.
-    private func model(cacheKey: String, url: URL, units: MLComputeUnits) throws -> MLModel {
+    private func model(
+        cacheKey: String,
+        url: URL,
+        units: MLComputeUnits,
+        progress: ((String) -> Void)? = nil
+    ) throws -> MLModel {
         if let cached = models[cacheKey] {
             return cached
         }
+        progress?("resolve.\(cacheKey)")
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw KokoroError.missingModel(url.lastPathComponent)
         }
@@ -184,11 +224,23 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         config.computeUnits = units
         let compiledName = url.deletingPathExtension().lastPathComponent + ".mlmodelc"
         let precompiled = compiledModelsDirectory.appendingPathComponent(compiledName, isDirectory: true)
-        var compiled = try compiledModelURL(
-            sourceURL: url,
-            destinationURL: precompiled,
-            sourceTreeSHA256: package.treeSHA256
+        let bundled = Bundle.main.url(
+            forResource: url.deletingPathExtension().lastPathComponent,
+            withExtension: "mlmodelc"
         )
+        var compiled: URL
+        if let bundled {
+            progress?("bundled.\(cacheKey)")
+            compiled = bundled
+        } else {
+            progress?("compile.\(cacheKey)")
+            compiled = try compiledModelURL(
+                sourceURL: url,
+                destinationURL: precompiled,
+                sourceTreeSHA256: package.treeSHA256
+            )
+        }
+        progress?("instantiate.\(cacheKey)")
         let loaded: MLModel
         do {
             loaded = try MLModel(contentsOf: compiled, configuration: config)

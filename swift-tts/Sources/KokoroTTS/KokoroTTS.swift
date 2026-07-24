@@ -9,6 +9,9 @@ public actor KokoroTTS {
     /// The low-level token cap inherited from ``KokoroPipeline``.
     public static let maxCallerChunkTokens = PipelineConstants.maxCallerChunkTokens
 
+    /// Static padded duration shape used by the starter runtime.
+    public static let runtimeDurationTokenLength = 128
+
     /// Text chunker used before per-chunk tokenization.
     private let chunker: TextChunker
 
@@ -79,7 +82,8 @@ public actor KokoroTTS {
     /// task so manifest reads, digest checks, vocab loading, and hn-NSF loading
     /// cannot run on a caller's main-actor executor. Core ML compilation is not
     /// performed here; callers use ``prewarm(text:voice:options:)`` to trigger
-    /// lazy model compilation before the first user-visible synthesis.
+    /// lazy model compilation and a real prediction before the first
+    /// user-visible synthesis.
     private static func loadSynchronously(
         resources: KokoroResourceProvider,
         computePolicy: KokoroComputePolicy
@@ -176,13 +180,28 @@ public actor KokoroTTS {
         do {
             let phonemes = try processor.phonemize(chunk)
             let refS = try voiceTable.refS(voiceID: voice, phonemeCount: phonemes.utf16Count)
-            prepared.append(try processor.prepare(
+            let input = try processor.prepare(
                 text: chunk,
                 voice: voice,
                 refS: refS,
                 options: options,
                 phonemeResult: phonemes
-            ))
+            )
+            if let numTokens = input.numTokens,
+               numTokens > Self.runtimeDurationTokenLength {
+                let halves = try Self.splitOversizedChunk(chunk)
+                for half in halves {
+                    try appendPreparedChunk(
+                        half,
+                        voice: voice,
+                        options: options,
+                        processor: processor,
+                        prepared: &prepared
+                    )
+                }
+            } else {
+                prepared.append(input)
+            }
         } catch KokoroTextProcessingError.tokenBudgetExceeded {
             let halves = try Self.splitOversizedChunk(chunk)
             for half in halves {
@@ -246,44 +265,74 @@ public actor KokoroTTS {
         try Task.checkCancellation()
         let inputs = try prepare(text, voice: voice, options: options)
         do {
-            return try synthesizePrepared(inputs, modelProvider: modelProvider, hnsf: hnsf)
+            return try runPreparedSynthesis(inputs, modelProvider: modelProvider, hnsf: hnsf)
         } catch is CancellationError {
             throw KokoroError.synthesisCancelled
-        } catch let error as KokoroError {
-            switch error {
-            case .coreMLLoadFailed:
-                return try retrySynthesisCPUOnly(inputs, modelProvider: modelProvider, hnsf: hnsf)
-            default:
-                throw error
-            }
-        } catch let error as PipelineError {
-            throw Self.mapSynthesisError(error)
         } catch {
-            return try retrySynthesisCPUOnly(inputs, modelProvider: modelProvider, hnsf: hnsf)
+            throw Self.mapSynthesisError(error)
         }
     }
 
-    /// Loads models likely needed by a synthesis call without producing audio.
+    /// Synthesizes inputs returned by ``prepare(_:voice:options:)``.
+    ///
+    /// This split API lets applications time and diagnose raw-text
+    /// phonemization separately from Core ML inference without importing the
+    /// lower-level pipeline module.
+    ///
+    /// - Parameter inputs: One or more model-ready inputs returned by `prepare`.
+    /// - Returns: Raw PCM audio plus sample rate.
+    public func synthesizePrepared(_ inputs: [KokoroPreparedInput]) async throws -> KokoroAudio {
+        try Task.checkCancellation()
+        do {
+            return try runPreparedSynthesis(inputs, modelProvider: modelProvider, hnsf: hnsf)
+        } catch is CancellationError {
+            throw KokoroError.synthesisCancelled
+        } catch {
+            throw Self.mapSynthesisError(error)
+        }
+    }
+
+    /// Executes and discards one real synthesis before user-visible playback.
+    ///
+    /// Loading `MLModel` objects is not sufficient to warm Core ML. GPU graph
+    /// specialization and other first-prediction work can still be deferred
+    /// until `prediction(from:)`. This method deliberately runs the complete
+    /// duration → decoder → generator path so returning success means the
+    /// selected path has produced valid audio at least once.
     ///
     /// - Parameters:
     ///   - text: Raw caller text used to select the duration bucket.
     ///   - voice: Kokoro voice ID.
     ///   - options: Synthesis options.
+    ///   - progress: Optional privacy-safe progress for UI and diagnostics.
     public func prewarm(
         text: String = "Hello world.",
         voice: KokoroVoiceID = .afHeart,
-        options: KokoroSynthesisOptions = KokoroSynthesisOptions()
+        options: KokoroSynthesisOptions = KokoroSynthesisOptions(),
+        progress: (@Sendable (KokoroPrewarmStage) -> Void)? = nil
     ) async throws {
         try Task.checkCancellation()
+        progress?(.textPreparation)
         let inputs = try prepare(text, voice: voice, options: options)
-        for input in inputs {
+        do {
+            // Load the runtime's one padded duration shape plus every declared
+            // acoustic bucket before proving the complete path.
+            try modelProvider.prewarm { model in
+                progress?(.modelLoad(model))
+            }
             try Task.checkCancellation()
-            try modelProvider.prewarm(actualTokens: input.numTokens)
+            progress?(.prediction)
+            _ = try runPreparedSynthesis(inputs, modelProvider: modelProvider, hnsf: hnsf)
+            progress?(.complete)
+        } catch is CancellationError {
+            throw KokoroError.synthesisCancelled
+        } catch {
+            throw Self.mapSynthesisError(error)
         }
     }
 
     /// Synthesizes already prepared chunks with a model provider.
-    private func synthesizePrepared(
+    private func runPreparedSynthesis(
         _ inputs: [KokoroPreparedInput],
         modelProvider: KokoroSDKModelProvider,
         hnsf: (linearWeights: [Float], linearBias: Float)
@@ -306,20 +355,6 @@ public actor KokoroTTS {
             throw KokoroError.invalidAudioOutput
         }
         return KokoroAudio(samples: samples)
-    }
-
-    /// Retries synthesis after switching future Core ML loads to CPU-only.
-    private func retrySynthesisCPUOnly(
-        _ inputs: [KokoroPreparedInput],
-        modelProvider: KokoroSDKModelProvider,
-        hnsf: (linearWeights: [Float], linearBias: Float)
-    ) throws -> KokoroAudio {
-        modelProvider.degradeToCPUOnly()
-        do {
-            return try synthesizePrepared(inputs, modelProvider: modelProvider, hnsf: hnsf)
-        } catch {
-            throw Self.mapSynthesisError(error)
-        }
     }
 
     /// Maps lower-level runtime failures onto public SDK errors.

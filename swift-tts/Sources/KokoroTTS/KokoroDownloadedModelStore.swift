@@ -55,6 +55,9 @@ private struct KokoroHostedManifest: Decodable {
 
 /// Downloads a hosted-manifest SDK bundle into a local cache directory.
 public struct KokoroDownloadedModelStore: Sendable {
+    /// Bump when the shipped runtime's compiled-model contract changes.
+    private static let compiledCacheDirectoryName = "compiled-v2"
+
     /// Remote manifest URL.
     public let manifestURL: URL
 
@@ -116,7 +119,18 @@ public struct KokoroDownloadedModelStore: Sendable {
         var mutableCache = cacheDirectory
         try mutableCache.setResourceValues(values)
 
-        let compiledCache = cacheDirectory.appendingPathComponent("compiled", isDirectory: true)
+        let legacyCompiledCache = cacheDirectory.appendingPathComponent("compiled", isDirectory: true)
+        let compiledCache = cacheDirectory.appendingPathComponent(
+            Self.compiledCacheDirectoryName,
+            isDirectory: true
+        )
+        try Self.rejectExistingSymlinkComponents(
+            rootURL: cacheDirectory,
+            targetURL: legacyCompiledCache
+        )
+        if FileManager.default.fileExists(atPath: legacyCompiledCache.path) {
+            try FileManager.default.removeItem(at: legacyCompiledCache)
+        }
         let versionURL = cacheDirectory.appendingPathComponent(".kokoro-hosted-version")
         try Self.rejectExistingSymlinkComponents(rootURL: cacheDirectory, targetURL: versionURL)
         if let version = manifest.version,
