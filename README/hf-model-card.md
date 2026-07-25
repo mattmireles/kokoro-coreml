@@ -115,7 +115,7 @@ Five fixed-duration buckets: **3s, 7s, 10s, 15s, 30s**. Pick the smallest bucket
 
 | File | What it does | Runs on |
 |---|---|---|
-| `kokoro_duration_t{32,64,128,256,320,384,512}.mlpackage` | Phoneme durations + text/style encodings, one per padded token length | CPU/GPU |
+| `kokoro_duration_t128.mlpackage` | Phoneme durations + text/style encodings at the SDK's fixed padded token length | CPU/GPU |
 | `kokoro_duration.mlpackage` | Legacy single duration model (fallback) | CPU/GPU |
 | `kokoro_f0ntrain_t{120,280,400,600,1200}.mlpackage` | Pitch + noise prediction, one per bucket's frame count | ANE |
 | `kokoro_decoder_pre_{3,7,10,15,30}s.mlpackage` | Text features → decoder hidden state | ANE |
@@ -143,11 +143,15 @@ let samples = audio.samples        // 24 kHz mono Float PCM
 let buffer = try audio.makePCMBuffer()
 ```
 
+`prewarm` proves the duration-to-audio path selected by the supplied text.
+Full-profile clients using several utterance-length buckets should call it with
+representative text for each expected path.
+
 The SDK is in the GitHub repo's `swift-tts` package. It owns raw-text
 preparation, Misaki phonemization, Botnet-compatible chunking, model loading,
-and AVFoundation PCM buffer creation. Current SDK contract: iOS 18.0+,
-macOS 15.0+, sample rate `24000`, starter voice `af_heart`, duration token
-sizes `32,64,128,256,320,384,512`, full buckets `3,7,10,15,30`, max caller
+and AVFoundation PCM buffer creation. Current hosted SDK contract: iOS 18.0+,
+macOS 15.0+, sample rate `24000`, starter voice `af_heart`, fixed duration token
+size `128`, full buckets `3,7,10,15,30`, max caller
 chunk tokens `450`, voice embedding dimension `256`.
 
 Build a starter bundle:

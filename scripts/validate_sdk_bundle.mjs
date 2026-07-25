@@ -102,6 +102,10 @@ async function verifyFile(bundleRoot, entry) {
 async function validateBundle(bundleRoot) {
   const manifest = JSON.parse(await readFile(path.join(bundleRoot, 'KokoroRuntimeManifest.json'), 'utf8'));
   const hosted = JSON.parse(await readFile(path.join(bundleRoot, 'HostedManifest.json'), 'utf8'));
+  const hostedPaths = hosted.files.map((file) => file.path).sort();
+  if (new Set(hostedPaths).size !== hostedPaths.length) {
+    throw new Error('HostedManifest.json contains duplicate file paths');
+  }
   for (const pkg of manifest.model_packages) {
     const actual = await hashPackage(await containedPath(bundleRoot, pkg.path));
     if (
@@ -119,6 +123,20 @@ async function validateBundle(bundleRoot) {
   await verifyFile(bundleRoot, manifest.runtime_assets.hnsf_weights);
   for (const file of hosted.files) {
     await verifyFile(bundleRoot, file);
+  }
+  const payloadPaths = (await listFiles(bundleRoot))
+    .map((filePath) => path.relative(bundleRoot, filePath).split(path.sep).join('/'))
+    .filter((relativePath) => (
+      relativePath !== 'HostedManifest.json'
+      && relativePath !== '.kokoro-sdk-bundle'
+      && !relativePath.startsWith('compiled/')
+    ))
+    .sort();
+  if (
+    hostedPaths.length !== payloadPaths.length
+    || hostedPaths.some((relativePath, index) => relativePath !== payloadPaths[index])
+  ) {
+    throw new Error('HostedManifest.json does not exactly cover the hosted bundle payload');
   }
   console.log(`SDK bundle verified: ${bundleRoot}`);
 }

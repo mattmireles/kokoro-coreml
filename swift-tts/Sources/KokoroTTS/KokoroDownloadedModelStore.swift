@@ -98,19 +98,29 @@ public struct KokoroDownloadedModelStore: Sendable {
     }
 
     /// Downloads missing or hash-mismatched files and returns a directory provider.
-    public func hydrate() async throws -> KokoroResourceProvider {
+    public func hydrate(
+        progress: (@Sendable (Double) -> Void)? = nil
+    ) async throws -> KokoroResourceProvider {
         try Task.checkCancellation()
         try validateManifestURL()
         let data = try await downloadWithRetry(
             manifestURL,
             maxBytes: limits.maxManifestBytes,
             label: "HostedManifest.json"
-        )
+        ) { _ in
+            // The manifest is intentionally tiny relative to model assets, but
+            // a slow active transfer must still keep app-level stall watchdogs
+            // alive before its final byte arrives.
+            progress?(0)
+        }
         guard Self.sha256(data) == expectedManifestSHA256 else {
             throw KokoroError.badHash(path: "HostedManifest.json")
         }
         let manifest = try JSONDecoder().decode(KokoroHostedManifest.self, from: data)
         try validateManifest(manifest)
+        let totalBytes = max(1, manifest.files.reduce(0) { $0 + $1.bytes })
+        var completedBytes = 0
+        progress?(0)
         try Self.rejectRootSymlink(rootURL: cacheDirectory)
         try FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
         try Self.rejectRootSymlink(rootURL: cacheDirectory)
@@ -144,22 +154,30 @@ public struct KokoroDownloadedModelStore: Sendable {
             let target = try Self.containedURL(rootURL: cacheDirectory, relativePath: file.path)
             try Self.rejectExistingSymlinkComponents(rootURL: cacheDirectory, targetURL: target)
             if try await isValidFile(url: target, bytes: file.bytes, sha256: file.sha256) {
+                completedBytes += file.bytes
+                progress?(min(1, Double(completedBytes) / Double(totalBytes)))
                 continue
             }
             try Self.rejectExistingSymlinkComponents(rootURL: cacheDirectory, targetURL: target.deletingLastPathComponent())
             try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
             try Self.rejectExistingSymlinkComponents(rootURL: cacheDirectory, targetURL: target.deletingLastPathComponent())
             let fileURL = try Self.remoteURL(manifestURL: manifestURL, relativePath: file.path)
+            let completedBeforeFile = completedBytes
             try await downloadFileWithRetry(
                 fileURL,
                 target: target,
                 expectedBytes: file.bytes,
                 expectedSHA256: file.sha256,
                 label: file.path
-            )
+            ) { downloadedBytes in
+                let hydratedBytes = completedBeforeFile + min(downloadedBytes, file.bytes)
+                progress?(min(1, Double(hydratedBytes) / Double(totalBytes)))
+            }
             guard try await isValidFile(url: target, bytes: file.bytes, sha256: file.sha256) else {
                 throw KokoroError.badHash(path: file.path)
             }
+            completedBytes += file.bytes
+            progress?(min(1, Double(completedBytes) / Double(totalBytes)))
         }
         if let version = manifest.version {
             try Self.rejectExistingSymlinkComponents(rootURL: cacheDirectory, targetURL: versionURL)
@@ -175,7 +193,12 @@ public struct KokoroDownloadedModelStore: Sendable {
     }
 
     /// Downloads one file with a small fixed retry budget.
-    private func downloadWithRetry(_ url: URL, maxBytes: Int, label: String) async throws -> Data {
+    private func downloadWithRetry(
+        _ url: URL,
+        maxBytes: Int,
+        label: String,
+        progress: (@Sendable (Int) -> Void)? = nil
+    ) async throws -> Data {
         if url.isFileURL {
             try Task.checkCancellation()
             let values = try url.resourceValues(forKeys: [.fileSizeKey])
@@ -193,7 +216,12 @@ public struct KokoroDownloadedModelStore: Sendable {
         for _ in 0..<3 {
             try Task.checkCancellation()
             do {
-                return try await Self.downloadCappedData(from: url, maxBytes: maxBytes, label: label)
+                return try await Self.downloadCappedData(
+                    from: url,
+                    maxBytes: maxBytes,
+                    label: label,
+                    progress: progress
+                )
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -212,7 +240,8 @@ public struct KokoroDownloadedModelStore: Sendable {
         target: URL,
         expectedBytes: Int,
         expectedSHA256: String,
-        label: String
+        label: String,
+        progress: (@Sendable (Int) -> Void)? = nil
     ) async throws {
         let maxBytes = min(expectedBytes, limits.maxFileBytes)
         if url.isFileURL {
@@ -242,7 +271,8 @@ public struct KokoroDownloadedModelStore: Sendable {
                     expectedBytes: expectedBytes,
                     expectedSHA256: expectedSHA256,
                     maxBytes: maxBytes,
-                    label: label
+                    label: label,
+                    progress: progress
                 )
                 return
             } catch is CancellationError {
@@ -258,8 +288,17 @@ public struct KokoroDownloadedModelStore: Sendable {
     }
 
     /// Downloads an HTTP(S) response while enforcing the byte cap incrementally.
-    private static func downloadCappedData(from url: URL, maxBytes: Int, label: String) async throws -> Data {
-        let downloader = CappedDataDownloader(maxBytes: maxBytes, label: label)
+    private static func downloadCappedData(
+        from url: URL,
+        maxBytes: Int,
+        label: String,
+        progress: (@Sendable (Int) -> Void)? = nil
+    ) async throws -> Data {
+        let downloader = CappedDataDownloader(
+            maxBytes: maxBytes,
+            label: label,
+            progress: progress
+        )
         return try await downloader.download(from: url)
     }
 
@@ -270,25 +309,30 @@ public struct KokoroDownloadedModelStore: Sendable {
         expectedBytes: Int,
         expectedSHA256: String,
         maxBytes: Int,
-        label: String
+        label: String,
+        progress: (@Sendable (Int) -> Void)? = nil
     ) async throws {
         let downloader = CappedFileDownloader(
             target: target,
             expectedBytes: expectedBytes,
             expectedSHA256: expectedSHA256,
             maxBytes: maxBytes,
-            label: label
+            label: label,
+            progress: progress
         )
         try await downloader.download(from: url)
     }
 
     /// URLSession delegate that rejects oversized responses before buffering them fully.
-    private final class CappedDataDownloader: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    final class CappedDataDownloader: NSObject, URLSessionDataDelegate, @unchecked Sendable {
         /// Maximum accepted response bytes.
         private let maxBytes: Int
 
         /// Human-readable download label used in errors.
         private let label: String
+
+        /// Optional streamed byte-progress observer.
+        private let progress: (@Sendable (Int) -> Void)?
 
         /// Accumulated response data, bounded by `maxBytes`.
         private var data = Data()
@@ -310,9 +354,14 @@ public struct KokoroDownloadedModelStore: Sendable {
         /// - Parameters:
         ///   - maxBytes: Maximum accepted response byte count.
         ///   - label: Human-readable path or manifest label for errors.
-        init(maxBytes: Int, label: String) {
+        init(
+            maxBytes: Int,
+            label: String,
+            progress: (@Sendable (Int) -> Void)? = nil
+        ) {
             self.maxBytes = maxBytes
             self.label = label
+            self.progress = progress
         }
 
         /// Starts a capped data download.
@@ -320,14 +369,25 @@ public struct KokoroDownloadedModelStore: Sendable {
         /// - Parameter url: HTTP(S) URL to download.
         /// - Returns: Response bytes when status and size are valid.
         func download(from url: URL) async throws -> Data {
-            try await withTaskCancellationHandler {
-                try await withCheckedThrowingContinuation { continuation in
+            try Task.checkCancellation()
+            return try await withTaskCancellationHandler {
+                try Task.checkCancellation()
+                return try await withCheckedThrowingContinuation {
+                    (continuation: CheckedContinuation<Data, Error>) in
+                    guard !Task.isCancelled else {
+                        continuation.resume(throwing: CancellationError())
+                        return
+                    }
                     self.continuation = continuation
                     let session = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: nil)
                     self.session = session
                     let task = session.dataTask(with: url)
                     self.task = task
-                    task.resume()
+                    if Task.isCancelled {
+                        task.cancel()
+                    } else {
+                        task.resume()
+                    }
                 }
             } onCancel: {
                 self.task?.cancel()
@@ -368,6 +428,7 @@ public struct KokoroDownloadedModelStore: Sendable {
                 return
             }
             data.append(chunk)
+            progress?(data.count)
         }
 
         /// Resumes the async caller with either the bounded data or the first terminal error.
@@ -389,7 +450,7 @@ public struct KokoroDownloadedModelStore: Sendable {
     }
 
     /// URLSession delegate that downloads a file to disk without buffering it in memory.
-    private final class CappedFileDownloader: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    final class CappedFileDownloader: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
         /// Final target URL under the SDK cache root.
         private let target: URL
 
@@ -404,6 +465,9 @@ public struct KokoroDownloadedModelStore: Sendable {
 
         /// Human-readable download label used in errors.
         private let label: String
+
+        /// Optional streamed byte-progress observer.
+        private let progress: (@Sendable (Int) -> Void)?
 
         /// Active async continuation.
         private var continuation: CheckedContinuation<Void, Error>?
@@ -428,26 +492,45 @@ public struct KokoroDownloadedModelStore: Sendable {
         ///   - expectedSHA256: Expected final SHA-256 digest.
         ///   - maxBytes: Maximum accepted response byte count.
         ///   - label: Human-readable path or manifest label for errors.
-        init(target: URL, expectedBytes: Int, expectedSHA256: String, maxBytes: Int, label: String) {
+        init(
+            target: URL,
+            expectedBytes: Int,
+            expectedSHA256: String,
+            maxBytes: Int,
+            label: String,
+            progress: (@Sendable (Int) -> Void)?
+        ) {
             self.target = target
             self.expectedBytes = expectedBytes
             self.expectedSHA256 = expectedSHA256
             self.maxBytes = maxBytes
             self.label = label
+            self.progress = progress
         }
 
         /// Starts a capped disk-backed download.
         ///
         /// - Parameter url: HTTP(S) URL to download.
         func download(from url: URL) async throws {
+            try Task.checkCancellation()
             try await withTaskCancellationHandler {
-                try await withCheckedThrowingContinuation { continuation in
+                try Task.checkCancellation()
+                try await withCheckedThrowingContinuation {
+                    (continuation: CheckedContinuation<Void, Error>) in
+                    guard !Task.isCancelled else {
+                        continuation.resume(throwing: CancellationError())
+                        return
+                    }
                     self.continuation = continuation
                     let session = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: nil)
                     self.session = session
                     let task = session.downloadTask(with: url)
                     self.task = task
-                    task.resume()
+                    if Task.isCancelled {
+                        task.cancel()
+                    } else {
+                        task.resume()
+                    }
                 }
             } onCancel: {
                 self.task?.cancel()
@@ -471,6 +554,7 @@ public struct KokoroDownloadedModelStore: Sendable {
                 downloadTask.cancel()
                 return
             }
+            progress?(Int(totalBytesWritten))
         }
 
         /// Verifies the temporary file and moves it into the app cache.

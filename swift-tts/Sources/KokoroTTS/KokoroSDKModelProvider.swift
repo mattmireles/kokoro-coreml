@@ -483,7 +483,8 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         guard !durationChoices.isEmpty else {
             throw KokoroError.missingModel("duration")
         }
-        guard manifest.durationTokenSizes == PipelineConstants.durationTokenSizes else {
+        let sdkDurationTokenSizes = [KokoroTTS.runtimeDurationTokenLength]
+        guard manifest.durationTokenSizes == sdkDurationTokenSizes else {
             throw KokoroError.missingModel("duration_token_sizes")
         }
         let paths = Set(manifest.modelPackages.map(\.path))

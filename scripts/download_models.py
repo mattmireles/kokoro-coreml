@@ -52,7 +52,12 @@ ENGLISH_VOICE_PATTERNS = [
     "kokoro.js/voices/bm_*.bin",
 ]
 STARTER_BUCKET_SECONDS = [15]
-SDK_DURATION_TOKEN_SIZES = [32, 64, 128, 256, 320, 384, 512]
+FULL_BUCKET_SECONDS = [3, 7, 10, 15, 30]
+# The public SDK deliberately uses one padded duration shape. Shipping the
+# historical ladder added roughly 300 MB to first-run downloads even though
+# KokoroSDKModelProvider selects only t128, and each extra shape creates an
+# independent Core ML specialization path.
+SDK_DURATION_TOKEN_SIZES = [128]
 STARTER_VOICES = ["af_heart"]
 # Files to always skip (not model artifacts).
 # IMPORTANT: Do NOT add "*.json" here — it would exclude Manifest.json inside
@@ -206,8 +211,9 @@ def _sdk_patterns(profile: str, voices: list[str], buckets: list[int]) -> list[s
     """Return HF allow patterns for an SDK download profile."""
 
     if profile == "full":
-        return COREML_PATTERNS + ENGLISH_VOICE_PATTERNS
-    if profile == "starter":
+        buckets = FULL_BUCKET_SECONDS
+        duration_sizes = SDK_DURATION_TOKEN_SIZES
+    elif profile == "starter":
         voices = voices or STARTER_VOICES
         buckets = buckets or STARTER_BUCKET_SECONDS
         duration_sizes = SDK_DURATION_TOKEN_SIZES
@@ -230,8 +236,11 @@ def _sdk_patterns(profile: str, voices: list[str], buckets: list[int]) -> list[s
             f"coreml/kokoro_decoder_pre_{bucket}s.mlpackage/**",
             f"coreml/kokoro_decoder_har_post_{bucket}s.mlpackage/**",
         ])
-    for voice in voices:
-        patterns.append(f"kokoro.js/voices/{voice}.bin")
+    if profile == "full":
+        patterns.extend(ENGLISH_VOICE_PATTERNS)
+    else:
+        for voice in voices:
+            patterns.append(f"kokoro.js/voices/{voice}.bin")
     return patterns
 
 
@@ -239,31 +248,9 @@ def _sdk_required_packages(profile: str, voices: list[str], buckets: list[int]) 
     """Return model package directories required by an SDK profile."""
 
     if profile == "full":
-        return [
-            "coreml/kokoro_duration_t32.mlpackage",
-            "coreml/kokoro_duration_t64.mlpackage",
-            "coreml/kokoro_duration_t128.mlpackage",
-            "coreml/kokoro_duration_t256.mlpackage",
-            "coreml/kokoro_duration_t320.mlpackage",
-            "coreml/kokoro_duration_t384.mlpackage",
-            "coreml/kokoro_duration_t512.mlpackage",
-            "coreml/kokoro_f0ntrain_t120.mlpackage",
-            "coreml/kokoro_f0ntrain_t280.mlpackage",
-            "coreml/kokoro_f0ntrain_t400.mlpackage",
-            "coreml/kokoro_f0ntrain_t600.mlpackage",
-            "coreml/kokoro_f0ntrain_t1200.mlpackage",
-            "coreml/kokoro_decoder_pre_3s.mlpackage",
-            "coreml/kokoro_decoder_pre_7s.mlpackage",
-            "coreml/kokoro_decoder_pre_10s.mlpackage",
-            "coreml/kokoro_decoder_pre_15s.mlpackage",
-            "coreml/kokoro_decoder_pre_30s.mlpackage",
-            "coreml/kokoro_decoder_har_post_3s.mlpackage",
-            "coreml/kokoro_decoder_har_post_7s.mlpackage",
-            "coreml/kokoro_decoder_har_post_10s.mlpackage",
-            "coreml/kokoro_decoder_har_post_15s.mlpackage",
-            "coreml/kokoro_decoder_har_post_30s.mlpackage",
-        ]
-    if profile == "starter":
+        buckets = FULL_BUCKET_SECONDS
+        duration_sizes = SDK_DURATION_TOKEN_SIZES
+    elif profile == "starter":
         buckets = buckets or STARTER_BUCKET_SECONDS
         duration_sizes = SDK_DURATION_TOKEN_SIZES
     elif profile == "custom":

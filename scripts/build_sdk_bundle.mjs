@@ -12,7 +12,10 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const defaultRepoId = 'mattmireles/kokoro-coreml';
 const defaultRevision = 'c02933e179932e51909ff3b29466a7debac7d0e6';
 const runtimeAssetDir = path.join(repoRoot, 'swift-tts/Sources/KokoroTTS/Resources/KokoroRuntime');
-const sdkDurationTokenSizes = [32, 64, 128, 256, 320, 384, 512];
+// KokoroSDKModelProvider selects one padded t128 graph. Keeping the historical
+// duration ladder in hosted bundles wasted roughly 300 MB per first install
+// and exposed seven separate lazy Core ML specialization paths.
+const sdkDurationTokenSizes = [128];
 const bundleMarkerName = '.kokoro-sdk-bundle';
 
 const profiles = {

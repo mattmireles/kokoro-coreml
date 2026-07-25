@@ -188,6 +188,95 @@ final class KokoroFacadeTests: XCTestCase {
         }
     }
 
+    /// Verifies streamed download bytes reach the public hydration progress
+    /// path instead of waiting for an entire large model file to finish.
+    func testDownloadedStoreReportsIncrementalFileProgress() {
+        let recorder = LockedIntRecorder()
+        let expectation = expectation(description: "streamed byte progress")
+        let downloader = KokoroDownloadedModelStore.CappedFileDownloader(
+            target: FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString),
+            expectedBytes: 1_024,
+            expectedSHA256: String(repeating: "0", count: 64),
+            maxBytes: 1_024,
+            label: "fixture.bin"
+        ) { bytes in
+            recorder.append(bytes)
+            expectation.fulfill()
+        }
+        let task = URLSession.shared.downloadTask(
+            with: URL(string: "https://models.example.test/fixture.bin")!
+        )
+
+        downloader.urlSession(
+            URLSession.shared,
+            downloadTask: task,
+            didWriteData: 128,
+            totalBytesWritten: 128,
+            totalBytesExpectedToWrite: 1_024
+        )
+
+        wait(for: [expectation], timeout: 1)
+        XCTAssertEqual(recorder.values, [128])
+        task.cancel()
+    }
+
+    /// Verifies the hosted manifest itself emits streamed progress before its
+    /// complete response arrives.
+    func testDownloadedStoreReportsIncrementalManifestProgress() {
+        let recorder = LockedIntRecorder()
+        let expectation = expectation(description: "manifest byte progress")
+        let downloader = KokoroDownloadedModelStore.CappedDataDownloader(
+            maxBytes: 1_024,
+            label: "HostedManifest.json"
+        ) { bytes in
+            recorder.append(bytes)
+            expectation.fulfill()
+        }
+        let task = URLSession.shared.dataTask(
+            with: URL(string: "https://models.example.test/HostedManifest.json")!
+        )
+
+        downloader.urlSession(
+            URLSession.shared,
+            dataTask: task,
+            didReceive: Data(repeating: 0x7b, count: 64)
+        )
+
+        wait(for: [expectation], timeout: 1)
+        XCTAssertEqual(recorder.values, [64])
+        task.cancel()
+    }
+
+    /// Verifies cancellation that wins before URLSession task installation is
+    /// not lost in the cancellation-handler setup window.
+    func testDownloadedFileHonorsPreStartCancellation() async {
+        let downloader = KokoroDownloadedModelStore.CappedFileDownloader(
+            target: FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString),
+            expectedBytes: 1_024,
+            expectedSHA256: String(repeating: "0", count: 64),
+            maxBytes: 1_024,
+            label: "fixture.bin",
+            progress: nil
+        )
+        let task = Task {
+            try await downloader.download(
+                from: URL(string: "https://models.example.test/fixture.bin")!
+            )
+        }
+        task.cancel()
+
+        do {
+            try await task.value
+            XCTFail("expected CancellationError")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+    }
+
     /// Verifies hosted manifest paths are sanitized before building remote URLs.
     func testDownloadedStoreRejectsRemotePathEscapes() throws {
         let manifestURL = URL(string: "https://models.example.test/coreml/v1/HostedManifest.json")!
@@ -287,7 +376,7 @@ final class KokoroFacadeTests: XCTestCase {
         ])
 
         XCTAssertThrowsError(try KokoroSDKModelProvider(resources: .directory(root))) { error in
-            XCTAssertEqual(error as? KokoroError, .missingModel("kokoro_duration_t64.mlpackage"))
+            XCTAssertEqual(error as? KokoroError, .missingModel("duration"))
         }
     }
 
@@ -437,8 +526,8 @@ final class KokoroFacadeTests: XCTestCase {
         }
     }
 
-    /// Verifies manifests must declare the full SDK duration token set.
-    func testModelProviderRejectsIncompleteDurationTokenSet() throws {
+    /// Verifies manifests must declare the SDK's one fixed duration shape.
+    func testModelProviderRejectsNonSDKDurationTokenSet() throws {
         let root = try makeBundleRoot(durationTokenSizes: [32])
 
         XCTAssertThrowsError(try KokoroSDKModelProvider(resources: .directory(root))) { error in
@@ -453,7 +542,7 @@ final class KokoroFacadeTests: XCTestCase {
         voiceHashOverride: String? = nil,
         voicePath: String = "voices/af_heart.bin",
         modelPackages: [[String: Any]]? = nil,
-        durationTokenSizes: [Int] = [32, 64, 128, 256, 320, 384, 512],
+        durationTokenSizes: [Int] = [128],
         hnsfPayload: String? = nil
     ) throws -> URL {
         let root = FileManager.default.temporaryDirectory
@@ -559,13 +648,7 @@ final class KokoroFacadeTests: XCTestCase {
     /// Creates and registers the minimal model package set required for a 15s starter bundle.
     private func requiredPackageEntries() -> [[String: Any]] {
         [
-            modelPackageEntry(path: "coreml/kokoro_duration_t32.mlpackage", data: Data("duration-32".utf8)),
-            modelPackageEntry(path: "coreml/kokoro_duration_t64.mlpackage", data: Data("duration-64".utf8)),
             modelPackageEntry(path: "coreml/kokoro_duration_t128.mlpackage", data: Data("duration-128".utf8)),
-            modelPackageEntry(path: "coreml/kokoro_duration_t256.mlpackage", data: Data("duration-256".utf8)),
-            modelPackageEntry(path: "coreml/kokoro_duration_t320.mlpackage", data: Data("duration-320".utf8)),
-            modelPackageEntry(path: "coreml/kokoro_duration_t384.mlpackage", data: Data("duration-384".utf8)),
-            modelPackageEntry(path: "coreml/kokoro_duration_t512.mlpackage", data: Data("duration-512".utf8)),
             modelPackageEntry(path: "coreml/kokoro_f0ntrain_t600.mlpackage", data: Data("f0-600".utf8)),
             modelPackageEntry(path: "coreml/kokoro_decoder_pre_15s.mlpackage", data: Data("decoder-pre-15".utf8)),
             modelPackageEntry(path: "coreml/kokoro_decoder_har_post_15s.mlpackage", data: Data("har-post-15".utf8)),
@@ -574,13 +657,7 @@ final class KokoroFacadeTests: XCTestCase {
 
     /// Creates default model package directories for the generated-bundle fixture.
     private func writeRequiredPackages(root: URL) throws {
-        try writeOneFilePackage(root: root, path: "coreml/kokoro_duration_t32.mlpackage", data: Data("duration-32".utf8))
-        try writeOneFilePackage(root: root, path: "coreml/kokoro_duration_t64.mlpackage", data: Data("duration-64".utf8))
         try writeOneFilePackage(root: root, path: "coreml/kokoro_duration_t128.mlpackage", data: Data("duration-128".utf8))
-        try writeOneFilePackage(root: root, path: "coreml/kokoro_duration_t256.mlpackage", data: Data("duration-256".utf8))
-        try writeOneFilePackage(root: root, path: "coreml/kokoro_duration_t320.mlpackage", data: Data("duration-320".utf8))
-        try writeOneFilePackage(root: root, path: "coreml/kokoro_duration_t384.mlpackage", data: Data("duration-384".utf8))
-        try writeOneFilePackage(root: root, path: "coreml/kokoro_duration_t512.mlpackage", data: Data("duration-512".utf8))
         try writeOneFilePackage(root: root, path: "coreml/kokoro_f0ntrain_t600.mlpackage", data: Data("f0-600".utf8))
         try writeOneFilePackage(root: root, path: "coreml/kokoro_decoder_pre_15s.mlpackage", data: Data("decoder-pre-15".utf8))
         try writeOneFilePackage(root: root, path: "coreml/kokoro_decoder_har_post_15s.mlpackage", data: Data("har-post-15".utf8))
@@ -601,5 +678,22 @@ final class KokoroFacadeTests: XCTestCase {
     @MainActor
     private func loadFacadeFromMainActor(resources: KokoroResourceProvider) async throws -> KokoroTTS {
         try await KokoroTTS.load(resources: resources)
+    }
+}
+
+private final class LockedIntRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [Int] = []
+
+    func append(_ value: Int) {
+        lock.lock()
+        storage.append(value)
+        lock.unlock()
+    }
+
+    var values: [Int] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
     }
 }

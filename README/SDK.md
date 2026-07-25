@@ -16,7 +16,7 @@ mono PCM output.
 | Starter voice | `af_heart` |
 | Starter bucket | `15` seconds |
 | Full buckets | `3,7,10,15,30` seconds |
-| Duration token sizes | `32,64,128,256,320,384,512` |
+| Duration token size | `128` (fixed padded shape; larger text is split) |
 | Max caller chunk tokens | `450` |
 | Voice embedding dimension | `256` |
 | Default chunk cap | `15.0` seconds |
@@ -121,8 +121,11 @@ let buffer = try audio.makePCMBuffer()
 compiling Core ML models or initializing Misaki/MLX on the caller's main actor.
 Bundles must declare verified Hugging Face provenance
 (`hf_provenance_verified: true` and `hf_download_manifest_sha256`). Call
-`prewarm(...)` from app startup or another background task to compile and cache
-the selected models before the first user-visible synthesis.
+`prewarm(...)` from app startup or another background task to compile,
+specialize, and prove the acoustic bucket selected by representative text
+before the first user-visible synthesis. Full-profile clients that use
+materially different utterance lengths should prewarm representative text for
+each expected path.
 
 `KokoroAudio.samples` is mono Float PCM. `KokoroAudio.sampleRate` is `24000`.
 Use `makePCMBuffer()` when AVFoundation is available.

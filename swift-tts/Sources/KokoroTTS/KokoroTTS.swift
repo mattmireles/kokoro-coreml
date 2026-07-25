@@ -315,14 +315,20 @@ public actor KokoroTTS {
         progress?(.textPreparation)
         let inputs = try prepare(text, voice: voice, options: options)
         do {
-            // Load the runtime's one padded duration shape plus every declared
-            // acoustic bucket before proving the complete path.
-            try modelProvider.prewarm { model in
+            // Load the selected duration shape, then let the real prediction
+            // below load and specialize the acoustic bucket selected by this
+            // representative text. Merely loading every declared bucket would
+            // not prove first-prediction specialization for those paths.
+            try modelProvider.prewarm(
+                actualTokens: inputs.first?.numTokens,
+                bucketSeconds: []
+            ) { model in
                 progress?(.modelLoad(model))
             }
             try Task.checkCancellation()
             progress?(.prediction)
             _ = try runPreparedSynthesis(inputs, modelProvider: modelProvider, hnsf: hnsf)
+            try Task.checkCancellation()
             progress?(.complete)
         } catch is CancellationError {
             throw KokoroError.synthesisCancelled

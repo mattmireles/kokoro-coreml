@@ -17,6 +17,7 @@ const files = {
   manifestDecoder: 'swift-tts/Sources/KokoroTTS/KokoroRuntimeManifest.swift',
   manifestSchema: 'schemas/KokoroRuntimeManifest.schema.json',
   downloadedStore: 'swift-tts/Sources/KokoroTTS/KokoroDownloadedModelStore.swift',
+  tts: 'swift-tts/Sources/KokoroTTS/KokoroTTS.swift',
   errors: 'swift-tts/Sources/KokoroTTS/KokoroErrors.swift',
   buildBundle: 'scripts/build_sdk_bundle.mjs',
   downloadModels: 'scripts/download_models.py',
@@ -150,6 +151,7 @@ const contract = {
   voiceEmbeddingDim: parseIntConstant(sources.pipeline, 'voiceEmbeddingDim'),
   maxCallerChunkTokens: parseIntConstant(sources.pipeline, 'maxCallerChunkTokens'),
   durationTokenSizes: parseSwiftIntArray(sources.pipeline, 'durationTokenSizes'),
+  sdkDurationTokenSizes: [parseIntConstant(sources.tts, 'runtimeDurationTokenLength')],
   fullBuckets: parseSwiftIntArray(sources.pipeline, 'defaultBuckets'),
   starterBuckets: [15],
   starterVoice: 'af_heart',
@@ -167,6 +169,11 @@ assertArrayEqual(
   contract.fullBuckets
 );
 assertArrayEqual(
+  'build_sdk_bundle duration sizes',
+  parseJsConstArray(sources.buildBundle, 'sdkDurationTokenSizes'),
+  contract.sdkDurationTokenSizes
+);
+assertArrayEqual(
   'download_models starter buckets',
   parsePythonIntArray(sources.downloadModels, 'STARTER_BUCKET_SECONDS'),
   contract.starterBuckets
@@ -174,7 +181,7 @@ assertArrayEqual(
 assertArrayEqual(
   'download_models duration sizes',
   parsePythonIntArray(sources.downloadModels, 'SDK_DURATION_TOKEN_SIZES'),
-  contract.durationTokenSizes
+  contract.sdkDurationTokenSizes
 );
 assertArrayEqual('JS prep duration sizes', parseJsConstArray(sources.jsPrep, 'EnumSizes'), contract.durationTokenSizes);
 assertArrayEqual('Python prep duration sizes', parsePythonIntArray(sources.pyPrep, 'ENUM_SIZES'), contract.durationTokenSizes);
@@ -211,7 +218,7 @@ for (const file of docs) {
   requireIncludes(source, file, `macOS ${contract.macOS}+`);
   requireIncludes(source, file, String(contract.sampleRate));
   requireIncludes(source, file, contract.starterVoice);
-  requireIncludes(source, file, contract.durationTokenSizes.join(','));
+  requireIncludes(source, file, contract.sdkDurationTokenSizes.join(','));
   requireIncludes(source, file, contract.fullBuckets.join(','));
   requireIncludes(source, file, String(contract.maxCallerChunkTokens));
   requireIncludes(source, file, String(contract.voiceEmbeddingDim));
