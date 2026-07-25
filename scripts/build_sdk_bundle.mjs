@@ -31,6 +31,30 @@ const profiles = {
   },
 };
 
+/** Returns HEAD only when the repository can honestly claim exact provenance. */
+function cleanSDKCommit() {
+  const status = spawnSync(
+    'git',
+    ['status', '--porcelain', '--untracked-files=all'],
+    { cwd: repoRoot, encoding: 'utf8' }
+  );
+  if (status.status !== 0) {
+    throw new Error('failed to inspect SDK source provenance');
+  }
+  if (status.stdout.trim()) {
+    throw new Error('refusing to build an SDK bundle from a dirty working tree');
+  }
+  const revision = spawnSync(
+    'git',
+    ['rev-parse', 'HEAD'],
+    { cwd: repoRoot, encoding: 'utf8' }
+  );
+  if (revision.status !== 0 || !revision.stdout.trim()) {
+    throw new Error('failed to resolve SDK source commit');
+  }
+  return revision.stdout.trim();
+}
+
 /** Parses command-line options into a map. */
 function parseArgs(argv) {
   const args = new Map();
@@ -319,6 +343,7 @@ async function buildBundle() {
   const config = resolveProfile(args);
   const repoId = args.get('repo-id') || defaultRepoId;
   const revision = args.get('revision') || defaultRevision;
+  const sdkCommit = cleanSDKCommit();
   const outputDir = path.resolve(repoRoot, args.get('output') || `outputs/sdk-bundles/${config.profile}`);
   await assertSafeOutputDirectory(outputDir);
   const packageNames = requiredPackages(config);
@@ -388,7 +413,6 @@ async function buildBundle() {
     await copyFile(src, path.join(outputDir, 'runtime', name));
   }
 
-  const sdkCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).stdout.trim();
   const voiceDigests = [];
   for (const voice of voices) {
     voiceDigests.push(await fileDigest(outputDir, path.join('voices', `${voice}.bin`)));

@@ -202,6 +202,7 @@ requireIncludes(sources.consumerFixturePackage, files.consumerFixturePackage, '.
 requireIncludes(sources.voice, files.voice, `KokoroVoiceID("${contract.starterVoice}")`);
 requireIncludes(sources.voice, files.voice, 'public static let starterVoices: [KokoroVoiceID] = [.afHeart]');
 requireIncludes(sources.buildBundle, files.buildBundle, `minimum_platforms: { iOS: '${contract.iOS}', macOS: '${contract.macOS}' }`);
+requireIncludes(sources.buildBundle, files.buildBundle, 'refusing to build an SDK bundle from a dirty working tree');
 
 for (const key of manifestSchemaRequiredKeys(sources.manifestSchema)) {
   requireIncludes(sources.buildBundle, files.buildBundle, key);

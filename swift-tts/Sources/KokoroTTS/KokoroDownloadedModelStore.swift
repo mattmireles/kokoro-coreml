@@ -349,6 +349,12 @@ public struct KokoroDownloadedModelStore: Sendable {
         /// Error detected before URLSession's completion callback.
         private var terminalError: Error?
 
+        /// Synchronizes installation/cancellation of the active task.
+        private let stateLock = NSLock()
+
+        /// Remembers cancellation that arrives before the task is installed.
+        private var cancellationRequested = false
+
         /// Creates a capped downloader.
         ///
         /// - Parameters:
@@ -378,19 +384,26 @@ public struct KokoroDownloadedModelStore: Sendable {
                         continuation.resume(throwing: CancellationError())
                         return
                     }
-                    self.continuation = continuation
                     let session = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: nil)
-                    self.session = session
                     let task = session.dataTask(with: url)
+                    self.stateLock.lock()
+                    self.continuation = continuation
+                    self.session = session
                     self.task = task
-                    if Task.isCancelled {
+                    let shouldCancel = self.cancellationRequested || Task.isCancelled
+                    self.stateLock.unlock()
+                    if shouldCancel {
                         task.cancel()
                     } else {
                         task.resume()
                     }
                 }
             } onCancel: {
-                self.task?.cancel()
+                self.stateLock.lock()
+                self.cancellationRequested = true
+                let task = self.task
+                self.stateLock.unlock()
+                task?.cancel()
             }
         }
 
@@ -434,11 +447,12 @@ public struct KokoroDownloadedModelStore: Sendable {
         /// Resumes the async caller with either the bounded data or the first terminal error.
         func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
             session.invalidateAndCancel()
-            defer {
-                continuation = nil
-                self.session = nil
-                self.task = nil
-            }
+            stateLock.lock()
+            let continuation = continuation
+            self.continuation = nil
+            self.session = nil
+            self.task = nil
+            stateLock.unlock()
             if let terminalError {
                 continuation?.resume(throwing: terminalError)
             } else if let error {
@@ -484,6 +498,12 @@ public struct KokoroDownloadedModelStore: Sendable {
         /// Whether `didFinishDownloadingTo` moved a verified file into place.
         private var finished = false
 
+        /// Synchronizes installation/cancellation of the active task.
+        private let stateLock = NSLock()
+
+        /// Remembers cancellation that arrives before the task is installed.
+        private var cancellationRequested = false
+
         /// Creates a capped file downloader.
         ///
         /// - Parameters:
@@ -521,19 +541,26 @@ public struct KokoroDownloadedModelStore: Sendable {
                         continuation.resume(throwing: CancellationError())
                         return
                     }
-                    self.continuation = continuation
                     let session = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: nil)
-                    self.session = session
                     let task = session.downloadTask(with: url)
+                    self.stateLock.lock()
+                    self.continuation = continuation
+                    self.session = session
                     self.task = task
-                    if Task.isCancelled {
+                    let shouldCancel = self.cancellationRequested || Task.isCancelled
+                    self.stateLock.unlock()
+                    if shouldCancel {
                         task.cancel()
                     } else {
                         task.resume()
                     }
                 }
             } onCancel: {
-                self.task?.cancel()
+                self.stateLock.lock()
+                self.cancellationRequested = true
+                let task = self.task
+                self.stateLock.unlock()
+                task?.cancel()
             }
         }
 
@@ -584,11 +611,12 @@ public struct KokoroDownloadedModelStore: Sendable {
         /// Resumes the async caller after URLSession completes or fails.
         func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
             session.invalidateAndCancel()
-            defer {
-                continuation = nil
-                self.session = nil
-                self.task = nil
-            }
+            stateLock.lock()
+            let continuation = continuation
+            self.continuation = nil
+            self.session = nil
+            self.task = nil
+            stateLock.unlock()
             if let http = task.response as? HTTPURLResponse,
                !(200..<300).contains(http.statusCode),
                terminalError == nil {
