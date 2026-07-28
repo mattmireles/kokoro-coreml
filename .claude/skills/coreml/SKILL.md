@@ -1,30 +1,22 @@
 ---
 name: coreml
-description: >-
-  Redirect: cross-repo Core ML master router lives in personal skills. Use
-  ~/.cursor/skills/coreml/SKILL.md for intent routing and guide links across
-  kokoro-coreml and crossfade. Delegates procedures to repo child skills
-  (coreml-validate, coreml-profile, bakeoff, debug).
+description: Route Core ML work inside kokoro-coreml without depending on a personal ~/.cursor skill. Use for conversion, numerical parity, compute-plan profiling, ANE/GPU/CPU placement, Swift SDK behavior, TTS quality, or bakeoffs. Delegate to the repo-local child skills and checked-in guides.
 ---
 
-# Core ML (repo stub → personal skill)
+# Core ML in Kokoro
 
-**Canonical router:** `~/.cursor/skills/coreml/SKILL.md`
+Read `CLAUDE.md`, `.claude/skills/references/repo-profiles.md`, and the smallest
+relevant guide or plan.
 
-**Full guide index:** `~/.cursor/skills/coreml/reference.md`
+Route by intent:
 
-This checkout is **kokoro-coreml**. The personal skill detects that from the
-workspace path and loads Kokoro guides under
-`/Users/mm/Documents/GitHub/kokoro-coreml/`.
+- numerical parity or export drift: `coreml-validate`
+- compute-unit placement or fallback: `coreml-profile`
+- controlled performance comparisons: `bakeoff`
+- perceptual TTS evidence: `audio-judge`
+- sibling TTS service integration: `botnet`
+- unknown failures: `debug`
 
-## What to do
-
-1. Read and follow `~/.cursor/skills/coreml/SKILL.md` end-to-end.
-2. Load child skill **procedures** from this repo when delegated:
-   - [coreml-validate](../coreml-validate/skill.md)
-   - [coreml-profile](../coreml-profile/skill.md)
-   - [bakeoff](../bakeoff/SKILL.md)
-   - [debug](../debug/SKILL.md)
-   - [guide-ingest](../guide-ingest/SKILL.md)
-
-Do not duplicate routing logic in this file — edit the personal skill instead.
+Require package hashes and physical-device evidence for hardware claims. Keep
+repo analysis in `README/Notes/`; ingest external research into guides only
+through the documented guide workflow.
