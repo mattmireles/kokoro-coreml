@@ -25,12 +25,43 @@ public struct KokoroPhonemeResult: Equatable, Codable {
     /// UTF-16 length for later voice-row parity.
     public let utf16Count: Int
 
+    /// Source words the phonemizer resolved to nothing.
+    ///
+    /// Grapheme-to-phoneme conversion drops words it cannot resolve, and the
+    /// dropped text simply never reaches the model — the audio is missing a
+    /// phrase with no error anywhere. Reporting the count lets an app log the
+    /// loss instead of shipping silently truncated speech. Zero when a backend
+    /// cannot distinguish dropped words from resolved ones.
+    public let droppedTokens: Int
+
     /// Creates a phoneme result.
     ///
-    /// - Parameter phonemes: Phoneme string returned by the backend.
-    public init(phonemes: String) {
+    /// - Parameters:
+    ///   - phonemes: Phoneme string returned by the backend.
+    ///   - droppedTokens: Source words the backend resolved to nothing.
+    public init(phonemes: String, droppedTokens: Int = 0) {
         self.phonemes = phonemes
         self.utf16Count = phonemes.utf16.count
+        self.droppedTokens = max(0, droppedTokens)
+    }
+
+    /// Coding keys for stored phoneme fixtures.
+    private enum CodingKeys: String, CodingKey {
+        case phonemes
+        case utf16Count
+        case droppedTokens
+    }
+
+    /// Decodes a phoneme result, tolerating fixtures written before drop counts existed.
+    ///
+    /// - Parameter decoder: Decoder supplying the stored fixture.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let phonemes = try container.decode(String.self, forKey: .phonemes)
+        self.phonemes = phonemes
+        self.utf16Count = try container.decodeIfPresent(Int.self, forKey: .utf16Count)
+            ?? phonemes.utf16.count
+        self.droppedTokens = try container.decodeIfPresent(Int.self, forKey: .droppedTokens) ?? 0
     }
 }
 

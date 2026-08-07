@@ -23,9 +23,6 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
     /// Loaded Core ML model cache.
     private var models: [String: MLModel] = [:]
 
-    /// Manifest model-package paths already verified in this process.
-    private var validatedModelPackages: Set<String> = []
-
     /// Compute-unit policy selected for this facade.
     private let computePolicy: KokoroComputePolicy
 
@@ -356,17 +353,23 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
     }
 
     /// Validates one model package tree before Core ML compiles or loads it.
-    private func validateModelPackageIfNeeded(_ packageURL: URL) throws -> KokoroRuntimeManifest.ModelPackage {
+    ///
+    /// Repeat validation is absorbed by ``KokoroFileDigest``'s process-wide memo
+    /// rather than by per-provider bookkeeping, so a facade rebuilt for a second
+    /// playback re-walks the package directory but re-hashes nothing.
+    ///
+    /// Module-internal so regression tests can assert that second pass without
+    /// compiling a real Core ML model.
+    ///
+    /// - Parameter packageURL: `.mlpackage` directory to validate.
+    /// - Returns: Matching manifest entry.
+    func validateModelPackageIfNeeded(_ packageURL: URL) throws -> KokoroRuntimeManifest.ModelPackage {
         let relativePath = "coreml/\(packageURL.lastPathComponent)"
         guard let expected = manifest.modelPackages.first(where: { $0.path == relativePath }) else {
             throw KokoroError.missingModel(packageURL.lastPathComponent)
         }
-        guard !validatedModelPackages.contains(relativePath) else {
-            return expected
-        }
         try Self.rejectExistingSymlinkComponents(rootURL: rootURL, targetURL: packageURL)
         try Self.validatePackageTree(packageURL: packageURL, relativePath: relativePath, expected: expected)
-        validatedModelPackages.insert(relativePath)
         return expected
     }
 
@@ -390,16 +393,14 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
             }
             throw KokoroError.missingRuntimeAsset(digest.path)
         }
-        let values = try url.resourceValues(forKeys: [.isSymbolicLinkKey, .isRegularFileKey])
+        let values = try url.resourceValues(forKeys: [.isSymbolicLinkKey, .isRegularFileKey, .fileSizeKey])
         guard values.isSymbolicLink != true, values.isRegularFile == true else {
             throw KokoroError.pathEscape(digest.path)
         }
-        let data = try Data(contentsOf: url)
-        guard data.count == digest.bytes else {
+        guard values.fileSize == digest.bytes else {
             throw KokoroError.badHash(path: digest.path)
         }
-        let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        guard hash == digest.sha256 else {
+        guard try KokoroFileDigest.memoizedSHA256(ofFileAt: url) == digest.sha256 else {
             throw KokoroError.badHash(path: digest.path)
         }
     }
@@ -564,6 +565,10 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
     }
 
     /// Validates a model package against the manifest tree digest.
+    ///
+    /// File bytes are streamed, never loaded whole: a `Data(contentsOf:)` read of
+    /// the 67 MB `weight.bin` in the acoustic package produced a matching
+    /// resident spike on every validation pass.
     private static func validatePackageTree(
         packageURL: URL,
         relativePath: String,
@@ -579,12 +584,13 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         var digest = SHA256()
         for file in files {
             let rel = file.relativePath
-            let data = try Data(contentsOf: file.url)
-            totalBytes += data.count
-            let fileHash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            let values = try file.url.resourceValues(forKeys: [.fileSizeKey])
+            let byteCount = values.fileSize ?? 0
+            totalBytes += byteCount
+            let fileHash = try KokoroFileDigest.memoizedSHA256(ofFileAt: file.url)
             digest.update(data: Data(rel.utf8))
             digest.update(data: Data([0]))
-            digest.update(data: Data(String(data.count).utf8))
+            digest.update(data: Data(String(byteCount).utf8))
             digest.update(data: Data([0]))
             digest.update(data: Data(fileHash.utf8))
             digest.update(data: Data([0]))

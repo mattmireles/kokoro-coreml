@@ -218,28 +218,22 @@ public actor KokoroTTS {
         }
     }
 
-    /// Splits an oversized chunk near its midpoint, preferring whitespace.
+    /// Splits an oversized chunk at the best sentence or clause boundary.
+    ///
+    /// Boundary selection lives in ``KokoroChunkBoundaries`` so it stays aligned
+    /// with the JavaScript chunk planner the web and extension paths use.
+    ///
+    /// - Parameter chunk: Chunk that exceeded the runtime duration shape.
+    /// - Returns: Two or more strictly shorter fragments.
     private static func splitOversizedChunk(_ chunk: String) throws -> [String] {
-        let trimmed = KokoroTextProcessor.normalizeWhitespace(chunk)
-        guard trimmed.count > 1 else {
+        let fragments = KokoroChunkBoundaries.splitForRetry(chunk)
+        guard fragments.count > 1 else {
             throw KokoroError.inputTooLong(
                 tokens: PipelineConstants.maxCallerChunkTokens + 1,
                 maxTokens: PipelineConstants.maxCallerChunkTokens
             )
         }
-        let midpoint = trimmed.index(trimmed.startIndex, offsetBy: trimmed.count / 2)
-        let leftWhitespace = trimmed[..<midpoint].lastIndex(where: { $0.isWhitespace })
-        let rightWhitespace = trimmed[midpoint...].firstIndex(where: { $0.isWhitespace })
-        let splitIndex = leftWhitespace ?? rightWhitespace ?? midpoint
-        let left = KokoroTextProcessor.normalizeWhitespace(String(trimmed[..<splitIndex]))
-        let right = KokoroTextProcessor.normalizeWhitespace(String(trimmed[splitIndex...]))
-        guard !left.isEmpty, !right.isEmpty, left != trimmed, right != trimmed else {
-            throw KokoroError.inputTooLong(
-                tokens: PipelineConstants.maxCallerChunkTokens + 1,
-                maxTokens: PipelineConstants.maxCallerChunkTokens
-            )
-        }
-        return [left, right]
+        return fragments
     }
 
     /// Returns the locale-appropriate text processor for a Kokoro voice.
@@ -411,6 +405,11 @@ public actor KokoroTTS {
                 return KokoroError.missingRuntimeAsset("runtime/kokoro-vocab.json")
             case .invalidVoiceEmbedding:
                 return KokoroError.invalidAudioOutput
+            case .inaudibleChunk(let characters, let droppedTokens):
+                return KokoroError.inaudibleChunk(
+                    characters: characters,
+                    droppedTokens: droppedTokens
+                )
             }
         }
         return error

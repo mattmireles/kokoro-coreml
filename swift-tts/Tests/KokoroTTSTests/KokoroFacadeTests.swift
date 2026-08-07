@@ -190,12 +190,15 @@ final class KokoroFacadeTests: XCTestCase {
 
     /// Verifies streamed download bytes reach the public hydration progress
     /// path instead of waiting for an entire large model file to finish.
-    func testDownloadedStoreReportsIncrementalFileProgress() {
+    func testDownloadedStoreReportsIncrementalFileProgress() throws {
         let recorder = LockedIntRecorder()
         let expectation = expectation(description: "streamed byte progress")
+        let target = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("fixture.bin")
+        let url = URL(string: "https://models.example.test/fixture.bin")!
         let downloader = KokoroDownloadedModelStore.CappedFileDownloader(
-            target: FileManager.default.temporaryDirectory
-                .appendingPathComponent(UUID().uuidString),
+            target: target,
             expectedBytes: 1_024,
             expectedSHA256: String(repeating: "0", count: 64),
             maxBytes: 1_024,
@@ -204,16 +207,19 @@ final class KokoroFacadeTests: XCTestCase {
             recorder.append(bytes)
             expectation.fulfill()
         }
-        let task = URLSession.shared.downloadTask(
-            with: URL(string: "https://models.example.test/fixture.bin")!
-        )
+        let task = URLSession.shared.dataTask(with: url)
+        let response = try XCTUnwrap(HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Length": "1024"]
+        ))
 
+        downloader.urlSession(URLSession.shared, dataTask: task, didReceive: response) { _ in }
         downloader.urlSession(
             URLSession.shared,
-            downloadTask: task,
-            didWriteData: 128,
-            totalBytesWritten: 128,
-            totalBytesExpectedToWrite: 1_024
+            dataTask: task,
+            didReceive: Data(repeating: 0, count: 128)
         )
 
         wait(for: [expectation], timeout: 1)
@@ -536,6 +542,9 @@ final class KokoroFacadeTests: XCTestCase {
     }
 
     /// Creates a minimal generated-bundle shape for provider validation tests.
+    ///
+    /// Forwards to ``KokoroBundleFixture`` so other suites can build the same
+    /// tree without duplicating the manifest shape.
     private func makeBundleRoot(
         removeVoiceFile: Bool = false,
         schemaVersion: Int = 1,
@@ -545,127 +554,45 @@ final class KokoroFacadeTests: XCTestCase {
         durationTokenSizes: [Int] = [128],
         hnsfPayload: String? = nil
     ) throws -> URL {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let runtime = root.appendingPathComponent("runtime", isDirectory: true)
-        let voices = root.appendingPathComponent("voices", isDirectory: true)
-        try FileManager.default.createDirectory(at: runtime, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: voices, withIntermediateDirectories: true)
-
-        let vocabURL = try KokoroRuntimeAssets.url(for: .vocab)
-        let hnsfURL = try KokoroRuntimeAssets.url(for: .hnsfWeights)
-        let bundledVocab = runtime.appendingPathComponent("kokoro-vocab.json")
-        let bundledHnsf = runtime.appendingPathComponent("hnsf_weights.json")
-        try FileManager.default.copyItem(at: vocabURL, to: bundledVocab)
-        if let hnsfPayload {
-            try Data(hnsfPayload.utf8).write(to: bundledHnsf)
-        } else {
-            try FileManager.default.copyItem(at: hnsfURL, to: bundledHnsf)
-        }
-
-        let voiceURL = voices.appendingPathComponent("af_heart.bin")
-        let voiceData = Data(count: 256 * 4)
-        try voiceData.write(to: voiceURL)
-        if removeVoiceFile {
-            try FileManager.default.removeItem(at: voiceURL)
-        }
-        try writeRequiredPackages(root: root)
-
-        let manifest: [String: Any] = [
-            "schema_version": schemaVersion,
-            "sdk_commit": "test",
-            "hf_repo_id": "test/repo",
-            "hf_revision": "testrev",
-            "hf_provenance_verified": true,
-            "hf_download_manifest_sha256": String(repeating: "a", count: 64),
-            "minimum_platforms": ["iOS": "18.0", "macOS": "15.0"],
-            "supported_languages": ["en-US"],
-            "bundle_profile": "starter",
-            "buckets": [15],
-            "duration_token_sizes": durationTokenSizes,
-            "model_packages": modelPackages ?? requiredPackageEntries(),
-            "voices": [[
-                "path": voicePath,
-                "bytes": voiceData.count,
-                "sha256": voiceHashOverride ?? sha256(voiceData),
-            ]],
-            "runtime_assets": [
-                "vocab": digest(path: "runtime/kokoro-vocab.json", url: bundledVocab),
-                "hnsf_weights": digest(path: "runtime/hnsf_weights.json", url: bundledHnsf),
-            ],
-        ]
-        let data = try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
-        try data.write(to: root.appendingPathComponent("KokoroRuntimeManifest.json"))
-        return root
+        try KokoroBundleFixture.makeBundleRoot(
+            removeVoiceFile: removeVoiceFile,
+            schemaVersion: schemaVersion,
+            voiceHashOverride: voiceHashOverride,
+            voicePath: voicePath,
+            modelPackages: modelPackages,
+            durationTokenSizes: durationTokenSizes,
+            hnsfPayload: hnsfPayload
+        )
     }
 
     /// Creates a manifest digest object for a file.
     private func digest(path: String, url: URL) -> [String: Any] {
-        let data = try! Data(contentsOf: url)
-        return [
-            "path": path,
-            "bytes": data.count,
-            "sha256": sha256(data),
-        ]
+        KokoroBundleFixture.digest(path: path, url: url)
     }
 
     /// Writes a minimal one-file model package fixture.
     private func writeOneFilePackage(root: URL, path: String, data: Data) throws {
-        let package = root.appendingPathComponent(path, isDirectory: true)
-        if FileManager.default.fileExists(atPath: package.path) {
-            try FileManager.default.removeItem(at: package)
-        }
-        let payload = root.appendingPathComponent(path, isDirectory: true)
-            .appendingPathComponent("Data/com.apple.CoreML", isDirectory: true)
-        try FileManager.default.createDirectory(at: payload, withIntermediateDirectories: true)
-        try data.write(to: payload.appendingPathComponent("model.mlmodel"))
+        try KokoroBundleFixture.writeOneFilePackage(root: root, path: path, data: data)
     }
 
     /// Creates the matching manifest entry for `writeOneFilePackage`.
     private func modelPackageEntry(path: String, data: Data) -> [String: Any] {
-        let rel = "Data/com.apple.CoreML/model.mlmodel"
-        let fileHash = sha256(data)
-        var digest = SHA256()
-        digest.update(data: Data(rel.utf8))
-        digest.update(data: Data([0]))
-        digest.update(data: Data(String(data.count).utf8))
-        digest.update(data: Data([0]))
-        digest.update(data: Data(fileHash.utf8))
-        digest.update(data: Data([0]))
-        return [
-            "path": path,
-            "tree_sha256": digest.finalize().map { String(format: "%02x", $0) }.joined(),
-            "file_count": 1,
-            "bytes": data.count,
-            "files": [[
-                "path": rel,
-                "bytes": data.count,
-                "sha256": fileHash,
-            ]],
-        ]
+        KokoroBundleFixture.modelPackageEntry(path: path, data: data)
     }
 
-    /// Creates and registers the minimal model package set required for a 15s starter bundle.
+    /// Creates the minimal model package set required for a 15s starter bundle.
     private func requiredPackageEntries() -> [[String: Any]] {
-        [
-            modelPackageEntry(path: "coreml/kokoro_duration_t128.mlpackage", data: Data("duration-128".utf8)),
-            modelPackageEntry(path: "coreml/kokoro_f0ntrain_t600.mlpackage", data: Data("f0-600".utf8)),
-            modelPackageEntry(path: "coreml/kokoro_decoder_pre_15s.mlpackage", data: Data("decoder-pre-15".utf8)),
-            modelPackageEntry(path: "coreml/kokoro_decoder_har_post_15s.mlpackage", data: Data("har-post-15".utf8)),
-        ]
+        KokoroBundleFixture.requiredPackageEntries()
     }
 
     /// Creates default model package directories for the generated-bundle fixture.
     private func writeRequiredPackages(root: URL) throws {
-        try writeOneFilePackage(root: root, path: "coreml/kokoro_duration_t128.mlpackage", data: Data("duration-128".utf8))
-        try writeOneFilePackage(root: root, path: "coreml/kokoro_f0ntrain_t600.mlpackage", data: Data("f0-600".utf8))
-        try writeOneFilePackage(root: root, path: "coreml/kokoro_decoder_pre_15s.mlpackage", data: Data("decoder-pre-15".utf8))
-        try writeOneFilePackage(root: root, path: "coreml/kokoro_decoder_har_post_15s.mlpackage", data: Data("har-post-15".utf8))
+        try KokoroBundleFixture.writeRequiredPackages(root: root)
     }
 
     /// Computes a SHA-256 digest string.
     private func sha256(_ data: Data) -> String {
-        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        KokoroBundleFixture.sha256(data)
     }
 
     /// Calls facade load while isolated to `MainActor`.

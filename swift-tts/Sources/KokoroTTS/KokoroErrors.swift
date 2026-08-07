@@ -47,6 +47,13 @@ public enum KokoroError: Error, Equatable, LocalizedError {
     /// The prepared input exceeds the largest available duration model.
     case inputTooLong(tokens: Int, maxTokens: Int)
 
+    /// A chunk phonemized to silence and would have synthesized mute audio.
+    ///
+    /// Raised instead of returning near-silent audio so the caller can fall back
+    /// to another synthesis path. Carries counts only — chunk text is user
+    /// content and never enters an error value.
+    case inaudibleChunk(characters: Int, droppedTokens: Int)
+
     /// Core ML could not compile or load a model.
     case coreMLLoadFailed(String)
 
@@ -92,6 +99,8 @@ public enum KokoroError: Error, Equatable, LocalizedError {
             return "Kokoro speed must be positive and finite; observed \(speed)."
         case .inputTooLong(let tokens, let maxTokens):
             return "Kokoro input has \(tokens) tokens, but the largest loaded duration model supports \(maxTokens)."
+        case .inaudibleChunk(let characters, let droppedTokens):
+            return "Kokoro chunk of \(characters) characters phonemized to silence; \(droppedTokens) source tokens were dropped."
         case .coreMLLoadFailed(let model):
             return "Core ML could not compile or load Kokoro model: \(model)."
         case .coreMLPredictionFailed(let detail):

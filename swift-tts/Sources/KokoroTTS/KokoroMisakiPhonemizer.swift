@@ -34,27 +34,70 @@ public final class KokoroMisakiPhonemizer: KokoroPhonemizer {
         self.british = british
     }
 
+    /// Marker Misaki substitutes for a word it could not resolve.
+    ///
+    /// Matches `EnglishG2P(unk:)`'s default. The marker has no Kokoro vocab
+    /// entry, so it evaporates during tokenization: without counting it here the
+    /// loss leaves no trace at all.
+    static let unknownMarker: Character = "❓"
+
     /// Converts raw text to Kokoro-compatible phonemes with MisakiSwift.
     ///
     /// - Parameter text: Raw English text.
-    /// - Returns: Non-empty phonemes and their UTF-16 length.
+    /// - Returns: Non-empty phonemes, their UTF-16 length, and the dropped-word count.
     public func phonemize(_ text: String) throws -> KokoroPhonemeResult {
-        let phonemes = phonemizeLocked(text)
-        guard !phonemes.isEmpty else {
+        let result = phonemizeLocked(text)
+        guard !result.phonemes.isEmpty else {
             throw KokoroPhonemizerError.emptyOutput
         }
-        return KokoroPhonemeResult(phonemes: phonemes)
+        return KokoroPhonemeResult(
+            phonemes: result.phonemes,
+            droppedTokens: result.droppedTokens
+        )
     }
 
     /// Runs Misaki under lock because `EnglishG2P` owns mutable NLP state.
-    private func phonemizeLocked(_ text: String) -> String {
+    ///
+    /// Misaki's per-word `MToken` type is vended by a transitive dependency that
+    /// this package does not import, so the token array is consumed inline where
+    /// type inference supplies its element type. Only the two fields that matter
+    /// cross into ``isDroppedToken(text:phonemes:)``, which stays testable.
+    ///
+    /// - Parameter text: Raw English text.
+    /// - Returns: Phoneme string and the count of words that lost their sound.
+    private func phonemizeLocked(_ text: String) -> (phonemes: String, droppedTokens: Int) {
         g2pLock.lock()
         defer { g2pLock.unlock() }
+        let g2p: EnglishG2P
         if let cachedG2P {
-            return cachedG2P.phonemize(text: text).0
+            g2p = cachedG2P
+        } else {
+            g2p = EnglishG2P(british: british)
+            cachedG2P = g2p
         }
-        let created = EnglishG2P(british: british)
-        cachedG2P = created
-        return created.phonemize(text: text).0
+        let result = g2p.phonemize(text: text)
+        let droppedTokens = result.1.reduce(into: 0) { total, token in
+            if Self.isDroppedToken(text: token.text, phonemes: token.phonemes) {
+                total += 1
+            }
+        }
+        return (result.0, droppedTokens)
+    }
+
+    /// Returns whether one Misaki token lost the word it stood for.
+    ///
+    /// Only words carrying letters or digits count. Punctuation tokens
+    /// legitimately carry no phonemes and must never be reported as loss.
+    ///
+    /// - Parameters:
+    ///   - text: Source word the token covers.
+    ///   - phonemes: Phonemes Misaki resolved for it, if any.
+    /// - Returns: True when a speech-bearing word produced no usable phonemes.
+    static func isDroppedToken(text: String, phonemes: String?) -> Bool {
+        guard text.contains(where: { $0.isLetter || $0.isNumber }) else {
+            return false
+        }
+        let resolved = phonemes ?? ""
+        return resolved.allSatisfy(\.isWhitespace) || resolved.contains(unknownMarker)
     }
 }

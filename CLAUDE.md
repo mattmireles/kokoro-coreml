@@ -255,3 +255,7 @@ class Wrapper(nn.Module):
 ### Endnote: debug faster by *lowering* features first, then adding them back one at a time. Most cryptic errors are just “new op not yet stable on newest OS.”
 
 SIMPLER IS BETTER.
+
+<!-- borg-adapter:start -->
+@BORG.md
+<!-- borg-adapter:end -->

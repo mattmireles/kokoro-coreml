@@ -12,6 +12,12 @@ public enum KokoroTextProcessingError: Error, Equatable, LocalizedError {
     /// Phonemization succeeded but no phoneme characters survived vocab lookup.
     case emptyTokenization
 
+    /// Tokenization produced only silence, so the chunk would synthesize mute.
+    ///
+    /// Carries counts rather than the text itself: chunk contents are user
+    /// content and must not land in logs or error strings.
+    case inaudibleChunk(characters: Int, droppedTokens: Int)
+
     /// The requested speed was zero, negative, NaN, or infinite.
     case invalidSpeed(Float)
 
@@ -30,6 +36,8 @@ public enum KokoroTextProcessingError: Error, Equatable, LocalizedError {
             return "Kokoro vocabulary is unavailable."
         case .emptyTokenization:
             return "Kokoro tokenization produced no model tokens."
+        case .inaudibleChunk(let characters, let droppedTokens):
+            return "Kokoro chunk of \(characters) characters phonemized to silence; \(droppedTokens) source tokens were dropped."
         case .invalidSpeed(let speed):
             return "Kokoro speed must be positive and finite; observed \(speed)."
         case .tokenBudgetExceeded(let actual, let maximum):
@@ -154,9 +162,16 @@ public struct KokoroTextProcessor {
         } else {
             resolvedPhonemeResult = try phonemizer.phonemize(normalized)
         }
-        let modelTokenIDs = tokenIDs(forPhonemes: resolvedPhonemeResult.phonemes)
+        let tokenization = tokenization(forPhonemes: resolvedPhonemeResult.phonemes)
+        let modelTokenIDs = tokenization.tokenIDs
         guard !modelTokenIDs.isEmpty else {
             throw KokoroTextProcessingError.emptyTokenization
+        }
+        guard carriesAudibleToken(modelTokenIDs) else {
+            throw KokoroTextProcessingError.inaudibleChunk(
+                characters: normalized.count,
+                droppedTokens: resolvedPhonemeResult.droppedTokens + tokenization.droppedCharacters
+            )
         }
 
         let framed = [Self.boundaryTokenID] + modelTokenIDs + [Self.boundaryTokenID]
@@ -195,7 +210,49 @@ public struct KokoroTextProcessor {
     /// - Parameter phonemes: Phoneme string returned by Misaki or a test stub.
     /// - Returns: Unframed model token IDs.
     public func tokenIDs(forPhonemes phonemes: String) -> [Int32] {
-        phonemes.compactMap { vocab[String($0)] }
+        tokenization(forPhonemes: phonemes).tokenIDs
+    }
+
+    /// Converts phoneme characters to token IDs and reports what was discarded.
+    ///
+    /// Characters with no vocab entry — including Misaki's `❓` unknown marker —
+    /// are dropped silently by design, which is exactly why the count has to be
+    /// returned: it is the only trace that speech went missing between G2P and
+    /// the model.
+    ///
+    /// - Parameter phonemes: Phoneme string returned by Misaki or a test stub.
+    /// - Returns: Unframed model token IDs and the discarded character count.
+    public func tokenization(forPhonemes phonemes: String) -> (tokenIDs: [Int32], droppedCharacters: Int) {
+        var tokenIDs: [Int32] = []
+        var droppedCharacters = 0
+        for character in phonemes {
+            if let tokenID = vocab[String(character)] {
+                tokenIDs.append(tokenID)
+            } else {
+                droppedCharacters += 1
+            }
+        }
+        return (tokenIDs, droppedCharacters)
+    }
+
+    /// Returns whether any token would actually make sound.
+    ///
+    /// A chunk whose words all resolved to nothing still tokenizes: the spaces
+    /// between them survive G2P and the space character has a real vocab entry,
+    /// so the model happily synthesizes near-silence and every existing guard
+    /// passes. Treating an all-silence token run as a failure is deliberate —
+    /// the Gist app routes a thrown synthesis error to its server fallback, so
+    /// failing loudly is what gets the listener correct audio.
+    ///
+    /// - Parameter tokenIDs: Unframed model token IDs.
+    /// - Returns: True when at least one token is not the silence token.
+    private func carriesAudibleToken(_ tokenIDs: [Int32]) -> Bool {
+        // Without a space entry there is no silence token to compare against, so
+        // no chunk can be proven mute.
+        guard let silenceTokenID = vocab[" "] else {
+            return true
+        }
+        return tokenIDs.contains { $0 != silenceTokenID }
     }
 
     /// Converts text to phonemes after the same whitespace normalization used by prep.
