@@ -1,15 +1,13 @@
 ---
 name: create-guide
 description: >-
-  Creates technical field guides and debugging manuals from web search and external sources using Gemini Deep Research
-  Max via the llm-workflows create_guide_v1 agent. A guide is a reference manual
-  for a hard, non-obvious external mechanism a developer would Google for hours or
-  ask an SME about and that LLMs handle poorly — not product, UX, architecture, or
-  policy decisions. Assembles structured research briefs, launches long-running
-  background research, saves raw drafts locally, and hands off to guide-ingest for
-  verification and repo integration. Use when the user invokes create-guide or
-  wants a new README/Guides field guide on an arcane mechanism; do not use for
-  decisions the plan and agent can reason about from training data.
+  Creates technical field guides by synthesizing what the public internet says
+  about a hard, non-obvious external domain via Gemini Deep Research Max
+  (llm-workflows create_guide_v1). A guide is a durable “afternoon of Googling”
+  artifact for kokoro-coreml — not dial-a-friend advice, campaign go/no-go, or product decisions.
+  Assembles research briefs, launches long-running research, saves raw drafts
+  locally, and hands off to guide-ingest. Use when the user invokes create-guide
+  or wants a new README/Guides field guide on an arcane mechanism.
 disable-model-invocation: true
 ---
 
@@ -17,16 +15,23 @@ disable-model-invocation: true
 
 ## Purpose
 
-Automate the first half of field-guide creation:
+Automate the first half of field-guide creation for this Core ML TTS repo:
 
 1. Assemble a strong Deep Research brief (not a one-liner).
 2. Launch `create_guide_v1` in `llm-workflows` (Deep Research Max by default).
 3. Poll or resume until raw markdown lands locally.
 4. Hand the raw draft to repo-specific ingestion (`guide-ingest` when available).
 
-Raw Deep Research output is **draft material only**. Never treat it as canonical until verified and integrated.
+A guide is a **synthetic library entry**: what competent practitioners would find
+if they spent an afternoon searching docs, issues, WWDC notes, papers, and
+forums. It exists so the next agent can reuse that research instead of guessing
+or re-Googling.
 
-Guide/notes boundary: `README/Guides/` is for externally created reference
+Raw Deep Research output is **draft material only**. Never place it in
+`README/Guides/` until `guide-ingest` has normalized it, checked library/API
+claims, annotated firsthand contradictions, and cross-linked the corpus.
+
+Guide/notes boundary: `README/Guides/` is for externally researched reference
 manuals after `raw-report.md` exists and has been ingested. A pending
 checkpoint, prompt, local summary, or agent-written synthesis is not a guide.
 Do not create or update `README/Guides/` unless you can point to the external
@@ -36,51 +41,62 @@ implementation decisions belong in `README/Notes/`, not `README/Guides/`.
 
 ## What A Guide Is For (Read This First)
 
-A guide is a **reference manual for a hard, non-obvious mechanism** — the kind
-of thing a competent human developer would Google for hours, dig through forums,
-WWDC sessions, and source code for, or consult a subject-matter expert about
-before or while building. It exists to give the next agent **evidence-backed
-answers about how something actually works** that it would otherwise guess at.
+A guide **synthesizes external knowledge about a domain** — mechanisms, gotchas,
+failure modes, recipes people report, known limitations. It is the artifact of
+research, not a recommendation engine for this repo’s next move.
 
 A topic qualifies only when **all three** hold:
 
-1. **Non-obvious mechanism.** There is a hidden gotcha, an undocumented platform
-   behavior, an internal implementation detail, or a sharp edge you cannot infer
-   from first principles.
-2. **A human would research it.** A real developer would search the web, read
-   issue trackers / WWDC notes / spec docs, or ask an expert before trusting
-   their own answer.
+1. **Non-obvious external domain.** Hidden platform behavior, sharp library
+   edges, undocumented scheduling, signing/entitlement traps, or similar — not
+   something you invent from first principles.
+2. **A human would Google it.** A developer stuck or unfamiliar would spend real
+   time in docs, issue trackers, WWDC notes, or SME conversations.
 3. **Poorly represented in LLM training data.** Niche, new, fast-moving, or the
    kind of thing models confidently hallucinate.
 
-Good guide topics (note the shape):
+Good guide topics for this repo (shape: *what does the world know about X?*):
 
-- "How does iMessage render a rich link preview with an inline playable audio
-  button, and what Open Graph / metadata makes that appear?"
 - "How does Core ML actually schedule ops across ANE/GPU/CPU, and what causes
   silent fallback?"
-- "What exact APNs payload and entitlements wake an ActivityKit Live Activity in
-  the background, and what only works on device vs Simulator?"
-- "Why can a wildcard provisioning profile not carry HealthKit, and what is the
-  minimum signing setup to ship it?"
+- "What ISTFTNet / vocoder conversion traps appear when targeting ANE fixed
+  shapes?"
+- "How do practitioners split TTS pipelines so sequential BERT/LSTM stays off
+  ANE while dense decoder/vocoder stays on it?"
+- "What Swift Core ML prediction patterns keep multi-model pipelines warm
+  without thrashing the Neural Engine?"
 
-## Not A Guide
+## Not A Guide (Dial-A-Friend / Advice)
 
-Guides are **not** for product, UX, or architecture decisions. The agent and the
-plan can reason about these from training data; sending them to Deep Research
-wastes a run and produces a roadmap, not a reference manual. Do **not** write a
-guide for:
+**create-guide is not “ask a smarter model what we should do.”** That is
+**`second-opinion`**. Do **not** use create-guide when the ask is advice,
+judgment, or a campaign decision dressed up as research.
 
-- Product/scope choices ("which permissions should we ask for, in what order").
-- UX or copy decisions (owned by design skills and the plan).
-- API/schema/endpoint design ("how should we shape the token endpoint").
-- Fallback/timeout/policy decisions (engineering judgment, not arcane mechanism).
-- General, well-trodden how-tos already covered well by training data or
-  Context7 (standard SwiftUI flows, basic REST, common library usage).
+Reject or rewrite briefs that ask:
 
-Litmus test: if the hard part is **deciding what to build**, it is not a guide.
-If the hard part is **understanding how an external system actually behaves**, it
-might be.
+- "Should we put the decoder on ANE for *this* bakeoff?"
+- "Is this Core ML bucket split the right next arm given our RTF?"
+- "What should we do about these silent ANE fallbacks?"
+- Product/scope choices, UX/copy, API shape, timeout/policy judgment
+- General how-tos already covered well by training data or Context7
+
+Litmus tests:
+
+| Ask shape | Skill |
+| --- | --- |
+| "What does the internet say about how X works / fails / is tuned?" | **create-guide** |
+| "Given our plan/numbers, should we do X?" | **`second-opinion`** (or plan/notes for durable campaign decisions) |
+| Local measurement / investigation write-up | **`write-notes`** |
+| Lighter in-session research without Deep Research | **`write-notes`** |
+
+If the hard part is **deciding what to build next**, it is not a guide.
+If the hard part is **stocking external domain knowledge** an agent would
+otherwise Google, it might be.
+
+Context in the brief may ground the researcher (pinned versions, hardware, what
+you already tried) so the synthesis stays relevant. Context must **not** turn
+the run into "advise our campaign." Prefer questions like "what ratios and
+failure modes appear in the literature?" over "are we justified to launch?"
 
 ## Prerequisites
 
@@ -94,21 +110,20 @@ might be.
 ## Use When
 
 - User invokes **create-guide**
-- The topic clears the three-part test in **What A Guide Is For** — a
-  non-obvious external mechanism a human would research or ask an SME about
+- The topic clears the three-part test — external domain knowledge a human would
+  research when stuck or unfamiliar
 - User wants to replace manual Gemini UI research with the automated workflow
 
 ## Do Not Use When
 
-- The hard part is a product, UX, architecture, or policy **decision** (see
-  **Not A Guide**) — let the plan and the agent decide, do not research it
+- The ask is advice, go/no-go, or "what should we do next" (see **Not A Guide**)
 - The topic is a well-trodden how-to already covered by training data or
   Context7 → answer directly or use **Context7**
 - Raw export already exists → use **`guide-ingest`**
 - Only fixing markdown in an existing guide → use **`markdown`**
 - The local learning belongs in the repo, not external research → use
   **`write-notes`**
-- Lighter in-session research without Deep Research → use **`research-planning`**
+- Lighter in-session research without Deep Research → use **`write-notes`**
 
 ## Workflow
 
@@ -118,26 +133,33 @@ Collect from the user (ask if missing):
 
 | Field | Required | Notes |
 | --- | --- | --- |
-| `topic` | Yes | One-line guide subject |
-| `context` | Often | Ground truth the external researcher cannot see |
-| `primaryResearchGoal` | Often | Narrow objective |
-| `questions` | Often | Bullet list of questions to answer |
+| `topic` | Yes | One-line **domain** subject (mechanism / practice area) |
+| `context` | Often | Ground truth the external researcher cannot see (pins, hardware). Not a request for advice. |
+| `primaryResearchGoal` | Often | What external knowledge to synthesize |
+| `questions` | Often | Bullet list of factual / practice questions — not "should we ship X?" |
 | `sourceHints` | Optional | Docs, repos, papers to prioritize |
 | `avoidSources` | Optional | Sources to distrust |
-| `targetRepo` | Optional | Active repo name, e.g. `kokoro-coreml`, `originals-condom` |
-| `targetGuidePath` | Optional | e.g. `README/Guides/apple-silicon/example-guide.md` |
+| `targetRepo` | Optional | Active repo name, e.g. `kokoro-coreml` |
+| `targetGuidePath` | Optional | e.g. `README/Guides/apple-silicon/coreml-ane-scheduling-guide.md` |
 
 Default `agentMode` to **`max`**. Confirm before launching unless the user explicitly asked for fast/cheap (`default`).
+
+If the user’s ask is advice-shaped, **stop and reframe** with them into a domain
+synthesis topic, or route away from create-guide. Do not launch Deep Research on
+a dial-a-friend prompt.
 
 ### 2. Assemble the research prompt
 
 Follow the scratchpad pattern (see `Scratchpad/scratchpad.md` in active repo when present):
 
-- Advanced developer field guide
+- Advanced developer field guide: synthesize public knowledge
 - Best practices, worst practices, common bugs, hidden gotchas, known limitations
 - Go light on theory, heavy on practical detail with code
 - For complex topics: add Context, Primary research goal, Questions to answer, Output format
-- Mark speculative ideas separately from evidence-backed recommendations
+- Mark speculative / community / "worth trying" ideas separately from
+  well-documented behavior — **keep both**; do not demand universal proof
+- Explicitly tell the researcher **not** to produce a go/no-go for a specific
+  product campaign; produce a reusable reference manual
 - For text-only field guides: explicitly request no charts, images, diagrams,
   or generated visualizations. The runtime should also send
   `agent_config.visualization: "off"` for `create_guide_v1`.
@@ -159,7 +181,7 @@ pnpm run research:create-guide \
   --topic "Core ML vs MLX scheduling for ISTFTNet vocoders" \
   --context-file /path/to/brief.md \
   --target-repo kokoro-coreml \
-  --target-guide-path README/Guides/apple-silicon/example-guide.md \
+  --target-guide-path README/Guides/apple-silicon/coreml-ane-scheduling-guide.md \
   --agent-mode max
 ```
 
@@ -175,7 +197,7 @@ pnpm run research:create-guide \
   --topic "Core ML vs MLX scheduling for ISTFTNet vocoders" \
   --context-file /path/to/brief.md \
   --target-repo kokoro-coreml \
-  --target-guide-path README/Guides/apple-silicon/example-guide.md \
+  --target-guide-path README/Guides/apple-silicon/coreml-ane-scheduling-guide.md \
   --agent-mode default \
   --workflow-runtime
 ```
@@ -247,18 +269,12 @@ When `raw-report.md` exists:
 
 | Repo has `guide-ingest`? | Action |
 | --- | --- |
-| Yes (e.g. kokoro-coreml) | Invoke **`guide-ingest`** on `raw-report.md` |
-| No | Normalize markdown, verify API claims (Context7 when available), add cross-links per local `README/Guides/` conventions |
+| Yes | Invoke **`guide-ingest`** on `raw-report.md` |
+| No | Normalize markdown, check API claims (Context7 when available), annotate local contradictions, add cross-links per `README/Guides/` conventions |
 
-Ingestion steps (never skip):
-
-0. Provenance gate: confirm and record the external raw source path. If there
-   is no raw external artifact, stop and write a note instead.
-1. Mechanical cleanup (escapes, data-URI images, broken fences)
-2. Context7 verification for library/API claims
-3. Outbound links to existing guides/notes
-4. Inbound links from related docs
-5. Place final file at `targetGuidePath` or agreed location
+Ingestion owns: provenance, cleanup, Context7/API corrections, firsthand
+contradiction notes, bidirectional links. create-guide does not rewrite the
+draft into a campaign verdict.
 
 Leave **Related Documentation** empty during Deep Research; ingestion adds repo cross-links.
 
@@ -267,27 +283,33 @@ Leave **Related Documentation** empty during Deep Research; ingestion adds repo 
 The prompt must be 100% self-contained. The research agent has no other context than the context that you share with it. It cannot look at your code unless you share your code. It can only search the web (and hit any MCP you wire up).
 
 The more and richer context you give it, the more relevant the guide will be.
+Richer context ≠ asking it to decide your roadmap.
 
 ## Prompt template (minimal)
 
 ```markdown
 Create an advanced developer field guide on: [TOPIC]
 
+Synthesize what public docs, papers, issues, and practitioner reports say.
 Best practices? Worst practices? Common bugs and issues? Hidden gotchas?
-Idiosyncratic design quirks? Known limitations?
+Idiosyncratic design quirks? Known limitations? Recipes people report as
+worth trying?
 
 Be extensive. Be comprehensive. Create a reference manual for implementation and debugging.
 Go light on theory, heavy on practical detail with code examples.
+Do not produce a go/no-go or roadmap for a specific product campaign.
+Mark speculation and community heuristics separately from well-documented behavior;
+keep both — do not omit "worth trying" material solely because it is unproven.
 
-Context:
+Context (environment pins only — not a request for advice):
 [GROUND TRUTH]
 
 Primary research goal:
-[GOAL]
+[What external knowledge to synthesize]
 
 Questions to answer:
-- [Q1]
-- [Q2]
+- [Factual / practice Q1]
+- [Factual / practice Q2]
 
 Output format:
 - Executive summary first
@@ -295,7 +317,7 @@ Output format:
 - Failure modes and debugging section
 - Concrete profiling commands/tools when relevant
 - Numbered references
-- Mark speculation separately from evidence-backed recommendations
+- Mark speculation separately from documented recommendations
 ```
 
 ## Handoff rules
@@ -304,12 +326,14 @@ Output format:
 | --- | --- |
 | Raw draft ready | **`guide-ingest`** (if available) |
 | Markdown lint only | **`markdown`** |
-| Where to put a note | **`write-notes`** |
-| Lighter research without Deep Research | **`research-planning`** |
+| Where to put a note / campaign decision | **`write-notes`** |
+| Lighter research without Deep Research | **`write-notes`** |
+| Advice / second opinion on what to do next | **`second-opinion`** |
 
 ## References
 
 - Runner: `/Users/mm/Documents/GitHub/llm-workflows/scripts/run-create-guide-research.mjs`
 - Workflow: `create_guide_v1` in `/Users/mm/Documents/GitHub/llm-workflows`
 - Deep Research guide: `/Users/mm/Documents/GitHub/llm-workflows/README/guides/gemini/Gemini-Deep-Research-agents-guide.md`
-- Ingest skill: `guide-ingest` in repos that ship it
+- Ingest skill: [`guide-ingest`](../guide-ingest/SKILL.md)
+- Advice skill: [`second-opinion`](../second-opinion/SKILL.md)
