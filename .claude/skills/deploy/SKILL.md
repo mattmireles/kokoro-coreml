@@ -45,7 +45,8 @@ There is no single CI workflow in `.github/workflows/` for this repo yet; treat
 
 ## Procedure (agent)
 
-1. Read **`README.md`**, **`CLAUDE.md`** (PyTorch → Core ML playbook), and the
+1. Read **`README.md`**, **`CLAUDE.md`** (agent operating rules), **`README/Wiki/`**
+   plus relevant **`README/Guides/`** (PyTorch → Core ML playbooks), and the
    relevant **`README/*.md`** guide for the subsystem (conversion, runtime,
    export).
 2. Do **not** run Cloudflare/Roast deploy commands—they do not apply.

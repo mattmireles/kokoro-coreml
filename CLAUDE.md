@@ -35,11 +35,16 @@ Do not make assumptions. If you need more info, you ASK for it. You don't answer
 Only commit to Git when asked. For everything else, use your judgement. Simpler is better.
 
 Exception: explicit invocation of a workflow skill counts as being asked for the
-side effects documented in that skill. Directly naming the skill counts, for
-example `execute-plan` or "use execute-plan". That authorizes its phase
-commits, push, and CI monitoring. Implicit routing does not. If a git-writing
-workflow skill was not invoked explicitly, stop before commit or push and call
-out the mismatch.
+side effects documented in that skill. Direct naming counts. Examples:
+
+- `execute-plan` / "use execute-plan" — phase commits, then push and CI
+  monitoring, as that skill documents.
+- `audit-fix-loop` / "use audit-fix-loop" — one final loop-owned commit only;
+  does not authorize push.
+
+Implicit routing does not authorize git writes. If a git-writing workflow skill
+was not invoked explicitly, stop before commit or push and call out the
+mismatch.
 
 ## START HERE: Architecture Documentation
 
@@ -85,8 +90,9 @@ node scripts/memory-health.mjs --strict
 ### README/Guides vs README/Notes
 
 `README/Guides/` is reserved for externally created reference manuals, usually
-Deep Research / external-agent reports ingested from
-`llm-workflows/outputs/create-guide/**/raw-report.md`. Do not add new guide
+Deep Research / external-agent reports ingested via **`guide-ingest`** from a
+raw report (typically under
+`llm-workflows/outputs/create-guide/**/raw-report.md`). Do not add new guide
 content from local analysis alone. If there is no external raw guide/report,
 run or request `create-guide` before creating a guide. Record the external raw
 source path in any ingested guide.

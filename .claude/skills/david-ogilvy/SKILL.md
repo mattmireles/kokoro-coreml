@@ -51,7 +51,7 @@ Before drafting or rewriting meaningful copy:
 
 - [David Ogilvy persona](./david-ogilvy.md)
 - [README.md](../../../README.md) (surface, architecture, performance claims)
-- [CLAUDE.md](../../../CLAUDE.md) (simplicity, ask-don’t-assume; LLM-first docs)
+- [CLAUDE.md](../../../CLAUDE.md) (Simpler Is Better, ask-don’t-assume)
 - [Problem summary](../../../README/problem-summary.md) (runtime / investigation context when relevant)
 - [Bakeoff results](../../../README/Notes/bakeoff-results.md) when the narrative matches benchmarks
 - [Performance notes](../../../README/Notes/performance-notes.md) when long-form perf context matters

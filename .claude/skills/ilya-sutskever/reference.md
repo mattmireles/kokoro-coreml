@@ -10,7 +10,7 @@ Paths are **repo-root relative** (open from the `kokoro-coreml` checkout root).
 
 ## Conversion and export
 
-- `README/Kokoro-to-CoreML-conversion.md`
+- `README/Guides/apple-silicon/Kokoro-to-CoreML-conversion.md`
 - `README/coreml-conversion-guide.md`
 - `README/learnings.md`
 - `README/problem-summary.md`
