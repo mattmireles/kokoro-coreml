@@ -58,7 +58,7 @@ Because the silent fallback mechanism obscures the true execution path, standard
 
 The absolute, unforgeable source of truth for hardware utilization on Apple Silicon is the macOS powermetrics utility.22 When a model is configured with MLComputeUnits.all but is silently rejected by the ANE, the definitive "smoking gun" is a sustained high CPU or GPU power draw paired with an ANE power draw of exactly 0 mW.10
 
-To capture this telemetry, developers run `powermetrics` with elevated privileges. **For ANE specifically**—the direct signal that the Neural Engine is drawing power—prefer the ANE sampler. The same pattern appears in this repo’s `CLAUDE.md`:
+To capture this telemetry, developers run `powermetrics` with elevated privileges. **For ANE specifically**—the direct signal that the Neural Engine is drawing power—prefer the ANE sampler. Canonical check:
 
 ```bash
 sudo powermetrics -i 1000 --samplers ane | grep "ANE Power"

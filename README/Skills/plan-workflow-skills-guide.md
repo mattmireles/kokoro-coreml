@@ -57,7 +57,8 @@ Turn a concrete request into a repo-native implementation plan using
 
 1. Related files under **`README/`** (conversion guides, export notes,
    `README/Plans/` neighbors).
-2. **`CLAUDE.md`** for PyTorch → Core ML constraints.
+2. **`README/Wiki/`** plus **`README/Guides/`** for PyTorch → Core ML
+   constraints (see also `CLAUDE.md` for agent operating rules only).
 3. **Context7** only when the plan depends on current `coremltools`, PyTorch, or
    Apple API behavior that may have changed.
 

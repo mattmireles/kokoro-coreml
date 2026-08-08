@@ -4,7 +4,9 @@ Paths are **repo-root relative** (open from the `kokoro-coreml` checkout root).
 
 ## Canonical persona and playbook
 
-- `CLAUDE.md` — Ilya persona, PyTorch → Core ML checklist, ANE layout, divide-and-conquer
+- `CLAUDE.md` — agent operating rules (Simpler Is Better, Algorithm, memory routing)
+- `README/Wiki/README.md` — current belief / Core ML export routing
+- `README/Guides/` — PyTorch → Core ML field manuals (ANE layout, scheduling, convert)
 
 ## Conversion and export
 

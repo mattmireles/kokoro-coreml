@@ -46,8 +46,9 @@ Before writing code or deep-diving the stack:
    guides and look for **known issues**, **workarounds**, and **checklists**.
 2. **Skim `README/Notes/`** (when present) and high-level docs linked from
    `README.md` for past investigations.
-3. Read **`CLAUDE.md`** for PyTorch → Core ML playbook constraints (static
-   shapes, ANE layout, divide-and-conquer).
+3. Read **`README/Wiki/`** and the relevant **`README/Guides/`** for PyTorch →
+   Core ML playbook constraints (static shapes, ANE layout, divide-and-conquer).
+   **`CLAUDE.md`** is agent operating rules only.
 
 ### 2. Context7 MCP (library and platform docs)
 

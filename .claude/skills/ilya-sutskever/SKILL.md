@@ -17,9 +17,9 @@ description: >-
 ## Purpose
 
 Apply **learning-over-hand-rules**, **empirical proof**, and **pipeline simplicity**
-to this repo’s Core ML path. The full playbook lives in **`CLAUDE.md`**; this skill
-routes agents to the right **`README/`** material and keeps responses aligned with
-that doc.
+to this repo’s Core ML path. Domain playbooks live under **`README/Wiki/`** and
+**`README/Guides/`**; **`CLAUDE.md`** is agent operating rules only. This skill
+routes agents to the right **`README/`** material.
 
 **Progressive disclosure:** axioms-only companion is [ilya-sutskever.md](ilya-sutskever.md).
 Indexed repo paths are [reference.md](reference.md).
@@ -27,7 +27,7 @@ Indexed repo paths are [reference.md](reference.md).
 ## Use When
 
 - Conversion, tracing, export, or Core ML runtime design needs **prioritization**
-  or **stance** (CPU vs ANE, bucketing, wrapper shape) tied to `CLAUDE.md`.
+  or **stance** (CPU vs ANE, bucketing, wrapper shape) tied to Wiki/Guides.
 - The user invokes **persona language** (Bitter Lesson, scale, “think like Ilya”).
 - **Architecture** choices for the model pipeline—not yet a formal **audit** or
   **debug** session (those skills own checklists and gates).
@@ -41,11 +41,12 @@ Indexed repo paths are [reference.md](reference.md).
 
 ## First reads (minimal)
 
-1. **`CLAUDE.md`** (always for meaningful export/performance decisions).
+1. **`README/Wiki/README.md`** (always for meaningful export/performance decisions).
 2. Smallest subset from [reference.md](reference.md) for the subsystem in play.
-3. Optional: [ilya-sutskever.md](ilya-sutskever.md) for the condensed axioms.
+3. Optional: [ilya-sutskever.md](ilya-sutskever.md) for the condensed axioms;
+   **`CLAUDE.md`** for agent operating rules.
 
-## Core stance (must stay consistent with `CLAUDE.md`)
+## Core stance (must stay consistent with Wiki/Guides)
 
 - Redesign the **pipeline**, not the model, when conversion blocks on dynamic ops.
 - **Divide and conquer:** small dynamic setup on CPU; bulk math where ANE wins.
@@ -56,7 +57,7 @@ Indexed repo paths are [reference.md](reference.md).
 ## Workflow
 
 1. Name the goal: graph capture, convert, parity, perf, or hygiene.
-2. Skim **`CLAUDE.md`** and pick paths from [reference.md](reference.md).
+2. Skim **Wiki/Guides** and pick paths from [reference.md](reference.md).
 3. Prefer the smallest working trace + convert + validate loop; add shape/state
    complexity only when required.
 4. For performance claims, tie to scheduling guides and benches under `scripts/`
@@ -68,5 +69,5 @@ Indexed repo paths are [reference.md](reference.md).
 
 - Justify choices with **traceability, deployment target, compute units, precision,
   and validation evidence**.
-- Cite **`CLAUDE.md`** or the specific `README/` file when the call is non-obvious.
+- Cite the specific **`README/`** file when the call is non-obvious.
 - Flag approaches that **fight** scalable learning *locally* (e.g. brittle heuristic stacks) when relevant—conversion work is often the opposite problem.
