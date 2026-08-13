@@ -217,7 +217,10 @@ Everything is static and float16. No dynamic ops. No `RangeDim`. No `non_zero` k
 
 - **iOS 18.0+ / macOS 15.0+** for the drop-in raw-text `KokoroTTS` SDK
 - **Apple Silicon** (M1+) or **A15+** for Neural Engine acceleration
-- Runs on older chips too, just slower
+- macOS `arm64` and `x86_64` build targets are supported; Intel Macs run without
+  ANE acceleration and should be treated as CPU/GPU Core ML targets
+- watchOS is not supported in this SDK snapshot because the MisakiSwift/MLX
+  raw-text dependency does not build for the watchOS SDK
 
 ## License
 

@@ -60,13 +60,13 @@ final class MLMultiArrayBindingTests: XCTestCase {
     }
 
     func testFloatValuesReadsLogicalOrderForStridedFloat16Array() throws {
-        let storage = UnsafeMutablePointer<Float16>.allocate(capacity: 6)
+        let storage = UnsafeMutablePointer<UInt16>.allocate(capacity: 6)
         for idx in 0..<6 {
-            storage[idx] = Float16(-100.0 - Float(idx))
+            storage[idx] = 0xfc00
         }
-        storage[0] = Float16(1.25)
-        storage[2] = Float16(-0.5)
-        storage[4] = Float16(3.5)
+        storage[0] = 0x3d00 // 1.25
+        storage[2] = 0xb800 // -0.5
+        storage[4] = 0x4300 // 3.5
 
         let arr = try MLMultiArray(
             dataPointer: UnsafeMutableRawPointer(storage),
