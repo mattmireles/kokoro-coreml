@@ -53,3 +53,10 @@ Read [references/index.md](references/index.md) first.
   markdown documents.
 - Hand off to `write-notes` if the main question is where a note belongs and how
   to consolidate it without note sprawl.
+
+## Prose Wrapping
+
+- Do not hard-wrap ordinary Markdown prose at a fixed column. Keep each paragraph on one source line unless Markdown semantics or a document format requires breaks (for example, lists, tables, code, blockquotes, or fixed-width email/plain-text output).
+- Treat editor and browser word wrap as presentation, not a reason to insert newlines.
+- Do not reflow prose merely to satisfy Markdownlint MD013. Disable or configure that rule for prose-heavy documentation when appropriate.
+- Preserve existing paragraph line structure when editing unrelated text; avoid drive-by reflow.
