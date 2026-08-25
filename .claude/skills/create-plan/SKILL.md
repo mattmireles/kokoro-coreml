@@ -5,6 +5,30 @@ description: Create an implementation plan for this repo. Use when the user want
 
 # Create Plan
 
+## Template Contract (Non-Negotiable)
+
+`assets/Plans-template.md` is this skill's canonical plan skeleton. It is a
+build input, not optional reference material.
+
+After choosing the target path, create the draft only by running:
+
+```sh
+scripts/scaffold-plan.sh <new-plan-path>
+```
+
+Fill that generated file; do not hand-write a competing skeleton. Preserve all
+required headings in their existing order. Content under `## Modules` is
+optional and may be selected or omitted only when it is not relevant. Before
+handoff, run:
+
+```sh
+scripts/validate-plan.sh <new-plan-path>
+```
+
+The validator rejects a missing, renamed, or reordered required heading and
+unfilled top-level placeholders. Use `--allow-placeholders` only to check a
+fresh scaffold before drafting.
+
 ## Purpose
 
 Use this skill to turn a concrete request into a repo-native implementation
