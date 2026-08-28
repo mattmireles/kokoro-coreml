@@ -10,6 +10,9 @@ description: Create an implementation plan for this repo. Use when the user want
 `assets/Plans-template.md` is this skill's canonical plan skeleton. It is a
 build input, not optional reference material.
 
+Every numbered phase (`### Phase N:`) must include a **Skills:** line naming
+existing skills to read before that phase starts.
+
 After choosing the target path, create the draft only by running:
 
 ```sh
@@ -25,9 +28,9 @@ handoff, run:
 scripts/validate-plan.sh <new-plan-path>
 ```
 
-The validator rejects a missing, renamed, or reordered required heading and
-unfilled top-level placeholders. Use `--allow-placeholders` only to check a
-fresh scaffold before drafting.
+The validator rejects a missing, renamed, or reordered required heading,
+unfilled top-level placeholders, and any phase without **Skills:**. Use
+`--allow-placeholders` only to check a fresh scaffold before drafting.
 
 ## Purpose
 
@@ -64,6 +67,8 @@ outline.
 6. Write the plan with the repo's canonical template and make it implementation
    ready:
    - concrete phases
+   - **Skills:** on every phase, naming existing skills the implementer must
+     read before starting that phase
    - specific files where knowable
    - verification per phase
    - hard requirements

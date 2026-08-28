@@ -59,4 +59,34 @@ if [ "${2:-}" != "--allow-placeholders" ]; then
   fi
 fi
 
+awk '
+  /^## Implementation Phases$/ { in_impl = 1; next }
+  in_impl && /^## / {
+    if (phase != "" && skills == 0) {
+      printf "missing **Skills:** in %s\n", phase > "/dev/stderr"
+      missing = 1
+    }
+    in_impl = 0
+    phase = ""
+    next
+  }
+  in_impl && /^### Phase [0-9]+:/ {
+    if (phase != "" && skills == 0) {
+      printf "missing **Skills:** in %s\n", phase > "/dev/stderr"
+      missing = 1
+    }
+    phase = $0
+    skills = 0
+    next
+  }
+  in_impl && /^\*\*Skills:\*\*/ { skills = 1 }
+  END {
+    if (phase != "" && skills == 0) {
+      printf "missing **Skills:** in %s\n", phase > "/dev/stderr"
+      missing = 1
+    }
+    if (missing) exit 1
+  }
+' "$1"
+
 echo "template contract valid: $1"
