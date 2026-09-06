@@ -2,6 +2,7 @@
 
 **Date:** YYYY-MM-DD
 **Status:** Planned | In-Progress | Complete
+**Progress model:** Phase task checkboxes only
 
 > This template is the single source of truth for plans. Use the core sections below, and pull from Modules when needed. Delete anything unused.
 
@@ -27,8 +28,8 @@ Only include modes that change behavior or routing.
 
 ### Goals
 
-- [ ] [Specific, measurable outcome]
-- [ ] [Specific, measurable outcome]
+- [Specific, measurable outcome]
+- [Specific, measurable outcome]
 
 ### Non-Goals
 
@@ -155,15 +156,15 @@ High-level approach before diving into phases. Include a simple diagram if helpf
 
 ### Hard Requirements (Must Pass)
 
-- [ ] [Specific, testable requirement]
-- [ ] [Specific, testable requirement]
+- [Specific, testable requirement]
+- [Specific, testable requirement]
 
 ### Definition of Done
 
-- [ ] All tests passing
-- [ ] Code reviewed and merged
-- [ ] Deployed to production
-- [ ] Monitoring confirms success
+- All tests passing
+- Code reviewed and merged
+- Deployed to production
+- Monitoring confirms success
 
 ## Open Questions
 
@@ -290,33 +291,33 @@ interface NewOrModifiedType {
 
 **Unit Tests:**
 
-- [ ] Test case description
-- [ ] Test case description
+- Test case description
+- Test case description
 
 **Integration Tests:**
 
-- [ ] Test case description
-- [ ] Test case description
+- Test case description
+- Test case description
 
 **Manual QA:**
 
-- [ ] Manual test scenario
-- [ ] Manual test scenario
+- Manual test scenario
+- Manual test scenario
 
 ### Migration and Backfill
 
 **Steps:**
 
-- [ ] [Migration step]
-- [ ] [Backfill step]
+- [Migration step]
+- [Backfill step]
 
 **Verification:**
 
-- [ ] [How to verify the migration]
+- [How to verify the migration]
 
 **Rollback:**
 
-- [ ] [How to revert safely]
+- [How to revert safely]
 
 ### Phase Dependencies
 
@@ -339,40 +340,6 @@ Phase 0 --> Phase 1 --> Phase 2
 - **[Risk]:** [Impact] -> [Mitigation]
 - **[Risk]:** [Impact] -> [Mitigation]
 
-### Progress Tracker
-
-#### Phase 0: Prerequisites
-
-- [ ] Task 1
-- [ ] Task 2
-
-#### Phase 1: [Name]
-
-- [ ] Task 1
-- [ ] Task 2
-
-#### Phase 2: [Name]
-
-- [ ] Task 1
-- [ ] Task 2
-
-#### Phase 3: Validation
-
-- [ ] Task 1
-- [ ] Task 2
-
-### Debug Notes
-
-Append real issues encountered during implementation with fixes.
-
-#### [Date] - [Issue Title]
-
-**Problem:** [What went wrong]
-**Root Cause:** [Why it happened]
-**Fix:** [How it was resolved]
-**Files:** `path/to/file.ts:123`
-
----
 
 ## Critical Reminder
 

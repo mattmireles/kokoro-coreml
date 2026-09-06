@@ -13,6 +13,19 @@ build input, not optional reference material.
 Every numbered phase (`### Phase N:`) must include a **Skills:** line naming
 existing skills to read before that phase starts.
 
+The task checkboxes inside `## Implementation Phases` are the only progress
+tracker. Do not add a second progress checklist, execution diary, Debug Notes
+section, dated checkpoint stream, or evidence ledger. `**Status:**` states only
+the plan lifecycle: `Planned`, `In-Progress`, or `Complete`; it never summarizes
+phase state. Every task checkbox represents one independently completable fact;
+do not add a roll-up checkbox derived from child boxes or mirror a task owned by
+another phase.
+Keep the generated `**Progress model:** Phase task checkboxes only` declaration;
+the validator uses it to enforce this contract. Tracked legacy plans whose
+`HEAD` version predates the declaration keep their old validation behavior
+until deliberately migrated. Plan 013 and every later numbered plan require it;
+new or migrated plans cannot remove it later.
+
 After choosing the target path, create the draft only by running:
 
 ```sh
@@ -29,8 +42,12 @@ scripts/validate-plan.sh <new-plan-path>
 ```
 
 The validator rejects a missing, renamed, or reordered required heading,
-unfilled top-level placeholders, and any phase without **Skills:**. Use
-`--allow-placeholders` only to check a fresh scaffold before drafting.
+unfilled top-level placeholders, duplicate progress or execution-log sections,
+task checkboxes outside implementation phases, nonstandard checkbox states,
+duplicate implementation-phase sections, noncanonical lifecycle status, and
+any phase with missing, empty, or unknown **Skills:**. Tracked plans numbered
+012 or earlier retain legacy progress validation until deliberately migrated.
+Use `--allow-placeholders` only to check a fresh scaffold before drafting.
 
 ## Purpose
 
