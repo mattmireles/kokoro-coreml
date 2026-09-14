@@ -199,11 +199,15 @@ public class KokoroPipeline: KokoroModelProvider {
     /// Note: ``MLModel.compileModel`` is called synchronously. For app
     /// integration, call init on a background queue or use pre-compiled
     /// ``.mlmodelc`` bundles to avoid blocking the main thread.
+    /// - Parameter policy: Per-stage compute units. Defaults to the measured
+    ///   macOS placement; iOS callers pass ``KokoroComputePolicy/iOS`` to keep
+    ///   the padded duration graph off MPSGraph.
     public init(
         modelsDirectory: URL,
         buckets: [Int] = PipelineConstants.defaultBuckets,
         linearWeights: [Float],
-        linearBias: Float
+        linearBias: Float,
+        policy: KokoroComputePolicy = .macOS
     ) throws {
         // Duration models. Use padded mask-aware packages for production by
         // default; exact native packages are an opt-in benchmark path.
@@ -211,7 +215,7 @@ public class KokoroPipeline: KokoroModelProvider {
         var durModels: [String: MLModel] = [:]
         for choice in durationChoices {
             let config = MLModelConfiguration()
-            config.computeUnits = .cpuAndGPU
+            config.computeUnits = policy.duration
             durModels[choice.cacheKey] = try MLModel(
                 contentsOf: MLModel.compileModel(at: choice.packageURL),
                 configuration: config
@@ -230,7 +234,7 @@ public class KokoroPipeline: KokoroModelProvider {
                 let url = modelsDirectory.appendingPathComponent("kokoro_f0ntrain_t\(t).mlpackage")
                 if FileManager.default.fileExists(atPath: url.path) {
                     let config = MLModelConfiguration()
-                    config.computeUnits = .cpuAndGPU
+                    config.computeUnits = policy.f0ntrain
                     f0Models[t] = try MLModel(contentsOf: MLModel.compileModel(at: url), configuration: config)
                 }
             }
@@ -243,7 +247,7 @@ public class KokoroPipeline: KokoroModelProvider {
             let url = modelsDirectory.appendingPathComponent("kokoro_decoder_pre_\(sec)s.mlpackage")
             if FileManager.default.fileExists(atPath: url.path) {
                 let config = MLModelConfiguration()
-                config.computeUnits = .cpuAndNeuralEngine
+                config.computeUnits = policy.decoderPre
                 decPreModels[sec] = try MLModel(contentsOf: MLModel.compileModel(at: url), configuration: config)
             }
         }
@@ -255,7 +259,7 @@ public class KokoroPipeline: KokoroModelProvider {
             let url = modelsDirectory.appendingPathComponent("kokoro_decoder_har_post_\(sec)s.mlpackage")
             if FileManager.default.fileExists(atPath: url.path) {
                 let config = MLModelConfiguration()
-                config.computeUnits = .cpuAndGPU
+                config.computeUnits = policy.generator
                 genModels[sec] = try MLModel(contentsOf: MLModel.compileModel(at: url), configuration: config)
             }
         }
