@@ -40,15 +40,18 @@ def build_decoder_har_post_inputs_np(
     har_t: int,
     *,
     warn_geometry: bool = True,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, int, int]:
-    """Build ``x_pre`` / ``ref_s`` / ``har`` numpy tensors for ``kokoro_decoder_har_post_*s``.
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, int, int, np.ndarray]:
+    """Build ``x_pre`` / ``ref_s`` / ``har`` / ``mask`` numpy tensors for ``kokoro_decoder_har_post_*s``.
 
     Single source of truth for geometry shared with ``decoder_har_post_bucket_impl`` and
     ``scripts/compare_decoder_har_post_waveforms.py``.
 
     Returns:
         ``x_pre`` (float32), ``ref_s`` (float32), ``har`` (float32), ``T_f0`` (int),
-        ``frame_count`` (int; decoder time dim before Core ML padding to ``asr_len``).
+        ``frame_count`` (int; decoder time dim before Core ML padding to ``asr_len``),
+        ``mask`` (float32, shape ``(1, 1, asr_len)``; 1.0 on the valid prefix
+        ``[0, t_asr)``, 0.0 on bucket padding). Mask-aware packages declare
+        ``mask`` as an optional input; packages without it ignore the feature.
     """
     gen = dec.generator
     f0_samples_per_step = int(round(float(gen.f0_upsamp.scale_factor)))
@@ -112,7 +115,13 @@ def build_decoder_har_post_inputs_np(
         h_new[:, :, :cpy] = har_np[:, :, :cpy]
         har_np = h_new
 
-    return x_pre_np, ref_s, har_np, T_f0, frame_count
+    # Mask reflects the valid asr prefix in the (possibly Core ML-padded)
+    # x_pre tensor. ``t_asr`` is the unpadded source length; ``asr_len`` is
+    # the bucket-padded target length the Core ML model declares.
+    mask_np = np.zeros((1, 1, asr_len), dtype=np.float32)
+    mask_np[:, :, : min(t_asr, asr_len)] = 1.0
+
+    return x_pre_np, ref_s, har_np, T_f0, frame_count, mask_np
 
 
 def synth_bucket_impl(pipe: HybridTTSPipeline, text: str, voice: str = "af_heart", speed: float = 1.0) -> np.ndarray | None:
@@ -191,7 +200,7 @@ def decoder_har_post_bucket_impl(
     har_t = int(har_shape[-1])
 
     dec = pipe.pytorch_model.decoder
-    x_pre_np, ref_s, har_np, _t_check, _fc = build_decoder_har_post_inputs_np(
+    x_pre_np, ref_s, har_np, _t_check, _fc, mask_np = build_decoder_har_post_inputs_np(
         dec, vi, sec, asr_len, har_t, warn_geometry=True
     )
     assert _t_check == T_f0
@@ -205,6 +214,8 @@ def decoder_har_post_bucket_impl(
         "ref_s": ref_s,
         "har": har_np,
     }
+    if "mask" in {i.name for i in spec.description.input}:
+        inputs["mask"] = mask_np
     res = model.predict(inputs)
     key = "waveform" if "waveform" in res else list(res.keys())[0]
     audio = np.asarray(res[key], dtype=np.float32).squeeze()

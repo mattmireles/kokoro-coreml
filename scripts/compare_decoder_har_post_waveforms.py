@@ -51,7 +51,9 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--baseline", type=str, required=True, help="Path to baseline .mlpackage")
     p.add_argument("--candidate", type=str, required=True, help="Path to candidate .mlpackage")
-    p.add_argument("--bucket-sec", type=int, required=True, choices=(3, 10))
+    # Bench-set buckets. The shipped set is a subset; the wider list lets the
+    # same comparison cover every bucket an export produces.
+    p.add_argument("--bucket-sec", type=int, required=True, choices=(3, 7, 10, 15, 30))
     p.add_argument("--text", type=str, default="Hello from Kokoro.")
     p.add_argument("--voice", type=str, default="af_heart")
     p.add_argument("--speed", type=float, default=1.0)
@@ -85,14 +87,21 @@ def main() -> int:
     sec = selected
 
     dec = pipe.pytorch_model.decoder
-    x_pre_np, ref_s, har_np, T_f0_b, _fc = build_decoder_har_post_inputs_np(
+    x_pre_np, ref_s, har_np, T_f0_b, _fc, mask_np = build_decoder_har_post_inputs_np(
         dec, vi, sec, asr_len, har_t, warn_geometry=True
     )
     assert T_f0_b == T_f0
 
-    inputs = {"x_pre": x_pre_np, "ref_s": ref_s, "har": har_np}
-    w0 = _predict_waveform(base, inputs)
-    w1 = _predict_waveform(cand, inputs)
+    # Mask-aware packages declare a `mask` input. Per-spec dispatch keeps the
+    # script working against both pre- and post-Phase-3 packages.
+    base_inputs = {"x_pre": x_pre_np, "ref_s": ref_s, "har": har_np}
+    if "mask" in {i.name for i in base.get_spec().description.input}:
+        base_inputs["mask"] = mask_np
+    cand_inputs = {"x_pre": x_pre_np, "ref_s": ref_s, "har": har_np}
+    if "mask" in {i.name for i in cand.get_spec().description.input}:
+        cand_inputs["mask"] = mask_np
+    w0 = _predict_waveform(base, base_inputs)
+    w1 = _predict_waveform(cand, cand_inputs)
     target_len = int(round((T_f0 / 80.0) * 24000.0))
     w0 = w0[: min(int(w0.shape[-1]), target_len)]
     w1 = w1[: min(int(w1.shape[-1]), target_len)]

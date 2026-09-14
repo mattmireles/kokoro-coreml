@@ -336,10 +336,14 @@ public func executeKokoroSynthesis(
     try tensorDump?.writeMLMultiArray(name: "x_pre_padded", array: xPrePadded)
     try tensorDump?.writeMLMultiArray(name: "har_padded", array: harPadded)
 
+    // `x_pre` is at twice the decoder frame rate (decode's last block upsamples
+    // 2x), so the valid region doubles with it.
+    let genMask = try makeBucketMask(validFrames: frames * 2, totalFrames: xPreExpectedTime)
     let genInput = try MLDictionaryFeatureProvider(dictionary: [
         "x_pre": MLFeatureValue(multiArray: xPrePadded),
         "ref_s": MLFeatureValue(multiArray: genRefS),
         "har": MLFeatureValue(multiArray: harPadded),
+        "mask": MLFeatureValue(multiArray: genMask),
     ])
     let genOutput = try genModel.prediction(from: genInput)
     let t15 = CFAbsoluteTimeGetCurrent()

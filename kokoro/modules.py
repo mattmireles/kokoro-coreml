@@ -323,7 +323,7 @@ class ProsodyPredictor(nn.Module):
         en = (d.transpose(-1, -2) @ alignment)
         return duration.squeeze(-1), en
 
-    def F0Ntrain(self, x, s):
+    def F0Ntrain(self, x, s, m=None):
     # Predict F0 (pitch) and noise characteristics from aligned features.
     #
     # This method processes duration-aligned features through parallel
@@ -331,12 +331,18 @@ class ProsodyPredictor(nn.Module):
     # The shared LSTM provides common feature processing before branching.
     #
     # Parameters:
-    # - x: Duration-aligned features, shape (batch, sequence, hidden)
+    # - x: Duration-aligned features, shape (batch, hidden, T_in)
     # - s: Style vector for voice conditioning, shape (batch, style_dim)
+    # - m: optional (batch, 1, T_in) float mask, 1.0 on valid frames, 0.0 on
+    #      bucket padding, threaded through the AdainResBlk1d calls of both
+    #      branches. The shared BiLSTM is not masked here. None leaves the path
+    #      unchanged.
     #
     # Returns:
-    # - F0: Fundamental frequency predictions, shape (batch, sequence)
-    # - N: Noise characteristics, shape (batch, sequence)
+    # - F0: Fundamental frequency predictions, shape (batch, T_out)
+    # - N: Noise characteristics, shape (batch, T_out)
+    #   where T_out = 2 * T_in due to the 2× upsample inside the second
+    #   AdainResBlk1d of each branch.
     #
     # Processing Pipeline:
     # 1. Shared LSTM: Common feature extraction from aligned inputs
@@ -355,12 +361,26 @@ class ProsodyPredictor(nn.Module):
     #
         x, _ = self.shared(x.transpose(-1, -2))
         F0 = x.transpose(-1, -2)
+        # Each branch is [no-upsample, 2x-upsample, no-upsample]; the mask is
+        # upsampled once, when the middle block fires.
+        cur_m = m
         for block in self.F0:
-            F0 = block(F0, s)
+            if cur_m is not None and block.upsample_type != 'none':
+                m_up = cur_m.repeat_interleave(2, dim=2)
+            else:
+                m_up = cur_m
+            F0 = block(F0, s, cur_m, m_up)
+            cur_m = m_up
         F0 = self.F0_proj(F0)
         N = x.transpose(-1, -2)
+        cur_m = m
         for block in self.N:
-            N = block(N, s)
+            if cur_m is not None and block.upsample_type != 'none':
+                m_up = cur_m.repeat_interleave(2, dim=2)
+            else:
+                m_up = cur_m
+            N = block(N, s, cur_m, m_up)
+            cur_m = m_up
         N = self.N_proj(N)
         return F0.squeeze(1), N.squeeze(1)
 

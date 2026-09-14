@@ -102,3 +102,128 @@ def test_synthesizer_model_forward_runs_and_returns_1d_audio(kmodel):
         audio = audio.squeeze(0)
     assert audio.ndim == 1
     assert audio.numel() > 0
+
+
+# ---------------------------------------------------------------------------
+# GeneratorFromHar._align_mask_to
+# ---------------------------------------------------------------------------
+#
+# The mask enters on the x_pre axis (T frames) and is re-aligned inside each
+# upsample stage: to the noise_convs output and to x. Those axes are integer
+# multiples of the mask's axis plus at most one frame (reflection pad, N/hop + 1
+# har frames). The pairs are the real ones for the 3 s and 30 s packages.
+
+_ALIGN_PAIRS = [
+    (240, 2400), (240, 4800), (2400, 14401), (2400, 28801),  # 3 s package
+    (2400, 24000), (2400, 48000), (24000, 144001), (24000, 288001),  # 30 s package
+]
+
+
+def _prefix_mask(cur_t, valid):
+    m = torch.zeros(1, 1, cur_t)
+    m[:, :, :valid] = 1.0
+    return m
+
+
+@pytest.mark.parametrize("cur_t,target_t", _ALIGN_PAIRS)
+def test_align_mask_to_never_invents_padding_in_an_all_ones_mask(cur_t, target_t):
+    """An all-ones mask must survive alignment with no zeros introduced.
+
+    All-ones means "every frame is valid". Alignment changes resolution, never
+    validity, so a zero appearing here (the +1 frame is the usual suspect) gates
+    out audio the caller said was real.
+    """
+    from export_synth.wrappers import GeneratorFromHar
+
+    out = GeneratorFromHar._align_mask_to(torch.ones(1, 1, cur_t), target_t)
+    assert out.shape[-1] == target_t
+    assert int((out == 0).sum()) == 0
+
+
+@pytest.mark.parametrize("cur_t,target_t", _ALIGN_PAIRS)
+def test_align_mask_to_puts_the_boundary_at_valid_times_the_factor(cur_t, target_t):
+    """A partial mask stays binary, stays a prefix, and ends at ``valid * factor``.
+
+    Over-covering makes the model normalise real frames by padding; under-covering
+    gates out real frames. Values must stay 0/1: anything in between means the
+    mask was interpolated, which would scale statistics instead of selecting frames.
+    """
+    from export_synth.wrappers import GeneratorFromHar
+
+    valid = cur_t // 2 + 1
+    out = GeneratorFromHar._align_mask_to(_prefix_mask(cur_t, valid), target_t)
+    assert out.shape[-1] == target_t
+    assert set(out.unique().tolist()) <= {0.0, 1.0}
+    ones = int((out == 1).sum())
+    assert ones == valid * (target_t // cur_t)
+    assert int(out[0, 0, :ones].sum()) == ones, "valid region is not a contiguous prefix"
+
+
+def test_align_mask_to_traces_with_a_shape_derived_target():
+    """The generator passes ``x.shape[-1]`` as the target, which is a tensor under tracing.
+
+    The index must still be built from Python ints so it enters the trace as a
+    constant rather than as int32 graph arithmetic.
+    """
+    from export_synth.wrappers import GeneratorFromHar
+
+    class Align(torch.nn.Module):
+        def forward(self, m, x):
+            return GeneratorFromHar._align_mask_to(m, x.shape[-1])
+
+    m, x = _prefix_mask(2400, 1204), torch.zeros(1, 1, 144001)
+    traced = torch.jit.trace(Align().eval(), (m, x))
+    assert torch.equal(traced(m, x), GeneratorFromHar._align_mask_to(m, 144001))
+    assert "aten::floor_divide" not in str(traced.graph)
+    assert "aten::arange" not in str(traced.graph)
+
+
+def test_align_mask_to_passes_none_through():
+    """``None`` means "no masking"; alignment must not manufacture a mask."""
+    from export_synth.wrappers import GeneratorFromHar
+
+    assert GeneratorFromHar._align_mask_to(None, 1234) is None
+
+
+def test_align_mask_to_rejects_downsampling():
+    """numpy floor-divides by zero silently, so a shrinking axis must fail loudly."""
+    from export_synth.wrappers import GeneratorFromHar
+
+    with pytest.raises(ValueError):
+        GeneratorFromHar._align_mask_to(torch.ones(1, 1, 100), 50)
+
+
+@pytest.mark.parametrize("cur_t,target_t", [(24000, 144001), (24000, 288001)])
+def test_align_mask_to_is_exact_after_core_ml_conversion(cur_t, target_t):
+    """Regression: the converted fp16 graph must reproduce PyTorch's mask exactly.
+
+    Core ML has no int64. When the index was left to the graph as
+    ``j * cur_t // target_t``, coremltools evaluated it in int32, and at the
+    30 s package's second stage (24000 x 144001 > 2^31) the wrapped products
+    marked ~18k padded frames valid and cost 3 dB of mid band at 50% fill.
+    The index now enters the trace as a constant; this pins that.
+    """
+    ct = pytest.importorskip("coremltools")
+    import numpy as np
+
+    from export_synth.wrappers import GeneratorFromHar
+
+    class Align(torch.nn.Module):
+        def forward(self, m):
+            return GeneratorFromHar._align_mask_to(m, target_t)
+
+    m = _prefix_mask(cur_t, cur_t // 2 + 1)
+    with torch.no_grad():
+        expected = Align().eval()(m).numpy()
+    traced = torch.jit.trace(Align().eval(), (m,))
+    model = ct.convert(
+        traced,
+        inputs=[ct.TensorType(name="m", shape=(1, 1, cur_t), dtype=np.float32)],
+        convert_to="mlprogram",
+        compute_precision=ct.precision.FLOAT16,
+        minimum_deployment_target=ct.target.macOS13,
+        compute_units=ct.ComputeUnit.CPU_ONLY,
+    )
+    got = np.asarray(next(iter(model.predict({"m": m.numpy()}).values())), dtype=np.float32)
+    assert got.shape == expected.shape
+    assert np.array_equal(got, expected)

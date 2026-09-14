@@ -5,6 +5,7 @@ Loaded by export_synth.convert for tracing and ct.convert. Avoids importing
 """
 from __future__ import annotations
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -129,6 +130,10 @@ class GeneratorFromHar(nn.Module):
         x_pre: decoder output before the generator, shape ``(B, 512, T_asr)``.
         ref_s: full voice embedding ``(B, 256)``; style uses the first ``VOICE_BASELINE_DIM`` channels.
         har: concat ``[har_spec, har_phase]`` along channel dim, shape ``(B, C, T_har)``.
+        mask: optional ``(B, 1, T_asr)`` float mask, ``1.0`` on valid frames and
+            ``0.0`` on bucket padding, re-aligned to each ``AdaINResBlock1``'s
+            time axis as the activations are upsampled. ``None`` leaves the
+            path unchanged.
 
     Called by:
         - ``export_synth.convert`` when ``mode == \"decoder-har\"``.
@@ -139,14 +144,44 @@ class GeneratorFromHar(nn.Module):
         super().__init__()
         self.generator = generator
 
-    def forward(self, x_pre: torch.Tensor, ref_s: torch.Tensor, har: torch.Tensor) -> torch.Tensor:
+    @staticmethod
+    def _align_mask_to(m: torch.Tensor | None, target_t: int) -> torch.Tensor | None:
+        """Stretch a ``(B, 1, T_cur)`` mask to ``target_t`` frames by nearest lower index.
+
+        Every generator axis is an integer multiple of the axis the mask arrives
+        on plus at most one frame (the reflection pad; the N/hop + 1 har axis),
+        so output frame j reads input frame ``j // (target_t // T_cur)``, clamped
+        to the last input frame. The index is built with numpy from the two
+        Python ints and enters the trace as a constant, so the package carries
+        no integer arithmetic: Core ML integers are int32, and the proportional
+        ``j * T_cur // target_t`` left as graph ops overflowed at 24000 x 144001
+        (the 30 s package), silently marking padded frames valid.
+        ``interpolate(size=...)`` lowers to a truncated scale factor and comes
+        back one frame short (28800 for 28801).
+        """
+        if m is None:
+            return None
+        # Under torch.jit.trace a shape element arrives as a tensor; the axis is
+        # fixed per package, so take its value.
+        target_t = int(target_t)
+        cur_t = int(m.shape[-1])
+        if cur_t == target_t:
+            return m
+        if target_t < cur_t:
+            raise ValueError(f"_align_mask_to only upsamples: {cur_t} -> {target_t}")
+        idx = np.minimum(np.arange(target_t) // (target_t // cur_t), cur_t - 1).astype(np.int32)
+        return m.index_select(-1, torch.from_numpy(idx).to(m.device))
+
+    def forward(self, x_pre: torch.Tensor, ref_s: torch.Tensor, har: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
         s = ref_s[:, : CoreMLExportConstants.VOICE_BASELINE_DIM]
         gen = self.generator
         x = x_pre
+        cur_mask = mask
         for i in range(gen.num_upsamples):
             x = F.leaky_relu(x, negative_slope=0.1)
             x_source = gen.noise_convs[i](har)
-            x_source = gen.noise_res[i](x_source, s)
+            m_source = self._align_mask_to(cur_mask, x_source.shape[-1])
+            x_source = gen.noise_res[i](x_source, s, m=m_source)
             x = gen.ups[i](x)
             if i == gen.num_upsamples - 1:
                 x = gen.reflection_pad(x)
@@ -157,12 +192,13 @@ class GeneratorFromHar(nn.Module):
             elif ts > tx:
                 x_source = x_source[:, :, :tx]
             x = x + x_source
+            cur_mask = self._align_mask_to(cur_mask, x.shape[-1])
             xs = None
             for j in range(gen.num_kernels):
                 if xs is None:
-                    xs = gen.resblocks[i * gen.num_kernels + j](x, s)
+                    xs = gen.resblocks[i * gen.num_kernels + j](x, s, m=cur_mask)
                 else:
-                    xs = xs + gen.resblocks[i * gen.num_kernels + j](x, s)
+                    xs = xs + gen.resblocks[i * gen.num_kernels + j](x, s, m=cur_mask)
             x = xs / gen.num_kernels
         x = F.leaky_relu(x)
         x = gen.conv_post(x)

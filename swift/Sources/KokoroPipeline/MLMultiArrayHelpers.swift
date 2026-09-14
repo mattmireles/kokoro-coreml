@@ -460,3 +460,20 @@ public func inputShapes(from model: MLModel) -> [String: [Int]] {
     }
     return result
 }
+
+/// Builds the `(1, 1, totalFrames)` validity mask the mask-aware Core ML stages take:
+/// 1.0 on `[0, validFrames)`, 0.0 on the bucket padding added by `zeroPad3D`.
+///
+/// Without it the model's time-axis statistics fold the padding into the values
+/// the valid region is normalised by. The exported packages default `mask` to
+/// all-ones so older consumers keep loading, but all-ones means full fill, so a
+/// stage that declares `mask` must always be given the real one.
+public func makeBucketMask(validFrames: Int, totalFrames: Int) throws -> MLMultiArray {
+    let mask = try makeZeroArray3D(channels: 1, time: totalFrames)
+    let ptr = mask.dataPointer.assumingMemoryBound(to: Float.self)
+    let valid = min(max(validFrames, 0), totalFrames)
+    for i in 0..<valid {
+        ptr[i] = 1.0
+    }
+    return mask
+}
