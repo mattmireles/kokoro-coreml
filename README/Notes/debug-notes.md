@@ -6,6 +6,111 @@ Institutional memory for Kokoro PyTorch → Core ML (`mlprogram`) export, synthe
 
 ---
 
+## Issue: Bucket padding contaminated every time-axis statistic and the f0ntrain BiLSTM — Resolved
+
+**First spotted:** 2026-09-14
+**Resolved:** 2026-09-14
+**Status:** Resolved
+
+### Summary
+
+Bucketed export right-pads every stage's time axis to the bucket length. `AdaIN1d` took its mean and variance over the whole axis, its affine left non-zero values on the padded frames for the next convolution to read, and the f0ntrain shared BiLSTM's backward direction walked the padding before reaching a real frame. Valid-region quality therefore tracked bucket fill: at 9% fill the decoder output sat at −4.7 dB SNR against a native-length run and the output was 1.39x louder. Masking the statistics, zeroing the padded activations, and running the shared LSTM with packed-sequence semantics make every stage flat across fills (F0 63 dB, `x_pre` 42.9 dB, level 0.98x from 93% down to 9% fill). The same wrapper form collapses the duration model from 134,397 MIL ops at t512 to 989, bucket-invariant.
+
+### Symptom
+
+One 2.8 s utterance (44 tokens, 112 frames) forced through every bucket on the Swift/Core ML pipeline, valid region scored against the native-length PyTorch fp32 run:
+
+| fill | F0 SNR | N SNR | `x_pre` SNR | level vs native |
+| --- | ---: | ---: | ---: | ---: |
+| 0.93 | 15.1 dB | 12.2 dB | 12.6 dB | 0.98x |
+| 0.40 | 17.1 dB | 12.0 dB | 7.2 dB | 1.13x |
+| 0.28 | 16.1 dB | 9.8 dB | 3.7 dB | 1.20x |
+| 0.19 | 14.6 dB | 9.1 dB | 0.4 dB | 1.25x |
+| 0.09 | 9.7 dB | 4.7 dB | −4.7 dB | 1.39x |
+
+The same run in PyTorch fp32 gives the same rows to 0.02 dB, so the effect is in the model graph, not the export.
+
+### Root Cause
+
+Three padding paths, confirmed by masking each in turn. `AdaIN1d` normalised over the padded axis (fill-dependent). Its affine left `beta` on the padded frames, the next conv read that across the boundary, and every later per-channel statistic shifted, which rescales the whole valid region uniformly: with statistics masked but outputs not zeroed, `x_pre` sat at a fill-independent 13 dB against native, and feeding the native F0/N contours into that decoder did not move it, so the floor was in the decoder path. The f0ntrain shared BiLSTM's backward pass started in the padding and set the F0/N contours at 10-17 dB, which capped `x_pre` in turn.
+
+### Related Guides
+
+- [Core ML LSTM export guide](../Guides/apple-silicon/CoreML-LSTM-export-guide.md) - why a stock MIL `lstm` on a right-padded bucket walks the padding; the wrapper below keeps stock ops by gathering the valid prefix in reverse for the backward direction, which that guide does not cover.
+- [Core ML compute-unit scheduling guide](../Guides/apple-silicon/CoreML-Compute-Unit-Scheduling-guide.md) - the placement evidence below comes from `scripts/dump_device_compute_plan.py`.
+- [Apple Silicon warmed-inference benchmark hygiene](../Guides/apple-silicon/Apple-Silicon-warmed-inference-benchmark-hygiene-guide.md) - every timing below is a warm median with cold loads reported separately.
+
+### Fix
+
+**Files:**
+
+- `export_synth/wrappers.py` - `MaskedBidirectionalLSTM` runs the forward direction over the padded input and the backward direction as a forward LSTM over the gather-flipped valid prefix, two stock `lstm` ops; `GeneratorFromHar._align_mask_to` resamples the mask to each generator axis with a gather whose index is built from Python ints at trace time (`j // (target // cur)`, clamped to the last frame), so the package carries no integer arithmetic.
+- `kokoro/istftnet.py` - `AdaIN1d` takes an optional mask: ratio-of-means statistics over valid frames and zeroed output on padded frames; `AdainResBlk1d` raises when given a mask at one resolution but not the other.
+- `kokoro/modules.py` - `F0Ntrain` threads the mask through both branches at the right resolution.
+- `export_synth/convert.py`, `export_decoder_pre.py`, `export_f0ntrain.py` - a `mask` input with an all-ones `default_value`, so the packages stay optional-input compatible; all-ones means full fill, so a caller that pads must pass the real mask.
+- `swift/Sources/KokoroPipeline/MLMultiArrayHelpers.swift`, `KokoroSynthesisExecutor.swift` - `makeBucketMask` builds the mask once from pipeline knowledge and `stageInputs` attaches it to any stage whose model declares one.
+- `scripts/measure_bucket_contamination.py` - the fill sweep and masking ladder in PyTorch fp32.
+
+Two fp16 constraints are load-bearing and were measured with small Core ML models on CPU, GPU and ANE. The statistics are ratios of means: a sum of squares over 24,000 unit-scale frames is non-finite in fp16, and pre-scaling by 1/valid is accurate at 24,000 valid frames but wrong at 144,000 (relative error 0.3-0.7); the ratio form matches the unmasked path to 2e-3 at every length up to 144,000 frames. Mask alignment is a gather with a trace-time constant index. Core ML integers are int32: the proportional index `j * cur // target` left in the graph overflowed at the 30 s package's second stage (24000 x 144001 > 2^31) and marked about 18k padded frames valid, which listening caught as a thin 15 s utterance in the 30 s bucket (mid band −3 dB, level 0.78x) while every shorter package, whose products fit int32, was exact. `interpolate(size=...)` lowers to a truncated scale factor and returns 144,000 frames for a 144,001 axis.
+
+### Verification
+
+```bash
+uv run --no-sync pytest -q tests/test_masked_bilstm.py tests/test_adain1d_mask.py tests/test_export_wrappers_shapes.py tests/test_mlpackage_exports.py
+uv run --no-sync python scripts/measure_bucket_contamination.py --text "The quick brown fox jumps over the dog." --modes unmasked,adain,adain+lstm
+```
+
+With everything masked the PyTorch sweep is flat to the last digit at every fill: F0 80.9 dB, N 62.6 dB, `x_pre` 43.5 dB, level 1.00x. The Core ML pipeline with the production compute policy reaches F0 63 dB, N 61 dB, `x_pre` 42.4-42.9 dB and level 0.98-0.99x at every fill, the fp16 ceiling of the same mechanism. On seven listening inputs spanning both ends of the fill range the raw output level lands within 3% of the PyTorch reference on every input, and sample-level correlation with PyTorch rises from about 0 to 0.5-0.9 on the inputs under 7 s because the F0 contour now lines the harmonic phase up. The check that catches an alignment defect is the exported generator against PyTorch fp32 of the same wrapper on the dumped Core ML inputs with the real mask: 44.5 dB for the 15 s utterance in the 30 s bucket (50% fill) and 45.4-46.8 dB on the other six inputs; the unmasked path still reproduces the pre-mask package at 46 dB.
+
+Duration model, same machine, production policy, warm medians of 10 after 3 warmups: stage 63 → 9 ms at 44 tokens and 615 → 43 ms at 476 tokens; end to end 110 → 56 ms and 1,050 → 476 ms; first load and compile at 476 tokens 567 → 5 s; peak RSS 3,051 → 585 MB; export of the four padded sizes 1,248 → 56 s. Per-token durations match PyTorch fp32 on all 1,241 tokens of the seven inputs.
+
+Regression test: `uv run --no-sync pytest -q tests/test_masked_bilstm.py tests/test_adain1d_mask.py tests/test_export_wrappers_shapes.py` (the last converts the mask alignment at the 30 s axes to fp16 Core ML and requires the exact PyTorch mask back).
+
+### Investigation Log
+
+**2026-09-14**
+
+- **Hypothesis:** The unrolled duration graph is more ANE-resident than two stock `lstm` ops, so collapsing it trades placement for size.
+- **Tried:** `scripts/dump_device_compute_plan.py --compute-units CPU_AND_NE` on both t128 packages.
+- **Outcome:** Ruled out on this machine. The unrolled graph took 847 s to plan and was 98.9% CPU-preferred (27,034 CPU / 311 ANE ops); the two-`lstm` graph plans in 25 s with 337 of 487 costed ops on the ANE and the ten `lstm` ops on CPU. Under `cpuAndGPU` both are GPU-placed apart from the `lstm` ops.
+
+- **Hypothesis:** `torch.where` in the reverse-index construction breaks the Core ML gather through dtype promotion, so `clamp` is required.
+- **Tried:** converted both forms with coremltools 8.3.0.
+- **Outcome:** Both convert and agree; `where` lowers to `greater_equal` + `select` + `gather_along_axis`. `clamp` is kept as the simpler expression only.
+
+- **Hypothesis:** The "thin" 15 s utterance in the 30 s bucket (over15, 50% fill) heard from commit 2 on is fp16 losing the masked statistics on the 144k-frame generator axes.
+- **Tried:** Band energies of the raw renders (commit 2 vs commit 1: RMS 0.78x, 400-3000 Hz −3 dB, uniform along the clip, no other input moved); the PyTorch masking ladder on the same text (clean); PyTorch fp32 of the exported wrapper on the dumped Core ML inputs (clean) against the package on the same inputs (−0.4 dB SNR on GPU and on CPU, 46.6 dB with the mask omitted); the masked `AdaIN1d` alone at the real shapes and activations in fp16 (55-69 dB on every axis); alignment probes from the input mask (exact) and from the stage-0 mask (24000 → 144001: 89,959 valid frames for 72,241; 24000 → 288001: 178,958 for 144,481 at 50% fill and 144,002 for 72,001 at 25%, so every partial mask in the 30 s package was wrong on at least one axis).
+- **Outcome:** Not fp16. `_align_mask_to` chained from the 24000-frame stage-0 mask, and `j * 24000` passes 2^31 at j = 89,478; coremltools evaluates the index in int32 (const-folded at 144,001, `range_1d`/`mul`/`floor_div` at runtime at 288,001), so the wrapped products marked padded frames valid. The 15 s package's largest product (12000 x 144001) fits. The index is now a numpy constant built at trace time; the converted alignment is exact on CPU, GPU and ANE at every generator axis, and the re-exported 30 s package matches PyTorch fp32 at 44-47 dB for every mask length from 12% to 100% fill where it had been -0.4 dB at 50%. A `clamp(max=)` variant fails to compile when coremltools does not fold it (`ios16.clip` beta type), so the clamp is numpy's. The 2x `har` axis of the decoder-har export (288,001 frames for a 2,400-frame `x_pre`, zero-padded by Swift and sliced after `noise_res`) is pre-existing and changes the PyTorch output by under 0.1 dB when sliced first; left alone.
+
+- **Hypothesis:** Core ML output is about 3x louder than PyTorch and clips.
+- **Tried:** compared `kokoro-bench --wav` output with the `--dump-tensors` waveform and the PyTorch reference.
+- **Outcome:** The bench WAV writer peak-normalises before writing 16-bit PCM; the pipeline's own waveform matches PyTorch in level (0.046 vs 0.047 RMS at 2.8 s). Listening clips must be written from the dump (`scripts/tensor_dump_to_wav.py`).
+
+- **Hypothesis:** Waveform SNR against the PyTorch reference measures quality end to end.
+- **Tried:** `scripts/compare_wav_pairs.py` on all arms.
+- **Outcome:** Sample correlation against PyTorch is near zero on every arm before the LSTM is masked, because the Swift harmonic source accumulates phase in double precision and PyTorch in fp32; log-mel and envelope correlation on unit-RMS signals are the usable end-to-end metrics. Between Core ML arms sample metrics are fine.
+
+- **Hypothesis:** Masking the generator alone is a safe first step.
+- **Tried:** the forced-bucket sweep with only the generator masked, in Core ML and in PyTorch.
+- **Outcome:** It over-corrects: a masked generator normalising a still-contaminated decoder output drops the level to 0.70x at 9% fill (0.71x in PyTorch, so it is the hybrid state, not the export). Masking decoder-pre as well halves the `x_pre` decay (−4.7 → 6.5 dB at 9% fill); masking f0ntrain flattens everything. The three changes only make sense together.
+
+- **Hypothesis:** `pred_dur` is exact under `.all` and one token off under `cpuAndGPU`.
+- **Tried:** per-token comparison against PyTorch fp32 for seven inputs under both policies.
+- **Outcome:** The reverse here: exact on all 1,241 tokens under `cpuAndGPU`; under `.all` one token of 476 rounds up by a frame on the 27.4 s input, and the unrolled graph rounds a different token on a different input. A one-frame rounding at a duration boundary moves between graphs and compute units and is not a regression class.
+
+- **Observation:** Core ML model loads wait behind `ANECompilerService` work left by other processes. Two first loads took 937 s and 853 s while a killed compute-plan dump's ANE compile was still running in the daemon; the same packages loaded in 5-7 s afterwards. Kill nothing mid-compile before timing a cold load.
+
+### If This Recurs
+
+- [ ] Run the fill sweep; any stage whose SNR against native falls with fill is reading padding.
+- [ ] Predict a low-fill input with `mask` omitted and passed; if the outputs match, the mask is not reaching that stage.
+
+```bash
+uv run --no-sync python scripts/measure_bucket_contamination.py --text "Hello there." --buckets 3,7,10,15,30
+```
+
+---
+
 ## Issue: Core ML punctuation tokens clicked in reader audio — Resolved
 
 **First spotted:** 2026-05-26
