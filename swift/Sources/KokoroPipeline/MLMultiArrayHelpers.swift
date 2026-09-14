@@ -465,9 +465,8 @@ public func inputShapes(from model: MLModel) -> [String: [Int]] {
 /// 1.0 on `[0, validFrames)`, 0.0 on the bucket padding added by `zeroPad3D`.
 ///
 /// Without it the model's time-axis statistics fold the padding into the values
-/// the valid region is normalised by. The exported packages default `mask` to
-/// all-ones so older consumers keep loading, but all-ones means full fill, so a
-/// stage that declares `mask` must always be given the real one.
+/// the valid region is normalised by. `stageInputs` attaches it to every stage
+/// whose model declares a `mask` input.
 public func makeBucketMask(validFrames: Int, totalFrames: Int) throws -> MLMultiArray {
     let mask = try makeZeroArray3D(channels: 1, time: totalFrames)
     let ptr = mask.dataPointer.assumingMemoryBound(to: Float.self)
@@ -476,4 +475,24 @@ public func makeBucketMask(validFrames: Int, totalFrames: Int) throws -> MLMulti
         ptr[i] = 1.0
     }
     return mask
+}
+
+/// Builds one Core ML stage's input features, attaching the bucket mask whenever
+/// the model declares a `mask` input. The exported packages default `mask` to
+/// all-ones (full fill), so a stage that pads and omits it silently reinstates
+/// the padding contamination; routing every stage through here makes that
+/// omission impossible.
+public func stageInputs(
+    for model: MLModel,
+    _ features: [String: MLFeatureValue],
+    validFrames: Int,
+    totalFrames: Int
+) throws -> MLDictionaryFeatureProvider {
+    var features = features
+    if model.modelDescription.inputDescriptionsByName["mask"] != nil {
+        features["mask"] = MLFeatureValue(
+            multiArray: try makeBucketMask(validFrames: validFrames, totalFrames: totalFrames)
+        )
+    }
+    return try MLDictionaryFeatureProvider(dictionary: features)
 }

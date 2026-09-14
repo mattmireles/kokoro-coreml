@@ -206,10 +206,10 @@ public func executeKokoroSynthesis(
     try tensorDump?.writeMLMultiArray(name: "en_padded", array: enPadded)
     try tensorDump?.writeMLMultiArray(name: "s", array: sArray)
 
-    let f0nInput = try MLDictionaryFeatureProvider(dictionary: [
+    let f0nInput = try stageInputs(for: f0nModel, [
         "en": MLFeatureValue(multiArray: enPadded),
         "s": MLFeatureValue(multiArray: sArray),
-    ])
+    ], validFrames: frames, totalFrames: tFrames)
     let f0nOutput = try f0nModel.prediction(from: f0nInput)
     let f0PredArray = f0nOutput.featureValue(for: "F0_pred")!.multiArrayValue!
     let nPredArray = f0nOutput.featureValue(for: "N_pred")!.multiArrayValue!
@@ -251,14 +251,12 @@ public func executeKokoroSynthesis(
     let decRefS = try makeZeroArray2D(dim: PipelineConstants.voiceEmbeddingDim)
     copyInto(array: decRefS, from: request.refS)
 
-    let decPreMask = try makeBucketMask(validFrames: frames, totalFrames: frameCount)
-    let decPreInput = try MLDictionaryFeatureProvider(dictionary: [
+    let decPreInput = try stageInputs(for: decPreModel, [
         "asr": MLFeatureValue(multiArray: asrPadded),
         "f0": MLFeatureValue(multiArray: f0Array3D),
         "n_input": MLFeatureValue(multiArray: nArray3D),
         "ref_s": MLFeatureValue(multiArray: decRefS),
-        "mask": MLFeatureValue(multiArray: decPreMask),
-    ])
+    ], validFrames: frames, totalFrames: frameCount)
     let decPreOutput = try decPreModel.prediction(from: decPreInput)
     let xPre = decPreOutput.featureValue(for: "x_pre")!.multiArrayValue!
     let t11 = CFAbsoluteTimeGetCurrent()
@@ -340,13 +338,11 @@ public func executeKokoroSynthesis(
 
     // `x_pre` is at twice the decoder frame rate (decode's last block upsamples
     // 2x), so the valid region doubles with it.
-    let genMask = try makeBucketMask(validFrames: frames * 2, totalFrames: xPreExpectedTime)
-    let genInput = try MLDictionaryFeatureProvider(dictionary: [
+    let genInput = try stageInputs(for: genModel, [
         "x_pre": MLFeatureValue(multiArray: xPrePadded),
         "ref_s": MLFeatureValue(multiArray: genRefS),
         "har": MLFeatureValue(multiArray: harPadded),
-        "mask": MLFeatureValue(multiArray: genMask),
-    ])
+    ], validFrames: frames * 2, totalFrames: xPreExpectedTime)
     let genOutput = try genModel.prediction(from: genInput)
     let t15 = CFAbsoluteTimeGetCurrent()
     timings.generatorCoreML = t15 - t14
