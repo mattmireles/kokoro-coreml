@@ -25,8 +25,6 @@ real frames.
 
 from __future__ import annotations
 
-import re
-from pathlib import Path
 
 import pytest
 
@@ -192,3 +190,28 @@ def test_residual_requires_explicit_m_up_at_upsample_resolution():
     with pytest.raises(RuntimeError):
         with torch.no_grad():
             block(x, s, m, m)         # wrong: norm2 gets a 1x mask for a 2x activation
+
+
+def test_adain_resblk1d_rejects_one_mask_without_the_other():
+    """A caller that forgets ``m_up`` fails loudly instead of normalising over padding."""
+    block = AdainResBlk1d(dim_in=8, dim_out=8, style_dim=4).eval()
+    x, s, m = torch.randn(1, 8, 16), torch.randn(1, 4), torch.ones(1, 1, 16)
+    with pytest.raises(ValueError):
+        block(x, s, m=m)
+    with pytest.raises(ValueError):
+        block(x, s, m_up=m)
+
+
+@pytest.mark.parametrize("T", [240, 1200, 20000])
+def test_all_ones_mask_is_a_noop_at_every_length(T):
+    """Masking with all-ones must equal the unmasked path at any axis length."""
+    torch.manual_seed(0)
+    layer = AdaIN1d(64, 16).eval()
+    x = torch.randn(1, 16, T)
+    s = torch.randn(1, 64)
+    with torch.no_grad():
+        unmasked = layer(x, s)
+        masked = layer(x, s, torch.ones(1, 1, T))
+    assert torch.allclose(unmasked, masked, atol=1e-5), (
+        f"all-ones mask changed the result at T={T}"
+    )

@@ -549,6 +549,8 @@ class AdainResBlk1d(nn.Module):
     def forward(self, x, s, m=None, m_up=None):
         # m: mask at the input axis; m_up: mask at the output axis (m itself on a
         # non-upsampling block, m.repeat_interleave(2, dim=2) on an upsampling one).
+        if (m is None) != (m_up is None):
+            raise ValueError("AdainResBlk1d takes both m and m_up, or neither")
         out = self._residual(x, s, m, m_up)
         out = (out + self._shortcut(x)) * torch.rsqrt(torch.tensor(2.0))
         return out

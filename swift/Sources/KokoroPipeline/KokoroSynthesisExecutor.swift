@@ -251,11 +251,13 @@ public func executeKokoroSynthesis(
     let decRefS = try makeZeroArray2D(dim: PipelineConstants.voiceEmbeddingDim)
     copyInto(array: decRefS, from: request.refS)
 
+    let decPreMask = try makeBucketMask(validFrames: frames, totalFrames: frameCount)
     let decPreInput = try MLDictionaryFeatureProvider(dictionary: [
         "asr": MLFeatureValue(multiArray: asrPadded),
         "f0": MLFeatureValue(multiArray: f0Array3D),
         "n_input": MLFeatureValue(multiArray: nArray3D),
         "ref_s": MLFeatureValue(multiArray: decRefS),
+        "mask": MLFeatureValue(multiArray: decPreMask),
     ])
     let decPreOutput = try decPreModel.prediction(from: decPreInput)
     let xPre = decPreOutput.featureValue(for: "x_pre")!.multiArrayValue!
