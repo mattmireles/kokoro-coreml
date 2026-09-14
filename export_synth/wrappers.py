@@ -238,15 +238,21 @@ class CoreMLFriendlyDurationEncoder(nn.Module):
 # --- Model Wrappers for Two-Stage Conversion ---
 
 class MaskedBidirectionalLSTM(nn.Module):
-    """Exportable one-layer bidirectional LSTM that ignores right-padding.
+    """One-layer bidirectional LSTM with packed-sequence semantics on right-padded input.
 
-    PyTorch's production duration path uses ``pack_padded_sequence`` before the
-    shared duration LSTM, so the backward direction starts at the final valid
-    token. Static Core ML duration models receive right-padded inputs; running a
-    vanilla bidirectional LSTM over the full padded length changes valid-token
-    hidden states. This module reproduces packed semantics for batch-first,
-    one-layer LSTMs with trailing padding while staying traceable for fixed
-    enumerated token lengths.
+    Kokoro runs its duration LSTMs over ``pack_padded_sequence``, so the backward
+    direction starts at the last valid token. Static Core ML packages receive
+    right-padded buckets, where a stock bidirectional LSTM would walk the padding
+    before reaching real tokens. This wrapper keeps the packed semantics with two
+    stock ``nn.LSTM`` calls, so it lowers to two MIL ``lstm`` ops instead of one
+    unrolled cell per timestep:
+
+    - forward: a stock LSTM over the padded input. Padding comes after the valid
+      tokens, so valid outputs are unaffected; padded outputs are zeroed.
+    - backward: gather each row's valid prefix in reverse order, run a forward
+      LSTM over it, and gather the outputs back into place.
+
+    Padded output positions are zero, matching ``pad_packed_sequence``.
     """
 
     def __init__(self, original_lstm: nn.LSTM):
@@ -254,79 +260,36 @@ class MaskedBidirectionalLSTM(nn.Module):
         if original_lstm.num_layers != 1 or not original_lstm.bidirectional or not original_lstm.batch_first:
             raise ValueError("MaskedBidirectionalLSTM expects one-layer batch-first bidirectional LSTM")
         self.hidden_size = original_lstm.hidden_size
-        self.register_buffer("weight_ih_l0", original_lstm.weight_ih_l0.detach().clone())
-        self.register_buffer("weight_hh_l0", original_lstm.weight_hh_l0.detach().clone())
-        self.register_buffer("bias_ih_l0", original_lstm.bias_ih_l0.detach().clone())
-        self.register_buffer("bias_hh_l0", original_lstm.bias_hh_l0.detach().clone())
-        self.register_buffer("weight_ih_l0_reverse", original_lstm.weight_ih_l0_reverse.detach().clone())
-        self.register_buffer("weight_hh_l0_reverse", original_lstm.weight_hh_l0_reverse.detach().clone())
-        self.register_buffer("bias_ih_l0_reverse", original_lstm.bias_ih_l0_reverse.detach().clone())
-        self.register_buffer("bias_hh_l0_reverse", original_lstm.bias_hh_l0_reverse.detach().clone())
-
-    def _cell(
-        self,
-        x_t: torch.Tensor,
-        h: torch.Tensor,
-        c: torch.Tensor,
-        weight_ih: torch.Tensor,
-        weight_hh: torch.Tensor,
-        bias_ih: torch.Tensor,
-        bias_hh: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        gates = F.linear(x_t, weight_ih, bias_ih) + F.linear(h, weight_hh, bias_hh)
-        i_gate, f_gate, g_gate, o_gate = gates.chunk(4, dim=1)
-        i_gate = torch.sigmoid(i_gate)
-        f_gate = torch.sigmoid(f_gate)
-        g_gate = torch.tanh(g_gate)
-        o_gate = torch.sigmoid(o_gate)
-        c_new = f_gate * c + i_gate * g_gate
-        h_new = o_gate * torch.tanh(c_new)
-        return h_new, c_new
+        self.fwd = nn.LSTM(original_lstm.input_size, self.hidden_size, num_layers=1, batch_first=True)
+        self.bwd = nn.LSTM(original_lstm.input_size, self.hidden_size, num_layers=1, batch_first=True)
+        with torch.no_grad():
+            self.fwd.weight_ih_l0.copy_(original_lstm.weight_ih_l0)
+            self.fwd.weight_hh_l0.copy_(original_lstm.weight_hh_l0)
+            self.fwd.bias_ih_l0.copy_(original_lstm.bias_ih_l0)
+            self.fwd.bias_hh_l0.copy_(original_lstm.bias_hh_l0)
+            self.bwd.weight_ih_l0.copy_(original_lstm.weight_ih_l0_reverse)
+            self.bwd.weight_hh_l0.copy_(original_lstm.weight_hh_l0_reverse)
+            self.bwd.bias_ih_l0.copy_(original_lstm.bias_ih_l0_reverse)
+            self.bwd.bias_hh_l0.copy_(original_lstm.bias_hh_l0_reverse)
 
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-        batch, steps, _ = x.shape
-        mask = attention_mask.to(dtype=x.dtype)
-        h_f = x.new_zeros((batch, self.hidden_size))
-        c_f = x.new_zeros((batch, self.hidden_size))
-        forward_outputs: list[torch.Tensor] = []
-        for t in range(steps):
-            active = mask[:, t].unsqueeze(1)
-            h_new, c_new = self._cell(
-                x[:, t, :],
-                h_f,
-                c_f,
-                self.weight_ih_l0,
-                self.weight_hh_l0,
-                self.bias_ih_l0,
-                self.bias_hh_l0,
-            )
-            h_f = h_new * active + h_f * (1.0 - active)
-            c_f = c_new * active + c_f * (1.0 - active)
-            forward_outputs.append(h_f * active)
+        B, T, _ = x.shape
+        # Index arithmetic stays int64: fp16 stops representing integers exactly
+        # at 2048, and the largest f0ntrain bucket is T=1800.
+        valid = attention_mask.to(dtype=torch.long).sum(dim=1, keepdim=True)
+        h_fwd, _ = self.fwd(x)
 
-        h_b = x.new_zeros((batch, self.hidden_size))
-        c_b = x.new_zeros((batch, self.hidden_size))
-        backward_reversed: list[torch.Tensor] = []
-        for t in range(steps - 1, -1, -1):
-            active = mask[:, t].unsqueeze(1)
-            h_new, c_new = self._cell(
-                x[:, t, :],
-                h_b,
-                c_b,
-                self.weight_ih_l0_reverse,
-                self.weight_hh_l0_reverse,
-                self.bias_ih_l0_reverse,
-                self.bias_hh_l0_reverse,
-            )
-            h_b = h_new * active + h_b * (1.0 - active)
-            c_b = c_new * active + c_b * (1.0 - active)
-            backward_reversed.append(h_b * active)
-        backward_outputs = list(reversed(backward_reversed))
+        # Reverse index of the valid prefix: valid-1-t for t < valid. Past the
+        # prefix it clamps to 0 and the output is zeroed below.
+        arange = torch.arange(T, device=x.device, dtype=torch.long).unsqueeze(0).expand(B, T)
+        idx = (valid - 1 - arange).clamp(min=0, max=T - 1)
+        x_flipped = torch.gather(x, 1, idx.unsqueeze(-1).expand(-1, -1, x.size(-1)))
+        h_flipped, _ = self.bwd(x_flipped)
+        h_bwd = torch.gather(h_flipped, 1, idx.unsqueeze(-1).expand(-1, -1, self.hidden_size))
 
-        return torch.cat(
-            [torch.stack(forward_outputs, dim=1), torch.stack(backward_outputs, dim=1)],
-            dim=2,
-        )
+        mask = attention_mask.to(dtype=x.dtype).unsqueeze(-1)
+        return torch.cat([h_fwd * mask, h_bwd * mask], dim=-1)
+
 
 class DurationModel(nn.Module):
     """First-stage model: Predicts durations and extracts intermediate features."""
