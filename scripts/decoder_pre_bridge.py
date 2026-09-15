@@ -93,7 +93,7 @@ def main():
 
         # Build x_pre via PyTorch decoder pre-processing
         t0 = time.perf_counter()
-        x_pre_np, ref_s, har_np, _t_f0, _fc = build_decoder_har_post_inputs_np(
+        x_pre_np, ref_s, har_np, _t_f0, _fc, _mask = build_decoder_har_post_inputs_np(
             dec, vi, sec, asr_len, har_t, warn_geometry=False
         )
         t1 = time.perf_counter()

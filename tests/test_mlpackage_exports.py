@@ -1,4 +1,4 @@
-"""Optional integration tests: load shipped CoreML packages and assert I/O contracts.
+"""Core ML export contract tests, plus optional shipped-package integration.
 
 Skipped when ``coreml/kokoro_duration.mlpackage`` is absent or coremltools is not installed.
 """
@@ -187,6 +187,7 @@ def test_kokoro_decoder_har_post_10s_mlpackage_loads_and_predict_shapes():
 
 _DECODER_PRE_10S_PKG = _ROOT / "coreml" / "kokoro_decoder_pre_10s.mlpackage"
 _F0NTRAIN_T400_PKG = _ROOT / "coreml" / "kokoro_f0ntrain_t400.mlpackage"
+_GENERATOR_10S_PKG = _ROOT / "coreml" / "kokoro_decoder_har_post_10s.mlpackage"
 
 
 @pytest.mark.parametrize(
@@ -194,21 +195,17 @@ _F0NTRAIN_T400_PKG = _ROOT / "coreml" / "kokoro_f0ntrain_t400.mlpackage"
     [
         pytest.param(_DECODER_PRE_10S_PKG, id="decoder_pre_10s"),
         pytest.param(_F0NTRAIN_T400_PKG, id="f0ntrain_t400"),
+        pytest.param(_GENERATOR_10S_PKG, id="generator_10s"),
     ],
 )
-def test_mask_input_is_optional_on_exported_package(pkg):
-    """``mask`` must stay optional on every mask-aware package: it carries an
-    all-ones default so consumers built against pre-mask packages keep working.
-    A required ``mask`` would be a breaking change that surfaces in someone
-    else's build as "Feature mask is required but not specified".
-    """
+def test_mask_input_is_required_on_exported_package(pkg):
+    """Mask-aware artifacts must fail loudly when callers omit validity."""
     if not pkg.exists():
         pytest.skip(f"{pkg.name} not present")
     spec = ct.models.MLModel(str(pkg), skip_model_load=True).get_spec()
     by_name = {i.name: i for i in spec.description.input}
     assert "mask" in by_name, f"{pkg.name} declares no mask input"
-    assert by_name["mask"].type.isOptional, (
-        f"{pkg.name} declares `mask` as REQUIRED. It must carry an all-ones "
-        "default_value so the input stays optional and existing consumers keep "
-        "loading."
+    assert not by_name["mask"].type.isOptional, (
+        f"{pkg.name} declares `mask` optional, which lets callers silently "
+        "restore padding-contaminated inference"
     )

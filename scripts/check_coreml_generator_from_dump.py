@@ -18,7 +18,7 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 sys.path.insert(0, str(_ROOT))
 
-from audio_parity_tensor_io import load_tensor_dump  # noqa: E402
+from audio_parity_tensor_io import load_tensor_dump, mask_aware_inputs  # noqa: E402
 
 
 def _metrics(reference: np.ndarray, candidate: np.ndarray) -> dict[str, Any]:
@@ -95,12 +95,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if missing:
         raise SystemExit(f"tensor dump missing required tensors: {missing}")
 
+    x_pre = tensors["x_pre_padded"].astype(np.float32)
     inputs = {
-        "x_pre": tensors["x_pre_padded"].astype(np.float32),
+        "x_pre": x_pre,
         "ref_s": tensors["ref_s"].astype(np.float32),
         "har": tensors["har_padded"].astype(np.float32),
     }
     model = ct.models.MLModel(str(args.package), compute_units=_compute_unit(ct, args.compute_units))
+    inputs = mask_aware_inputs(model, inputs, tensors)
     prediction, first_prediction_time_s = _timed_predict(model, inputs)
     warmup_times_s = []
     for _ in range(args.warmup):

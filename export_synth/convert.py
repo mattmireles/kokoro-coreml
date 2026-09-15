@@ -464,11 +464,9 @@ def export_synthesizers(
                             ct.TensorType(name="x_pre", shape=x_pre_shape, dtype=np.float32),
                             ct.TensorType(name="ref_s", shape=(1, CoreMLExportConstants.VOICE_EMBEDDING_DIM), dtype=np.float32),
                             ct.TensorType(name="har", shape=har_shape, dtype=np.float32),
-                            # The all-ones default keeps `mask` optional for existing
-                            # consumers. It means full fill: a caller that pads and omits
-                            # the mask gets the padding contamination back, silently.
-                            ct.TensorType(name="mask", shape=mask_shape, dtype=np.float32,
-                                          default_value=np.ones(mask_shape, dtype=np.float32)),
+                            # Required: omission silently restores padding
+                            # contamination in the generator statistics.
+                            ct.TensorType(name="mask", shape=mask_shape, dtype=np.float32),
                         ],
                         outputs=[ct.TensorType(name="waveform")],
                         convert_to=convert_backend,
@@ -547,11 +545,9 @@ def export_synthesizers(
                             ct.TensorType(name="x_pre", shape=x_pre_shape, dtype=np.float32),
                             ct.TensorType(name="ref_s", shape=(1, CoreMLExportConstants.VOICE_EMBEDDING_DIM), dtype=np.float32),
                             ct.TensorType(name="har", shape=har_shape, dtype=np.float32),
-                            # The all-ones default keeps `mask` optional for existing
-                            # consumers. It means full fill: a caller that pads and omits
-                            # the mask gets the padding contamination back, silently.
-                            ct.TensorType(name="mask", shape=mask_shape, dtype=np.float32,
-                                          default_value=np.ones(mask_shape, dtype=np.float32)),
+                            # Required: omission silently restores padding
+                            # contamination in the generator statistics.
+                            ct.TensorType(name="mask", shape=mask_shape, dtype=np.float32),
                         ],
                         outputs=[ct.TensorType(name="waveform")],
                         convert_to=convert_backend,

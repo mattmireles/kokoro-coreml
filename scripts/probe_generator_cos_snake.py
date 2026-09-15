@@ -31,7 +31,7 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 sys.path.insert(0, str(_ROOT))
 
-from audio_parity_tensor_io import load_tensor_dump  # noqa: E402
+from audio_parity_tensor_io import load_tensor_dump, mask_aware_inputs  # noqa: E402
 from probe_generator_dual_anchor_split import _patch_cos_snake  # noqa: E402
 from probe_generator_exact_geometry import _compute_units, _load_kmodel, _metrics  # noqa: E402
 from probe_generator_split import _duration_label_from_dump, _precision_arg, _remove_existing_package  # noqa: E402
@@ -325,21 +325,23 @@ def _benchmark(
         str(cos_package),
         compute_units=_compute_units(ct, args.compute_units),
     )
+    fused_inputs = mask_aware_inputs(fused, inputs, tensors)
+    cos_inputs = mask_aware_inputs(cos_model, inputs, tensors)
 
-    fused_first, fused_first_ms = _predict(fused, inputs)
-    cos_first, cos_first_ms = _predict(cos_model, inputs)
+    fused_first, fused_first_ms = _predict(fused, fused_inputs)
+    cos_first, cos_first_ms = _predict(cos_model, cos_inputs)
 
     for _ in range(max(0, args.warmup)):
-        _predict(fused, inputs)
-        _predict(cos_model, inputs)
+        _predict(fused, fused_inputs)
+        _predict(cos_model, cos_inputs)
 
     fused_times: list[float] = []
     cos_times: list[float] = []
     last_fused = fused_first
     last_cos = cos_first
     for _ in range(max(1, args.iterations)):
-        last_fused, fused_ms = _predict(fused, inputs)
-        last_cos, cos_ms = _predict(cos_model, inputs)
+        last_fused, fused_ms = _predict(fused, fused_inputs)
+        last_cos, cos_ms = _predict(cos_model, cos_inputs)
         fused_times.append(fused_ms)
         cos_times.append(cos_ms)
 

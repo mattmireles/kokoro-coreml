@@ -33,7 +33,11 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 sys.path.insert(0, str(_ROOT))
 
-from audio_parity_tensor_io import load_tensor_dump  # noqa: E402
+from audio_parity_tensor_io import (
+    bucket_mask_from_tensors,
+    inputs_with_mask_if_declared,
+    load_tensor_dump,
+)  # noqa: E402
 from probe_generator_dual_anchor_split import (  # noqa: E402
     _make_noise_module,
     _make_tail_module,
@@ -167,13 +171,17 @@ def _make_decoder_vocoder_module(decoder: Any, source_count: int, anchor_mode: s
 def _inputs(tensors: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     """Return same-boundary inputs from a Swift generator tensor dump."""
 
+    asr = tensors["asr_padded"].astype(np.float32)
+    x_pre = tensors["x_pre_padded"].astype(np.float32)
     return {
-        "asr": tensors["asr_padded"].astype(np.float32),
+        "asr": asr,
         "f0": tensors["f0_padded"].astype(np.float32),
         "n_input": tensors["n_padded"].astype(np.float32),
         "ref_s": tensors["ref_s"].astype(np.float32),
         "style_timbre": tensors["ref_s"][:, :128].astype(np.float32),
         "har": tensors["har_padded"].astype(np.float32),
+        "decoder_mask": bucket_mask_from_tensors(tensors, asr.shape[-1], frame_scale=1),
+        "generator_mask": bucket_mask_from_tensors(tensors, x_pre.shape[-1]),
     }
 
 
@@ -355,19 +363,19 @@ def _load_models(args: argparse.Namespace, noise_package: Path, body_package: Pa
 
 
 def _baseline_predict(decoder_pre: Any, fused: Any, inputs: dict[str, np.ndarray]) -> tuple[np.ndarray, dict[str, float]]:
-    dec_feed = {
+    dec_feed = inputs_with_mask_if_declared(decoder_pre, {
         "asr": inputs["asr"],
         "f0": inputs["f0"][:, None, :],
         "n_input": inputs["n_input"][:, None, :],
         "ref_s": inputs["ref_s"],
-    }
+    }, inputs["decoder_mask"])
     dec_out, dec_ms = _predict(decoder_pre, dec_feed)
     x_pre = dec_out["x_pre"].astype(np.float32)
-    gen_feed = {
+    gen_feed = inputs_with_mask_if_declared(fused, {
         "x_pre": x_pre,
         "ref_s": inputs["ref_s"],
         "har": inputs["har"],
-    }
+    }, inputs["generator_mask"])
     gen_out, gen_ms = _predict(fused, gen_feed)
     waveform = gen_out.get("waveform", next(iter(gen_out.values()))).astype(np.float32)
     return waveform, {"decoder_pre_ms": dec_ms, "generator_ms": gen_ms, "total_ms": dec_ms + gen_ms}

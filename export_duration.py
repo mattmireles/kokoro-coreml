@@ -23,7 +23,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from export_synth.wrappers import MaskedBidirectionalLSTM
+from coreml_export_duration import DurationModel
 from kokoro._export_utils import load_kokoro_for_export
 from kokoro.coreml_export_verify import (
     assert_no_cpu_fallback_in_logs,
@@ -35,88 +35,6 @@ from kokoro.coreml_numeric_validate import validate_duration_traced_vs_coreml
 kokoro_istftnet, kokoro_modules, kokoro_model = load_kokoro_for_export(suffix="_duration")
 KModel = kokoro_model.KModel
 AdaLayerNorm = kokoro_modules.AdaLayerNorm
-
-class CoreMLFriendlyTextEncoder(nn.Module):
-    def __init__(self, original_encoder):
-        super().__init__()
-        self.embedding = original_encoder.embedding
-        self.cnn = original_encoder.cnn
-        self.lstm = MaskedBidirectionalLSTM(original_encoder.lstm)
-    def forward(self, x, input_lengths, m):
-        valid_mask = (~m).to(dtype=torch.long)
-        x = self.embedding(x)
-        x = x.transpose(1, 2)
-        m = m.unsqueeze(1)
-        x.masked_fill_(m, 0.0)
-        for c in self.cnn:
-            x = c(x)
-            x.masked_fill_(m, 0.0)
-        x = x.transpose(1, 2)
-        x = self.lstm(x, valid_mask)
-        x = x.transpose(-1, -2)
-        x.masked_fill_(m, 0.0)
-        return x
-
-class CoreMLFriendlyDurationEncoder(nn.Module):
-    def __init__(self, original_encoder):
-        super().__init__()
-        self.lstms = nn.ModuleList(
-            MaskedBidirectionalLSTM(block) if isinstance(block, nn.LSTM) else block
-            for block in original_encoder.lstms
-        )
-        self.dropout = original_encoder.dropout
-    def forward(self, x, style, text_lengths, m):
-        masks = m
-        valid_mask = (~masks).to(dtype=torch.long)
-        x = x.permute(2, 0, 1)
-        # Replace expand with explicit repeat operations to avoid tile reps validation issues
-        # style is [batch, style_dim], we need [seq_len, batch, style_dim]
-        batch_size = x.shape[1]
-        seq_len = x.shape[0] 
-        style_dim = style.shape[-1]
-        s = style.unsqueeze(0).repeat(seq_len, 1, 1)  # [seq_len, batch, style_dim]
-        x = torch.cat([x, s], axis=-1)
-        x.masked_fill_(masks.unsqueeze(-1).transpose(0, 1), 0.0)
-        x = x.transpose(0, 1)
-        x = x.transpose(-1, -2)
-        for block in self.lstms:
-            if isinstance(block, AdaLayerNorm) or type(block).__name__ == "AdaLayerNorm":
-                x = block(x.transpose(-1, -2), style).transpose(-1, -2)
-                x = torch.cat([x, s.permute(1, 2, 0)], axis=1)
-                x.masked_fill_(masks.unsqueeze(-1).transpose(-1, -2), 0.0)
-            else:
-                x = x.transpose(-1, -2)
-                x = block(x, valid_mask)
-                x = nn.functional.dropout(x, p=self.dropout, training=False)
-                x = x.transpose(-1, -2)
-        return x.transpose(-1, -2)
-
-class DurationModel(nn.Module):
-    def __init__(self, kmodel: KModel):
-        super().__init__()
-        self.kmodel = kmodel
-        self.kmodel.text_encoder = CoreMLFriendlyTextEncoder(kmodel.text_encoder)
-        self.kmodel.predictor.text_encoder = CoreMLFriendlyDurationEncoder(kmodel.predictor.text_encoder)
-        self.duration_lstm = MaskedBidirectionalLSTM(kmodel.predictor.lstm)
-        if hasattr(self.kmodel.bert.embeddings, 'token_type_ids'):
-            delattr(self.kmodel.bert.embeddings, 'token_type_ids')
-    def forward(self, input_ids: torch.LongTensor, ref_s: torch.FloatTensor, speed: torch.FloatTensor, attention_mask: torch.LongTensor):
-        k = self.kmodel
-        input_lengths = attention_mask.sum(dim=-1).to(torch.long)
-        text_mask = attention_mask == 0
-        token_type_ids = torch.zeros_like(input_ids)
-        bert_dur = k.bert(input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
-        d_en = k.bert_encoder(bert_dur).transpose(-1, -2)
-        s = ref_s[:, 128:]  # style half
-        d = k.predictor.text_encoder(d_en, s, input_lengths, text_mask)
-        x = self.duration_lstm(d, attention_mask)
-        duration = k.predictor.duration_proj(x)
-        duration = torch.sigmoid(duration).sum(axis=-1) / speed
-        pred_dur = torch.round(duration).clamp(min=1).long()
-        t_en = k.text_encoder(input_ids, input_lengths, text_mask)
-        # Avoid CoreML aliasing: ensure ref_s output is distinct
-        ref_s_out = ref_s + torch.zeros_like(ref_s)
-        return pred_dur, d, t_en, s, ref_s_out
 
 class ExactNativeTextEncoder(nn.Module):
     """Text encoder for exact, unpadded token lengths.

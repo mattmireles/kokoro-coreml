@@ -4,7 +4,7 @@
 Runs the PyTorch fp32 synthesis stack (F0Ntrain, decoder, harmonic source,
 generator) for one text twice per bucket: once at the utterance's natural
 frame count and once right-padded to the bucket, then compares the valid region
-of every stage. Three masking modes are measured so each mask-aware change can
+of every stage. Four masking modes are measured so each mask-aware change can
 be attributed:
 
   unmasked    every time-axis statistic sees the padding (the pre-mask model)
@@ -114,8 +114,30 @@ def synthesize(inp: dict, t_frames: int, mode: str) -> dict:
         if "mask" not in inspect.signature(wrapper.forward).parameters:
             raise RuntimeError("F0NtrainWrapper has no mask input; adain+lstm is unavailable")
         f0, n = wrapper(en, inp["s"], mask=m)
+    elif mode == "adain":
+        # This diagnostic isolates masked AdaIN while deliberately leaving the
+        # shared BiLSTM unchanged. Keep the partial contract local to the
+        # experiment instead of exposing a misleading production API.
+        predictor = kmodel.predictor
+        shared, _ = predictor.shared(en.transpose(-1, -2))
+
+        def masked_branch(blocks, projection):
+            value = shared.transpose(-1, -2)
+            current = m
+            for block in blocks:
+                next_mask = (
+                    current.repeat_interleave(2, dim=2)
+                    if block.upsample_type != "none"
+                    else current
+                )
+                value = block(value, inp["s"], current, next_mask)
+                current = next_mask
+            return projection(value).squeeze(1)
+
+        f0 = masked_branch(predictor.F0, predictor.F0_proj)
+        n = masked_branch(predictor.N, predictor.N_proj)
     else:
-        f0, n = kmodel.predictor.F0Ntrain(en, inp["s"], m=m)
+        f0, n = kmodel.predictor.F0Ntrain(en, inp["s"])
 
     frame_count = conv1d_output_length_from_module(f0.shape[-1], dec.F0_conv)
     asr = _pad_time(inp["asr"], frame_count)
@@ -140,8 +162,9 @@ def synthesize(inp: dict, t_frames: int, mode: str) -> dict:
     if mode == "generator":
         cur = _mask(x_pre.shape[-1], 2 * V)
     waveform = GeneratorFromHar(gen).eval()(x_pre, inp["ref_s_out"], har, mask=cur)
-    # f0 and n leave F0Ntrain at twice the frame rate; x_pre is at frame rate.
-    return {"f0": f0[..., : 2 * V], "n": n[..., : 2 * V], "x_pre": x_pre[..., :V], "waveform": waveform.reshape(-1)[: V * SAMPLES_PER_FRAME]}
+    # F0/N and the decoder's final upsampling block all leave at twice the
+    # duration-frame rate.
+    return {"f0": f0[..., : 2 * V], "n": n[..., : 2 * V], "x_pre": x_pre[..., : 2 * V], "waveform": waveform.reshape(-1)[: V * SAMPLES_PER_FRAME]}
 
 
 def main() -> int:

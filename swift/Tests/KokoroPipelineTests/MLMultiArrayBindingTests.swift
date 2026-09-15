@@ -4,6 +4,19 @@ import XCTest
 
 final class MLMultiArrayBindingTests: XCTestCase {
 
+    func testMakeBucketMaskMarksOnlyValidPrefix() throws {
+        let mask = try makeBucketMask(validFrames: 3, totalFrames: 5)
+
+        XCTAssertEqual(mask.shape.map { $0.intValue }, [1, 1, 5])
+        XCTAssertEqual(floatValues(from: mask), [1, 1, 1, 0, 0])
+    }
+
+    func testMakeBucketMaskClampsToStaticAxis() throws {
+        let mask = try makeBucketMask(validFrames: 9, totalFrames: 4)
+
+        XCTAssertEqual(floatValues(from: mask), [1, 1, 1, 1])
+    }
+
     func testReadDurationFramesFromInt32PredDur() throws {
         let arr = try MLMultiArray(shape: [1, 5], dataType: .int32)
         let ptr = arr.dataPointer.assumingMemoryBound(to: Int32.self)

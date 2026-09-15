@@ -48,10 +48,10 @@ def build_decoder_har_post_inputs_np(
 
     Returns:
         ``x_pre`` (float32), ``ref_s`` (float32), ``har`` (float32), ``T_f0`` (int),
-        ``frame_count`` (int; decoder time dim before Core ML padding to ``asr_len``),
-        ``mask`` (float32, shape ``(1, 1, asr_len)``; 1.0 on the valid prefix
-        ``[0, t_asr)``, 0.0 on bucket padding). Mask-aware packages declare
-        ``mask`` as an optional input; packages without it ignore the feature.
+        ``frame_count`` (int; decoder input time dim before its final 2x upsample),
+        ``mask`` (float32, shape ``(1, 1, asr_len)``; 1.0 on the valid
+        post-upsample ``x_pre`` prefix, 0.0 on bucket padding). Packages without
+        a mask input ignore the returned feature.
     """
     gen = dec.generator
     f0_samples_per_step = int(round(float(gen.f0_upsamp.scale_factor)))
@@ -72,6 +72,8 @@ def build_decoder_har_post_inputs_np(
     asr_pad = np.zeros((1, 512, frame_count), dtype=np.float32)
     t_asr = min(frame_count, asr.shape[-1])
     asr_pad[:, :, :t_asr] = asr[:, :, :t_asr]
+    decoder_mask = torch.zeros((1, 1, frame_count), dtype=torch.float32)
+    decoder_mask[:, :, :t_asr] = 1.0
     f0_pad = np.zeros((1, full_f0_len), dtype=np.float32)
     n_pad = np.zeros((1, full_f0_len), dtype=np.float32)
     t_f0 = min(full_f0_len, f0.shape[-1])
@@ -85,13 +87,20 @@ def build_decoder_har_post_inputs_np(
         F0 = dec.F0_conv(torch.from_numpy(f0_pad).unsqueeze(1))
         N = dec.N_conv(torch.from_numpy(n_pad).unsqueeze(1))
         x = torch.cat([asr_t, F0, N], dim=1)
-        x = dec.encode(x, s)
+        x = dec.encode(x, s, m=decoder_mask, m_up=decoder_mask)
         asr_res = dec.asr_res(asr_t)
         res = True
+        current_mask = decoder_mask
         for block in dec.decode:
             if res:
                 x = torch.cat([x, asr_res, F0, N], dim=1)
-            x = block(x, s)
+            output_mask = (
+                current_mask.repeat_interleave(2, dim=2)
+                if block.upsample_type != "none"
+                else current_mask
+            )
+            x = block(x, s, m=current_mask, m_up=output_mask)
+            current_mask = output_mask
             if block.upsample_type != "none":
                 res = False
         x_pre = x
@@ -115,11 +124,12 @@ def build_decoder_har_post_inputs_np(
         h_new[:, :, :cpy] = har_np[:, :, :cpy]
         har_np = h_new
 
-    # Mask reflects the valid asr prefix in the (possibly Core ML-padded)
-    # x_pre tensor. ``t_asr`` is the unpadded source length; ``asr_len`` is
-    # the bucket-padded target length the Core ML model declares.
+    # Align the decoder's post-upsample mask to the Core ML x_pre input exactly
+    # as x_pre itself was aligned above.
     mask_np = np.zeros((1, 1, asr_len), dtype=np.float32)
-    mask_np[:, :, : min(t_asr, asr_len)] = 1.0
+    decoded_mask = current_mask.numpy().astype(np.float32)
+    copy_mask = min(decoded_mask.shape[-1], asr_len)
+    mask_np[:, :, :copy_mask] = decoded_mask[:, :, :copy_mask]
 
     return x_pre_np, ref_s, har_np, T_f0, frame_count, mask_np
 

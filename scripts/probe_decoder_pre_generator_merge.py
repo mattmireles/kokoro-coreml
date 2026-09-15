@@ -28,7 +28,11 @@ _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
 sys.path.insert(0, str(_ROOT / "scripts"))
 
-from audio_parity_tensor_io import load_tensor_dump  # noqa: E402
+from audio_parity_tensor_io import (
+    bucket_mask_from_tensors,
+    inputs_with_mask_if_declared,
+    load_tensor_dump,
+)  # noqa: E402
 from probe_generator_exact_geometry import _compute_units, _load_kmodel, _metrics  # noqa: E402
 from probe_generator_split import _duration_label_from_dump, _precision_arg, _remove_existing_package  # noqa: E402
 
@@ -145,6 +149,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     n_input = tensors["n_padded"].astype(np.float32).reshape(dec_shapes["n_input"])
     ref_s = tensors["ref_s"].astype(np.float32)
     har = tensors["har_padded"].astype(np.float32)
+    decoder_mask = bucket_mask_from_tensors(tensors, asr.shape[-1], frame_scale=1)
+    generator_mask = bucket_mask_from_tensors(tensors, gen_shapes["x_pre"][-1])
 
     if tuple(asr.shape) != dec_shapes["asr"]:
         raise SystemExit(f"asr shape {asr.shape} does not match decoder-pre {dec_shapes['asr']}")
@@ -199,8 +205,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     candidate = ct.models.MLModel(str(package), compute_units=_compute_units(ct, args.compute_units))
 
-    dec_feed = {"asr": asr, "f0": f0, "n_input": n_input, "ref_s": ref_s}
-    candidate_feed = {**dec_feed, "har": har}
+    dec_feed = inputs_with_mask_if_declared(
+        dec_pre_model,
+        {"asr": asr, "f0": f0, "n_input": n_input, "ref_s": ref_s},
+        decoder_mask,
+    )
+    candidate_feed = {"asr": asr, "f0": f0, "n_input": n_input, "ref_s": ref_s, "har": har}
 
     def predict_baseline() -> tuple[np.ndarray, float, float, float]:
         start = time.perf_counter()
@@ -208,7 +218,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         dec_out = dec_pre_model.predict(dec_feed)
         dec_ms = (time.perf_counter() - dec_start) * 1000.0
         x_pre = np.asarray(dec_out["x_pre"], dtype=np.float32)
-        gen_feed = {"x_pre": x_pre, "ref_s": ref_s, "har": har}
+        gen_feed = inputs_with_mask_if_declared(
+            gen_model,
+            {"x_pre": x_pre, "ref_s": ref_s, "har": har},
+            generator_mask,
+        )
         waveform, gen_ms = _predict(gen_model, gen_feed)
         total_ms = (time.perf_counter() - start) * 1000.0
         return waveform, total_ms, dec_ms, gen_ms

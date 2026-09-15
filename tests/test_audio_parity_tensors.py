@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -24,6 +25,21 @@ _io = _load_script_module("audio_parity_tensor_io")
 _compare = _load_script_module("compare_audio_parity_tensors")
 
 
+class _FakeModel:
+    def __init__(self, inputs: dict[str, tuple[int, ...]]):
+        descriptions = [
+            SimpleNamespace(
+                name=name,
+                type=SimpleNamespace(multiArrayType=SimpleNamespace(shape=shape)),
+            )
+            for name, shape in inputs.items()
+        ]
+        self._spec = SimpleNamespace(description=SimpleNamespace(input=descriptions))
+
+    def get_spec(self):
+        return self._spec
+
+
 def test_tensor_dump_round_trips_float_and_int(tmp_path: Path) -> None:
     writer = _io.TensorDumpWriter(tmp_path, metadata={"producer": "test"})
     writer.write("tokens", np.array([[1, 2, 3]], dtype=np.int64))
@@ -38,6 +54,22 @@ def test_tensor_dump_round_trips_float_and_int(tmp_path: Path) -> None:
     assert tensors["tokens"].tolist() == [[1, 2, 3]]
     assert tensors["waveform"].dtype == np.dtype("<f4")
     np.testing.assert_allclose(tensors["waveform"], [0.0, 0.25, -0.5])
+
+
+def test_mask_aware_inputs_adds_binary_generator_prefix() -> None:
+    model = _FakeModel({"x_pre": (1, 512, 8), "mask": (1, 1, 8)})
+    tensors = {"pred_dur_valid": np.array([[1, 2]], dtype=np.int32)}
+
+    inputs = _io.mask_aware_inputs(model, {"x_pre": np.zeros((1, 512, 8))}, tensors)
+
+    assert inputs["mask"].flatten().tolist() == [1, 1, 1, 1, 1, 1, 0, 0]
+
+
+def test_mask_aware_inputs_preserves_legacy_maskless_artifact() -> None:
+    model = _FakeModel({"x_pre": (1, 512, 8)})
+    original = {"x_pre": np.zeros((1, 512, 8))}
+
+    assert _io.mask_aware_inputs(model, original, {}) is original
 
 
 def test_compare_tensor_reports_shape_mismatch() -> None:

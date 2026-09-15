@@ -37,7 +37,8 @@ def test_duration_model_returns_five_tensors_expected_shapes(kmodel):
 
 
 def test_duration_model_reuses_already_masked_predictor_lstm(kmodel):
-    from export_synth.wrappers import DurationModel, MaskedBidirectionalLSTM
+    from coreml_export_lstm import MaskedBidirectionalLSTM
+    from export_synth.wrappers import DurationModel
 
     kmodel.predictor.lstm = MaskedBidirectionalLSTM(kmodel.predictor.lstm)
 

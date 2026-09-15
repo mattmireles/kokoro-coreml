@@ -31,7 +31,7 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 sys.path.insert(0, str(_ROOT))
 
-from audio_parity_tensor_io import load_tensor_dump  # noqa: E402
+from audio_parity_tensor_io import load_tensor_dump, mask_aware_inputs  # noqa: E402
 from probe_generator_exact_geometry import _compute_units, _load_kmodel, _metrics  # noqa: E402
 
 
@@ -287,12 +287,13 @@ def _benchmark(
 ) -> dict[str, Any]:
     inputs = _predict_inputs(tensors)
     fused, body, tail = _load_models(args, body_package, tail_package)
+    fused_inputs = mask_aware_inputs(fused, inputs, tensors)
 
-    fused_first, fused_first_ms = _predict_fused(fused, inputs)
+    fused_first, fused_first_ms = _predict_fused(fused, fused_inputs)
     split_first, split_first_times = _predict_split(body, tail, inputs)
 
     for _ in range(max(0, args.warmup)):
-        _predict_fused(fused, inputs)
+        _predict_fused(fused, fused_inputs)
         _predict_split(body, tail, inputs)
 
     fused_times: list[float] = []
@@ -302,7 +303,7 @@ def _benchmark(
     last_fused = fused_first
     last_split = split_first
     for _ in range(max(1, args.iterations)):
-        last_fused, fused_ms = _predict_fused(fused, inputs)
+        last_fused, fused_ms = _predict_fused(fused, fused_inputs)
         last_split, split_times = _predict_split(body, tail, inputs)
         fused_times.append(fused_ms)
         split_body_times.append(split_times["body_ms"])

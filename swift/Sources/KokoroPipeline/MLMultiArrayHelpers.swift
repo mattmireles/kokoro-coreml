@@ -477,11 +477,9 @@ public func makeBucketMask(validFrames: Int, totalFrames: Int) throws -> MLMulti
     return mask
 }
 
-/// Builds one Core ML stage's input features, attaching the bucket mask whenever
-/// the model declares a `mask` input. The exported packages default `mask` to
-/// all-ones (full fill), so a stage that pads and omits it silently reinstates
-/// the padding contamination; routing every stage through here makes that
-/// omission impossible.
+/// Builds one padded Core ML stage's inputs, attaching a validity mask whenever
+/// the artifact declares one. Newly exported artifacts require the input;
+/// legacy maskless artifacts remain loadable during the artifact rollout.
 public func stageInputs(
     for model: MLModel,
     _ features: [String: MLFeatureValue],

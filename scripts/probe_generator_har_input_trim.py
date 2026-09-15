@@ -34,7 +34,7 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 sys.path.insert(0, str(_ROOT))
 
-from audio_parity_tensor_io import load_tensor_dump  # noqa: E402
+from audio_parity_tensor_io import load_tensor_dump, mask_aware_inputs  # noqa: E402
 from probe_generator_exact_geometry import _compute_units, _load_kmodel, _metrics  # noqa: E402
 from probe_generator_split import _duration_label_from_dump, _precision_arg, _remove_existing_package  # noqa: E402
 
@@ -182,6 +182,8 @@ def _benchmark(
         compute_units=_compute_units(ct, args.candidate_compute_units),
     )
     baseline_inputs, candidate_inputs = _inputs(tensors, args.har_time)
+    baseline_inputs = mask_aware_inputs(baseline_model, baseline_inputs, tensors)
+    candidate_inputs = mask_aware_inputs(candidate_model, candidate_inputs, tensors)
 
     baseline_first, baseline_first_ms = _predict(baseline_model, baseline_inputs)
     candidate_first, candidate_first_ms = _predict(candidate_model, candidate_inputs)

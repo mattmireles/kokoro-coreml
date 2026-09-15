@@ -37,7 +37,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from export_synth.wrappers import MaskedBidirectionalLSTM
+from coreml_export_lstm import MaskedBidirectionalLSTM
 
 _ROOT = Path(__file__).resolve().parent
 
@@ -88,7 +88,8 @@ class F0NtrainWrapper(nn.Module):
     The shared BiLSTM runs as ``MaskedBidirectionalLSTM``, so its backward
     direction starts at the last valid frame instead of walking the padding,
     and each ``AdainResBlk1d`` gets the mask at its own resolution (each branch
-    is [no-upsample, 2x-upsample, no-upsample]). ``mask=None`` means full fill.
+    is [no-upsample, 2x-upsample, no-upsample]). The wrapper's ``None`` path is
+    for full-fill export diagnostics; the exported package input is required.
     """
 
     def __init__(self, predictor):
@@ -174,11 +175,9 @@ def export_f0ntrain(t_frames: int = 120, output_dir: Path | None = None) -> Path
         inputs=[
             ct.TensorType(name="en", shape=(1, 640, t_frames), dtype=np.float32),
             ct.TensorType(name="s", shape=(1, 128), dtype=np.float32),
-            # The all-ones default keeps `mask` optional for existing consumers.
-            # It means full fill: a caller that pads and omits the mask gets
-            # the padding contamination back, silently.
-            ct.TensorType(name="mask", shape=(1, 1, t_frames), dtype=np.float32,
-                          default_value=np.ones((1, 1, t_frames), dtype=np.float32)),
+            # Required: omitting the validity mask silently restores the
+            # padding contamination this export exists to remove.
+            ct.TensorType(name="mask", shape=(1, 1, t_frames), dtype=np.float32),
         ],
         outputs=[
             ct.TensorType(name="F0_pred"),

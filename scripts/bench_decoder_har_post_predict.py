@@ -98,11 +98,14 @@ def _inputs_for_package(
             f"pipeline selects {selected}s for this text; use --bucket-sec {selected}"
         )
     dec = pipe.pytorch_model.decoder
-    x_pre, ref_s, har, t_chk, _fc = build_decoder_har_post_inputs_np(
+    x_pre, ref_s, har, t_chk, _fc, mask = build_decoder_har_post_inputs_np(
         dec, vi, bucket_sec, asr_len, har_t, warn_geometry=True
     )
     _ = t_chk
-    return {"x_pre": x_pre, "ref_s": ref_s, "har": har}
+    inputs = {"x_pre": x_pre, "ref_s": ref_s, "har": har}
+    if "mask" in shapes:
+        inputs["mask"] = mask
+    return inputs
 
 
 def _median_predict_ms(model: ct.models.MLModel, inputs: dict, warmup: int, iterations: int) -> float:

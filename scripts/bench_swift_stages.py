@@ -83,6 +83,8 @@ def main():
                 "en": np.random.randn(1, 640, t_frames).astype(np.float32),
                 "s": np.random.randn(1, 128).astype(np.float32),
             }
+            if any(item.name == "mask" for item in f0n_model.get_spec().description.input):
+                f0n_inputs["mask"] = np.ones((1, 1, t_frames), dtype=np.float32)
             results[f"f0ntrain_t{t_frames}"] = _bench_model(
                 f0n_model, f0n_inputs, f"F0Ntrain T={t_frames}"
             )
@@ -101,7 +103,11 @@ def main():
                       for i in spec.description.input}
             gen_inputs = {}
             for name, shape in shapes.items():
-                gen_inputs[name] = np.random.randn(*shape).astype(np.float32)
+                gen_inputs[name] = (
+                    np.ones(shape, dtype=np.float32)
+                    if name == "mask"
+                    else np.random.randn(*shape).astype(np.float32)
+                )
             results[f"generator_{sec}s"] = _bench_model(
                 gen_model, gen_inputs, f"GeneratorFromHar {sec}s"
             )

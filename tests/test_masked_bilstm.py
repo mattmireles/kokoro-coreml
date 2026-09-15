@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
-from export_synth.wrappers import MaskedBidirectionalLSTM
+from coreml_export_lstm import MaskedBidirectionalLSTM
 
 
 def _packed_reference(lstm: nn.LSTM, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:

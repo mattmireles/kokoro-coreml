@@ -10,6 +10,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from coreml_export_duration import (
+    CoreMLFriendlyDurationEncoder,
+    CoreMLFriendlyTextEncoder,
+    DurationModel,
+)
 from kokoro.conv_length import conv1d_min_input_length_for_output_length
 
 class CoreMLExportConstants:
@@ -58,12 +63,6 @@ LayerNorm = kokoro_modules.LayerNorm
 AdaLayerNorm = kokoro_modules.AdaLayerNorm
 LinearNorm = kokoro_modules.LinearNorm
 AdainResBlk1d = kokoro_modules.AdainResBlk1d
-
-
-def _is_masked_bidirectional_lstm(module: nn.Module) -> bool:
-    """Return true for this module's mask-aware LSTM, including re-imported copies."""
-    return isinstance(module, MaskedBidirectionalLSTM) or type(module).__name__ == "MaskedBidirectionalLSTM"
-
 
 def zero_insert_1d(x: torch.Tensor, stride: int, output_padding: int = 0) -> torch.Tensor:
     """Return ``x`` with zeros inserted between adjacent time samples."""
@@ -130,10 +129,10 @@ class GeneratorFromHar(nn.Module):
         x_pre: decoder output before the generator, shape ``(B, 512, T_asr)``.
         ref_s: full voice embedding ``(B, 256)``; style uses the first ``VOICE_BASELINE_DIM`` channels.
         har: concat ``[har_spec, har_phase]`` along channel dim, shape ``(B, C, T_har)``.
-        mask: optional ``(B, 1, T_asr)`` float mask, ``1.0`` on valid frames and
+        mask: ``(B, 1, T_asr)`` float mask, ``1.0`` on valid frames and
             ``0.0`` on bucket padding, re-aligned to each ``AdaINResBlock1``'s
-            time axis as the activations are upsampled. ``None`` leaves the
-            path unchanged.
+            time axis as the activations are upsampled. ``None`` is retained
+            only for full-fill export diagnostics; exported packages require it.
 
     Called by:
         - ``export_synth.convert`` when ``mode == \"decoder-har\"``.
@@ -205,165 +204,6 @@ class GeneratorFromHar(nn.Module):
         spec = torch.exp(x[:, : gen.post_n_fft // 2 + 1, :])
         phase = torch.sin(x[:, gen.post_n_fft // 2 + 1 :, :])
         return gen.stft.inverse(spec, phase)
-
-class CoreMLFriendlyTextEncoder(nn.Module):
-    """Replaces the original TextEncoder to avoid pack_padded_sequence."""
-    def __init__(self, original_encoder):
-        super().__init__()
-        self.embedding = original_encoder.embedding
-        self.cnn = original_encoder.cnn
-        # Idempotent: `DurationModel` and `SynthesizerModel` may both wrap a
-        # shared `KModel.text_encoder` within one export run. If the LSTM is
-        # already masked, reuse it instead of wrapping a wrapper.
-        if _is_masked_bidirectional_lstm(original_encoder.lstm):
-            self.lstm = original_encoder.lstm
-        else:
-            self.lstm = MaskedBidirectionalLSTM(original_encoder.lstm)
-
-    def forward(self, x, input_lengths, m):
-        valid_mask = (~m).to(dtype=torch.long)
-        x = self.embedding(x)
-        x = x.transpose(1, 2)
-        m = m.unsqueeze(1)
-        x.masked_fill_(m, 0.0)
-        for c in self.cnn:
-            x = c(x)
-            x.masked_fill_(m, 0.0)
-        x = x.transpose(1, 2)
-        x = self.lstm(x, valid_mask)
-        x = x.transpose(-1, -2)
-        x.masked_fill_(m, 0.0)
-        return x
-
-class CoreMLFriendlyDurationEncoder(nn.Module):
-    """Replaces the original DurationEncoder to avoid pack_padded_sequence."""
-    def __init__(self, original_encoder):
-        super().__init__()
-        # Idempotent: skip re-wrapping already-masked LSTM blocks when this
-        # encoder is constructed twice from a shared `KModel` during export.
-        self.lstms = nn.ModuleList(
-            block if _is_masked_bidirectional_lstm(block)
-            else MaskedBidirectionalLSTM(block) if isinstance(block, nn.LSTM)
-            else block
-            for block in original_encoder.lstms
-        )
-        self.dropout = original_encoder.dropout
-
-    def forward(self, x, style, text_lengths, m):
-        masks = m
-        valid_mask = (~masks).to(dtype=torch.long)
-        x = x.permute(2, 0, 1)
-        s = style.expand(x.shape[0], x.shape[1], -1)
-        x = torch.cat([x, s], axis=-1)
-        x.masked_fill_(masks.unsqueeze(-1).transpose(0, 1), 0.0)
-        x = x.transpose(0, 1)
-        x = x.transpose(-1, -2)
-        for block in self.lstms:
-            # isinstance can fail if lstms holds a class re-imported from another module path.
-            if isinstance(block, AdaLayerNorm) or type(block).__name__ == "AdaLayerNorm":
-                x = block(x.transpose(-1, -2), style).transpose(-1, -2)
-                x = torch.cat([x, s.permute(1, 2, 0)], axis=1)
-                x.masked_fill_(masks.unsqueeze(-1).transpose(-1, -2), 0.0)
-            else:
-                x = x.transpose(-1, -2)
-                x = block(x, valid_mask)
-                x = nn.functional.dropout(x, p=self.dropout, training=False)
-                x = x.transpose(-1, -2)
-        return x.transpose(-1, -2)
-
-# --- Model Wrappers for Two-Stage Conversion ---
-
-class MaskedBidirectionalLSTM(nn.Module):
-    """One-layer bidirectional LSTM with packed-sequence semantics on right-padded input.
-
-    Kokoro runs its duration LSTMs over ``pack_padded_sequence``, so the backward
-    direction starts at the last valid token. Static Core ML packages receive
-    right-padded buckets, where a stock bidirectional LSTM would walk the padding
-    before reaching real tokens. This wrapper keeps the packed semantics with two
-    stock ``nn.LSTM`` calls, so it lowers to two MIL ``lstm`` ops instead of one
-    unrolled cell per timestep:
-
-    - forward: a stock LSTM over the padded input. Padding comes after the valid
-      tokens, so valid outputs are unaffected; padded outputs are zeroed.
-    - backward: gather each row's valid prefix in reverse order, run a forward
-      LSTM over it, and gather the outputs back into place.
-
-    Padded output positions are zero, matching ``pad_packed_sequence``.
-    """
-
-    def __init__(self, original_lstm: nn.LSTM):
-        super().__init__()
-        if original_lstm.num_layers != 1 or not original_lstm.bidirectional or not original_lstm.batch_first:
-            raise ValueError("MaskedBidirectionalLSTM expects one-layer batch-first bidirectional LSTM")
-        self.hidden_size = original_lstm.hidden_size
-        self.fwd = nn.LSTM(original_lstm.input_size, self.hidden_size, num_layers=1, batch_first=True)
-        self.bwd = nn.LSTM(original_lstm.input_size, self.hidden_size, num_layers=1, batch_first=True)
-        with torch.no_grad():
-            self.fwd.weight_ih_l0.copy_(original_lstm.weight_ih_l0)
-            self.fwd.weight_hh_l0.copy_(original_lstm.weight_hh_l0)
-            self.fwd.bias_ih_l0.copy_(original_lstm.bias_ih_l0)
-            self.fwd.bias_hh_l0.copy_(original_lstm.bias_hh_l0)
-            self.bwd.weight_ih_l0.copy_(original_lstm.weight_ih_l0_reverse)
-            self.bwd.weight_hh_l0.copy_(original_lstm.weight_hh_l0_reverse)
-            self.bwd.bias_ih_l0.copy_(original_lstm.bias_ih_l0_reverse)
-            self.bwd.bias_hh_l0.copy_(original_lstm.bias_hh_l0_reverse)
-
-    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-        B, T, _ = x.shape
-        # Index arithmetic stays int64: fp16 stops representing integers exactly
-        # at 2048, and the largest f0ntrain bucket is T=1800.
-        valid = attention_mask.to(dtype=torch.long).sum(dim=1, keepdim=True)
-        h_fwd, _ = self.fwd(x)
-
-        # Reverse index of the valid prefix: valid-1-t for t < valid. Past the
-        # prefix it clamps to 0 and the output is zeroed below.
-        arange = torch.arange(T, device=x.device, dtype=torch.long).unsqueeze(0).expand(B, T)
-        idx = (valid - 1 - arange).clamp(min=0, max=T - 1)
-        x_flipped = torch.gather(x, 1, idx.unsqueeze(-1).expand(-1, -1, x.size(-1)))
-        h_flipped, _ = self.bwd(x_flipped)
-        h_bwd = torch.gather(h_flipped, 1, idx.unsqueeze(-1).expand(-1, -1, self.hidden_size))
-
-        mask = attention_mask.to(dtype=x.dtype).unsqueeze(-1)
-        return torch.cat([h_fwd * mask, h_bwd * mask], dim=-1)
-
-
-class DurationModel(nn.Module):
-    """First-stage model: Predicts durations and extracts intermediate features."""
-    def __init__(self, kmodel: KModel):
-        super().__init__()
-        self.kmodel = kmodel
-        self.kmodel.text_encoder = CoreMLFriendlyTextEncoder(kmodel.text_encoder)
-        self.kmodel.predictor.text_encoder = CoreMLFriendlyDurationEncoder(kmodel.predictor.text_encoder)
-        # Idempotent for re-export/debug sessions that pass a shared KModel
-        # whose predictor LSTM has already been replaced by this export wrapper.
-        if _is_masked_bidirectional_lstm(kmodel.predictor.lstm):
-            self.duration_lstm = kmodel.predictor.lstm
-        else:
-            self.duration_lstm = MaskedBidirectionalLSTM(kmodel.predictor.lstm)
-        if hasattr(self.kmodel.bert.embeddings, 'token_type_ids'):
-             delattr(self.kmodel.bert.embeddings, 'token_type_ids')
-
-    def forward(self, input_ids: torch.LongTensor, ref_s: torch.FloatTensor, speed: torch.FloatTensor, attention_mask: torch.LongTensor):
-        k = self.kmodel
-        input_lengths = attention_mask.sum(dim=-1).to(torch.long)
-        text_mask = attention_mask == 0
-        token_type_ids = torch.zeros_like(input_ids)
-        
-        bert_dur = k.bert(input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
-        d_en = k.bert_encoder(bert_dur).transpose(-1, -2)
-        s = ref_s[:, CoreMLExportConstants.VOICE_STYLE_DIM:]
-        
-        d = k.predictor.text_encoder(d_en, s, input_lengths, text_mask)
-        x = self.duration_lstm(d, attention_mask)
-        duration = k.predictor.duration_proj(x)
-        
-        duration = torch.sigmoid(duration).sum(axis=-1) / speed
-        pred_dur = torch.round(duration).clamp(min=1).long()
-        
-        t_en = k.text_encoder(input_ids, input_lengths, text_mask)
-        # Avoid CoreML aliasing: ensure ref_s output is not the exact same tensor as input
-        ref_s_out = ref_s + torch.zeros_like(ref_s)
-        return pred_dur, d, t_en, s, ref_s_out
 
 class SynthesizerModel(nn.Module):
     """Second-stage model: Synthesizes audio from intermediate features."""

@@ -44,10 +44,11 @@ Three padding paths, confirmed by masking each in turn. `AdaIN1d` normalised ove
 
 **Files:**
 
-- `export_synth/wrappers.py` - `MaskedBidirectionalLSTM` runs the forward direction over the padded input and the backward direction as a forward LSTM over the gather-flipped valid prefix, two stock `lstm` ops; `GeneratorFromHar._align_mask_to` resamples the mask to each generator axis with a gather whose index is built from Python ints at trace time (`j // (target // cur)`, clamped to the last frame), so the package carries no integer arithmetic.
+- `coreml_export_lstm.py` - `MaskedBidirectionalLSTM` runs the forward direction over the padded input and the backward direction as a forward LSTM over the gather-flipped valid prefix, two stock `lstm` ops. Keeping this primitive side-effect-free avoids loading the complete synthesizer export module from duration and F0 export entry points.
+- `export_synth/wrappers.py` - `GeneratorFromHar._align_mask_to` resamples the mask to each generator axis with a gather whose index is built from Python ints at trace time (`j // (target // cur)`, clamped to the last frame), so the package carries no integer arithmetic.
 - `kokoro/istftnet.py` - `AdaIN1d` takes an optional mask: ratio-of-means statistics over valid frames and zeroed output on padded frames; `AdainResBlk1d` raises when given a mask at one resolution but not the other.
-- `kokoro/modules.py` - `F0Ntrain` threads the mask through both branches at the right resolution.
-- `export_synth/convert.py`, `export_decoder_pre.py`, `export_f0ntrain.py` - a `mask` input with an all-ones `default_value`, so the packages stay optional-input compatible; all-ones means full fill, so a caller that pads must pass the real mask.
+- `export_f0ntrain.py` - the export-only wrapper owns complete F0Ntrain masking, including the shared BiLSTM and both AdaIN branches; the production PyTorch API is unchanged rather than exposing a partial mask contract.
+- `export_synth/convert.py`, `export_decoder_pre.py`, `export_f0ntrain.py` - newly exported padded packages require `mask`; omission fails loudly instead of silently restoring padding-contaminated inference. The runtime keeps loading older maskless packages while the public artifacts are rolled forward.
 - `swift/Sources/KokoroPipeline/MLMultiArrayHelpers.swift`, `KokoroSynthesisExecutor.swift` - `makeBucketMask` builds the mask once from pipeline knowledge and `stageInputs` attaches it to any stage whose model declares one.
 - `scripts/measure_bucket_contamination.py` - the fill sweep and masking ladder in PyTorch fp32.
 
@@ -56,7 +57,7 @@ Two fp16 constraints are load-bearing and were measured with small Core ML model
 ### Verification
 
 ```bash
-uv run --no-sync pytest -q tests/test_masked_bilstm.py tests/test_adain1d_mask.py tests/test_export_wrappers_shapes.py tests/test_mlpackage_exports.py
+uv run --no-sync python -m pytest -q tests/test_masked_bilstm.py tests/test_adain1d_mask.py tests/test_export_wrappers_shapes.py tests/test_mlpackage_exports.py
 uv run --no-sync python scripts/measure_bucket_contamination.py --text "The quick brown fox jumps over the dog." --modes unmasked,adain,adain+lstm
 ```
 
@@ -64,7 +65,7 @@ With everything masked the PyTorch sweep is flat to the last digit at every fill
 
 Duration model, same machine, production policy, warm medians of 10 after 3 warmups: stage 63 → 9 ms at 44 tokens and 615 → 43 ms at 476 tokens; end to end 110 → 56 ms and 1,050 → 476 ms; first load and compile at 476 tokens 567 → 5 s; peak RSS 3,051 → 585 MB; export of the four padded sizes 1,248 → 56 s. Per-token durations match PyTorch fp32 on all 1,241 tokens of the seven inputs.
 
-Regression test: `uv run --no-sync pytest -q tests/test_masked_bilstm.py tests/test_adain1d_mask.py tests/test_export_wrappers_shapes.py` (the last converts the mask alignment at the 30 s axes to fp16 Core ML and requires the exact PyTorch mask back).
+Regression test: `uv run --no-sync python -m pytest -q tests/test_masked_bilstm.py tests/test_adain1d_mask.py tests/test_export_wrappers_shapes.py` (the last converts the mask alignment at the 30 s axes to fp16 Core ML and requires the exact PyTorch mask back).
 
 ### Investigation Log
 

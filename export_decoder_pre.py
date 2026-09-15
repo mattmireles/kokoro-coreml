@@ -65,11 +65,10 @@ class DecoderPreWrapper(nn.Module):
 
     Runs F0_conv + N_conv + encode + decode blocks to produce x_pre.
 
-    ``mask`` is an optional (B, 1, frame_count) validity mask threaded through
-    every ``AdainResBlk1d`` call; ``decode[-1]`` upsamples 2x, so its ``norm2``
-    sees the 2x-repeated mask. On the exported package ``mask`` carries an
-    all-ones ``default_value``, which keeps it optional for existing consumers.
-    All-ones means full fill: a caller that pads must pass the real mask.
+    ``mask`` is a (B, 1, frame_count) validity mask threaded through every
+    ``AdainResBlk1d`` call; ``decode[-1]`` upsamples 2x, so its ``norm2`` sees
+    the 2x-repeated mask. The exported package requires this input because
+    omission silently restores padding-contaminated statistics.
     """
 
     def __init__(self, decoder):
@@ -86,7 +85,7 @@ class DecoderPreWrapper(nn.Module):
         f0: torch.FloatTensor,    # (1, 1, full_f0_len)
         n_input: torch.FloatTensor,     # (1, 1, full_f0_len)
         ref_s: torch.FloatTensor, # (1, 256)
-        mask: torch.Tensor | None = None,  # (1, 1, frame_count) float, optional
+        mask: torch.Tensor | None = None,  # internal full-fill fallback; exported input is required
     ) -> torch.Tensor:
         s = ref_s[:, :128]  # baseline embedding
 
@@ -97,17 +96,20 @@ class DecoderPreWrapper(nn.Module):
         x = self.encode_block(x, s, m=mask, m_up=mask)
         asr_res = self.asr_res(asr)
 
-        mask_up = mask.repeat_interleave(2, dim=2) if mask is not None else None
-
         res = True
+        current_mask = mask
         for block in self.decode:
             if res:
                 x = torch.cat([x, asr_res, F0, N], dim=1)
+            output_mask = (
+                current_mask.repeat_interleave(2, dim=2)
+                if current_mask is not None and block.upsample_type != "none"
+                else current_mask
+            )
+            x = block(x, s, m=current_mask, m_up=output_mask)
+            current_mask = output_mask
             if block.upsample_type != "none":
-                x = block(x, s, m=mask, m_up=mask_up)
                 res = False
-            else:
-                x = block(x, s, m=mask, m_up=mask)
 
         return x
 
@@ -166,11 +168,9 @@ def export_decoder_pre(bucket_sec: int, output_dir: Path | None = None) -> Path 
                 ct.TensorType(name="f0", shape=(1, 1, full_f0_len), dtype=np.float32),
                 ct.TensorType(name="n_input", shape=(1, 1, full_f0_len), dtype=np.float32),
                 ct.TensorType(name="ref_s", shape=(1, 256), dtype=np.float32),
-                # The all-ones default keeps `mask` optional for existing consumers.
-                # It means full fill: a caller that pads and omits the mask gets
-                # the padding contamination back, silently.
-                ct.TensorType(name="mask", shape=(1, 1, frame_count), dtype=np.float32,
-                              default_value=np.ones((1, 1, frame_count), dtype=np.float32)),
+                # Required: omitting the validity mask silently restores the
+                # padding contamination this export exists to remove.
+                ct.TensorType(name="mask", shape=(1, 1, frame_count), dtype=np.float32),
             ],
             outputs=[
                 ct.TensorType(name="x_pre"),
