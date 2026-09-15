@@ -44,7 +44,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     import torch
 
     manifest, tensors = load_tensor_dump(args.tensor_dump)
-    required = ["har_source", "x_pre_padded", "ref_s", "waveform_raw_trimmed"]
+    required = ["har_source", "x_pre_padded", "ref_s", "waveform"]
     missing = [name for name in required if name not in tensors]
     if missing:
         raise SystemExit(f"tensor dump missing required tensors: {missing}")
@@ -56,7 +56,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     )
     recomputed_har[:, NYQUIST_HAR_CHANNEL, :] = exact_nyquist
 
-    reference_waveform = tensors["waveform_raw_trimmed"].reshape(-1)
+    reference_waveform = tensors["waveform"].reshape(-1)
     rows: list[dict[str, Any]] = []
     with torch.no_grad():
         for pad_har_to in args.pad_har_to:
