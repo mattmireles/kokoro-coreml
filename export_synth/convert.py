@@ -269,11 +269,16 @@ def export_synthesizers(
             # Decoder-only buckets follow runtime audio geometry, not trace_length.
             # Generator upsamples each F0 step by `f0_upsamp.scale_factor` audio samples.
             #
-            # GeneratorFromHar starts after DecoderPre. Its iSTFT tail emits half
-            # as many samples as the F0/HAR geometry nominally covers, so
-            # decoder-har exports must trace with 2x internal geometry for the
-            # package name to mean "can emit N seconds of waveform."
-            geometry_samples = bucket_samples * 2 if mode == "decoder-har" else bucket_samples
+            # Frame rates: the F0/N contours and `har` sit on the 80 Hz axis
+            # (F0 length = samples / 300, har frames = 60 * F0 length + 1); the
+            # decoder stack runs at 40 Hz behind the stride-2 F0_conv, and the
+            # last decode block upsamples 2x, so `x_pre` is back on the 80 Hz
+            # axis: twice `frame_count`, not `frame_count`. Earlier exports
+            # traced `x_pre` at `frame_count`, got half-length audio, and
+            # compensated by doubling the whole geometry, which left `har` twice
+            # as long as the generator can use (the runtime zero-padded the
+            # second half and the generator sliced it off after `noise_res`).
+            geometry_samples = bucket_samples
             f0_samples_per_step = int(round(float(kmodel.decoder.generator.f0_upsamp.scale_factor)))
             if f0_samples_per_step <= 0:
                 raise ValueError(f"invalid f0_upsamp scale: {kmodel.decoder.generator.f0_upsamp.scale_factor}")
@@ -348,11 +353,11 @@ def export_synthesizers(
                     har_c = int(har_rep.shape[1])
                     har_t = int(har_rep.shape[2])
                     dec_out_ch = int(kmodel.decoder.decode[-1].conv1.out_channels)
-                    x_pre = torch.zeros((1, dec_out_ch, frame_count), dtype=torch.float32)
+                    x_pre = torch.zeros((1, dec_out_ch, 2 * frame_count), dtype=torch.float32)
                     har_in = torch.zeros((1, har_c, har_t), dtype=torch.float32)
                     # Trace with an all-ones mask (full fill); the runtime supplies
                     # the real one.
-                    mask_rep = torch.ones((1, 1, frame_count), dtype=torch.float32)
+                    mask_rep = torch.ones((1, 1, 2 * frame_count), dtype=torch.float32)
                     # GeneratorFromHar wraps the Generator conv/AdaIN/iSTFT stack.
                     # The IdentityAdaIN loop above targets AdainResBlk1d (Decoder stack)
                     # only. Generator.resblocks and noise_res use AdaINResBlock1 — a
@@ -420,9 +425,9 @@ def export_synthesizers(
                 har_rep = torch.cat([har_spec, har_phase], dim=1)
             har_c = int(har_rep.shape[1])
             har_t = int(har_rep.shape[2])
-            x_pre_shape = (1, dec_out_ch, frame_count)
+            x_pre_shape = (1, dec_out_ch, 2 * frame_count if mode == "decoder-har" else frame_count)
             har_shape = (1, har_c, har_t)
-            mask_shape = (1, 1, frame_count)
+            mask_shape = (1, 1, 2 * frame_count) if mode == "decoder-har" else (1, 1, frame_count)
         elif mode == "full":
             d_channels = int(d.shape[1])
             t_en_channels = int(t_en.shape[1])

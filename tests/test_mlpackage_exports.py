@@ -43,7 +43,8 @@ def test_decoder_har_post_bucket_shape_matches_advertised_duration(bucket_sec):
     post_outputs = {o.name: _multiarray_shape(o) for o in post_spec.description.output}
     pre_outputs = {o.name: _multiarray_shape(o) for o in pre_spec.description.output}
 
-    expected_har_time = bucket_sec * 24_000 * 2 // 5 + 1
+    # har is the STFT of the 80 Hz harmonic source at hop 5: samples / 5 + 1.
+    expected_har_time = bucket_sec * 24_000 // 5 + 1
     assert post_inputs["x_pre"][-1] == pre_outputs["x_pre"][-1]
     assert post_inputs["har"][-1] == expected_har_time
     assert post_outputs["waveform"][-1] >= bucket_sec * 24_000
