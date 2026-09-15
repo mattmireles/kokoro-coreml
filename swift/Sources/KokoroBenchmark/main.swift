@@ -315,7 +315,8 @@ func runPipeline(
     weights: HnsfWeights,
     cache: ModelCache,
     wavOutputPath: String? = nil,
-    tensorDumpPath: String? = nil
+    tensorDumpPath: String? = nil,
+    durationTolerance: Double? = 0.02
 ) throws -> Data {
     var tensorDump: TensorDumpWriter? = nil
     if let tensorDumpPath {
@@ -418,7 +419,8 @@ func runPipeline(
     try validateDurationAgreement(
         inputKey: inputKey,
         canonical: benchInput.canonical_duration_s,
-        observed: observedDur
+        observed: observedDur,
+        toleranceFraction: durationTolerance
     )
 
     return try JSONSerialization.data(withJSONObject: resultRecord, options: [.sortedKeys])
@@ -431,7 +433,8 @@ func runSingleShot(modelsDir: String, inputsDir: String, hnsfWeightsPath: String
                     tensorDumpPath: String?,
                     warmupCount: Int,
                     computeUnits: MLComputeUnits = .all,
-                    stagedComputeUnits: Bool = false) throws {
+                    stagedComputeUnits: Bool = false,
+                    durationTolerance: Double? = 0.02) throws {
     let weightsData = try Data(contentsOf: URL(fileURLWithPath: hnsfWeightsPath))
     let weights = try JSONDecoder().decode(HnsfWeights.self, from: weightsData)
 
@@ -453,7 +456,8 @@ func runSingleShot(modelsDir: String, inputsDir: String, hnsfWeightsPath: String
         weights: weights,
         cache: cache,
         wavOutputPath: wavPath,
-        tensorDumpPath: tensorDumpPath
+        tensorDumpPath: tensorDumpPath,
+        durationTolerance: durationTolerance
     )
 
     let jsonString = String(data: jsonData, encoding: .utf8)!
@@ -570,7 +574,8 @@ func runGeneratorInputDump(modelsDir: String, tensorInputDumpPath: String,
 
 func runBatch(modelsDir: String, inputsDir: String, hnsfWeightsPath: String,
               computeUnits: MLComputeUnits = .all,
-              stagedComputeUnits: Bool = false) throws {
+              stagedComputeUnits: Bool = false,
+              durationTolerance: Double? = 0.02) throws {
     let weightsData = try Data(contentsOf: URL(fileURLWithPath: hnsfWeightsPath))
     let weights = try JSONDecoder().decode(HnsfWeights.self, from: weightsData)
     let cache = ModelCache(
@@ -614,7 +619,8 @@ func runBatch(modelsDir: String, inputsDir: String, hnsfWeightsPath: String,
                 seed: seed,
                 weights: weights,
                 cache: cache,
-                wavOutputPath: cmd.wav
+                wavOutputPath: cmd.wav,
+                durationTolerance: durationTolerance
             )
 
             let jsonString = String(data: jsonData, encoding: .utf8)!
@@ -663,6 +669,7 @@ func main() throws {
     var seed: UInt64 = 42
     var batchMode = false
     var computeUnitsStr = "all"
+    var durationTolerance: Double? = 0.02
 
     var i = 1
     while i < args.count {
@@ -693,6 +700,10 @@ func main() throws {
             batchMode = true
         case "--compute-units":
             i += 1; computeUnitsStr = args[i]
+        case "--no-duration-check":
+            // Forced-bucket sweeps render an utterance in a bucket its
+            // canonical duration would not select; the length is still right.
+            durationTolerance = nil
         default:
             break
         }
@@ -702,7 +713,7 @@ func main() throws {
     guard let modelsDir = modelsDir,
           let inputsDir = inputsDir,
           let hnsfWeightsPath = hnsfWeightsPath else {
-        fputs("Usage: kokoro-bench --models-dir DIR --inputs-dir DIR --hnsf-weights FILE [--input-key KEY | --batch]\n", stderr)
+        fputs("Usage: kokoro-bench --models-dir DIR --inputs-dir DIR --hnsf-weights FILE [--input-key KEY | --batch] [--no-duration-check]\n", stderr)
         exit(1)
     }
 
@@ -734,7 +745,8 @@ func main() throws {
     if batchMode {
         try runBatch(modelsDir: modelsDir, inputsDir: inputsDir, hnsfWeightsPath: hnsfWeightsPath,
                      computeUnits: computeUnits,
-                     stagedComputeUnits: stagedComputeUnits)
+                     stagedComputeUnits: stagedComputeUnits,
+                     durationTolerance: durationTolerance)
     } else if let generatorInputDumpPath {
         try runGeneratorInputDump(
             modelsDir: modelsDir,
@@ -756,7 +768,8 @@ func main() throws {
                           tensorDumpPath: tensorDumpPath,
                           warmupCount: warmupCount,
                           computeUnits: computeUnits,
-                          stagedComputeUnits: stagedComputeUnits)
+                          stagedComputeUnits: stagedComputeUnits,
+                          durationTolerance: durationTolerance)
     }
 }
 

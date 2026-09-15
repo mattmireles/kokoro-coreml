@@ -959,6 +959,8 @@ The exporter now supports targeted re-export with
 `KOKORO_DURATION_EXPORT_SIZES` and skips expensive runtime model loading for
 large shapes with `skip_model_load=True` when prediction validation is disabled.
 
+2026-09-15: `validateDurationAgreement` narrowed from 15% to 2% now that Core ML durations match PyTorch per token (the 15% band was set when the padded LSTM spoke ~10% short and would still pass that drift); `kokoro-bench --no-duration-check` skips it for forced-bucket sweeps, whose fixture stores the target bucket's duration as canonical. The Python harness's `CONFIG_F_DURATION_TOLERANCE_FRACTION` follows.
+
 ### Verification
 
 Commands used:
