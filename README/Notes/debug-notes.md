@@ -81,7 +81,7 @@ Regression test: `uv run --no-sync python -m pytest -q tests/test_masked_bilstm.
 
 - **Hypothesis:** The "thin" 15 s utterance in the 30 s bucket (over15, 50% fill) heard from commit 2 on is fp16 losing the masked statistics on the 144k-frame generator axes.
 - **Tried:** Band energies of the raw renders (commit 2 vs commit 1: RMS 0.78x, 400-3000 Hz −3 dB, uniform along the clip, no other input moved); the PyTorch masking ladder on the same text (clean); PyTorch fp32 of the exported wrapper on the dumped Core ML inputs (clean) against the package on the same inputs (−0.4 dB SNR on GPU and on CPU, 46.6 dB with the mask omitted); the masked `AdaIN1d` alone at the real shapes and activations in fp16 (55-69 dB on every axis); alignment probes from the input mask (exact) and from the stage-0 mask (24000 → 144001: 89,959 valid frames for 72,241; 24000 → 288001: 178,958 for 144,481 at 50% fill and 144,002 for 72,001 at 25%, so every partial mask in the 30 s package was wrong on at least one axis).
-- **Outcome:** Not fp16. `_align_mask_to` chained from the 24000-frame stage-0 mask, and `j * 24000` passes 2^31 at j = 89,478; coremltools evaluates the index in int32 (const-folded at 144,001, `range_1d`/`mul`/`floor_div` at runtime at 288,001), so the wrapped products marked padded frames valid. The 15 s package's largest product (12000 x 144001) fits. The index is now a numpy constant built at trace time; the converted alignment is exact on CPU, GPU and ANE at every generator axis, and the re-exported 30 s package matches PyTorch fp32 at 44-47 dB for every mask length from 12% to 100% fill where it had been -0.4 dB at 50%. A `clamp(max=)` variant fails to compile when coremltools does not fold it (`ios16.clip` beta type), so the clamp is numpy's. The 2x `har` axis of the decoder-har export (288,001 frames for a 2,400-frame `x_pre`, zero-padded by Swift and sliced after `noise_res`) is pre-existing and changes the PyTorch output by under 0.1 dB when sliced first; left alone.
+- **Outcome:** Not fp16. `_align_mask_to` chained from the 24000-frame stage-0 mask, and `j * 24000` passes 2^31 at j = 89,478; coremltools evaluates the index in int32 (const-folded at 144,001, `range_1d`/`mul`/`floor_div` at runtime at 288,001), so the wrapped products marked padded frames valid. The 15 s package's largest product (12000 x 144001) fits. The index is now a numpy constant built at trace time; the converted alignment is exact on CPU, GPU and ANE at every generator axis, and the re-exported 30 s package matches PyTorch fp32 at 44-47 dB for every mask length from 12% to 100% fill where it had been -0.4 dB at 50%. A `clamp(max=)` variant fails to compile when coremltools does not fold it (`ios16.clip` beta type), so the clamp is numpy's. The 2x `har` axis of the decoder-har export (288,001 frames for a 2,400-frame `x_pre`, zero-padded by Swift and sliced after `noise_res`) was pre-existing; it is corrected separately (see the HAR-post issue below).
 
 - **Hypothesis:** Core ML output is about 3x louder than PyTorch and clips.
 - **Tried:** compared `kokoro-bench --wav` output with the `--dump-tensors` waveform and the PyTorch reference.
@@ -347,6 +347,19 @@ Changes:
   `DurationModel` reuses it.
 - Re-exported the full HAR-post bucket set with the corrected 2x internal
   geometry.
+- 2026-09-15: the 2x geometry was a compensation for the wrong axis, not a
+  property of the generator. `x_pre` leaves decoder-pre on the 80 Hz axis
+  (the last decode block upsamples 2x), so it must be traced at twice the
+  40 Hz `frame_count`; doubling the whole geometry instead left `har` at
+  twice its native length (288,001 frames for the 30 s package where the
+  generator uses 144,001), zero-padded by the runtime and sliced off after
+  `noise_res`, whose statistics still saw the zero half at full fill. The
+  export now traces `x_pre` at `2 * frame_count` with `har` at its native
+  length: generator 153 → 131 ms at 15 s and 300 → 256 ms at 30 s on an
+  M3 Max, and the output moves closer to the native PyTorch render
+  (log-spectral correlation 0.980 → 0.983 at 15 s, 0.978 → 0.981 at 30 s)
+  while reproducing PyTorch fp32 of the wrapper at 44-46 dB. Package
+  contract: `har` input halves; the runtime reads the length from the model.
 
 ### Verification
 
