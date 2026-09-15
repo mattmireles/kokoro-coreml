@@ -155,12 +155,19 @@ private func isContiguousRowMajor(shape: [Int], strides: [Int]) -> Bool {
 
 /// Fail fast when Config F produces an audio length that cannot be the same
 /// utterance measured by the bakeoff manifest.
+///
+/// Core ML durations now match the PyTorch reference per token, so the band
+/// only has to absorb fp16 rounding of a frame or two at duration boundaries
+/// (25 ms each); 2% is loose against that and tight against a wrong-length
+/// render. Pass `nil` to skip the check, e.g. when a bench deliberately forces
+/// an utterance into a larger bucket.
 public func validateDurationAgreement(
     inputKey: String,
     canonical: Double?,
     observed: Double,
-    toleranceFraction: Double = 0.15
+    toleranceFraction: Double? = 0.02
 ) throws {
+    guard let toleranceFraction else { return }
     guard let canonical, canonical > 0, observed > 0 else { return }
     let delta = abs(observed - canonical) / canonical
     if delta > toleranceFraction {

@@ -103,7 +103,9 @@ BAKEOFF_INPUTS: dict[str, str] = {
 
 # Maximum canonical audio duration (seconds).  prepare-inputs hard-fails above this.
 MAX_CANONICAL_DURATION_S = 30.0
-CONFIG_F_DURATION_TOLERANCE_FRACTION = 0.15
+# Core ML durations match the PyTorch reference per token; 2% absorbs fp16
+# rounding of a frame or two and still rejects a wrong-length render.
+CONFIG_F_DURATION_TOLERANCE_FRACTION = 0.02
 
 # Headline config IDs valid for ``run --configs``.
 HEADLINE_CONFIGS = {"a", "b", "c", "d", "e", "f", "g"}
