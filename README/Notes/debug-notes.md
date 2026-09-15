@@ -116,8 +116,8 @@ uv run --no-sync python scripts/measure_bucket_contamination.py --text "Hello th
 
 **First spotted:** 2026-05-26
 **Status:** Resolved (2026-07-14: suppression narrowed to punctuation tokens
-only after the whitespace rule was found to cut real speech; see the
-2026-07-14 log entry below and
+only after the whitespace rule was found to cut real speech; 2026-09-15: the
+fade removed entirely, see the last log entry; see also
 `README/Notes/cs1-audio-quality-evaluation-2026-07-14.md`)
 
 ### Summary
@@ -247,9 +247,30 @@ adjacent-space spans for `. (2023) —`, commas, and final period changed to
   audibility and below pause-measurement thresholds).
 - Post-fix, the 15s bucket passes blind paired lineups 2/2.
 
+**2026-09-15 — fade removed**
+
+- With bucket padding masked out of every statistic (the mask-aware bucketing
+  branch), the pre-fade Core ML output inside punctuation-owned spans matches
+  the PyTorch reference: on the seven frozen inputs plus the original
+  click-report text and a punctuation-heavy one (46 spans, 4.2 s), every span
+  with any reference content is within 3 dB of PyTorch, the four short inputs'
+  spans are digital silence in both, and no span exceeds the reference by more
+  than 2.9 dB. On upstream main before that branch the residue was −37 to −67
+  dBFS on the short inputs and one −18.6 dBFS event on the 15 s utterance in
+  the 30 s bucket, still below the May click level.
+- The fade was also deleting speech: PyTorch itself renders −8 to −25 dBFS
+  onsets and decays inside 8 of those spans (400 ms), the same class of cut the
+  CS1 pass caught for whitespace, shorter. Envelope correlation to PyTorch
+  moves by under 0.0002 either way, so the fade was neither protecting nor
+  measurably helping anything.
+- Change: `suppressPunctuationTokenAudio`, `silentPunctuationTokenIds`,
+  `punctuationFadeSamples` and the `waveform_raw_trimmed` dump are gone; the
+  trimmed generator output is the final waveform. Cost was 0.2 to 1.5 ms per
+  synthesis inside the trim stage.
+
 ### If This Recurs
 
-- [ ] Dump `tokens`, `pred_dur_valid`, `waveform_raw_trimmed`, and `waveform`
+- [ ] Dump `tokens`, `pred_dur_valid`, and `waveform`
       for the affected input.
 - [ ] Convert punctuation token frames to sample spans with
       `samplesPerDurationFrame = 600` at 24 kHz.
