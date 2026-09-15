@@ -24,7 +24,7 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 sys.path.insert(0, str(_ROOT))
 
-from audio_parity_tensor_io import load_tensor_dump  # noqa: E402
+from audio_parity_tensor_io import load_tensor_dump, mask_aware_inputs  # noqa: E402
 from probe_generator_exact_geometry import _compute_units, _load_kmodel, _metrics  # noqa: E402
 from probe_generator_split import _duration_label_from_dump, _precision_arg, _remove_existing_package  # noqa: E402
 
@@ -231,11 +231,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     fused = ct.models.MLModel(str(args.fused_package), compute_units=_compute_units(ct, args.fused_compute_units))
     candidate = ct.models.MLModel(str(package), compute_units=_compute_units(ct, args.compute_units))
+    fused_feed = mask_aware_inputs(
+        fused,
+        {"x_pre": x_pre, "ref_s": ref_s, "har": har},
+        tensors,
+    )
 
-    baseline_first, baseline_first_ms = _predict(fused, {"x_pre": x_pre, "ref_s": ref_s, "har": har})
+    baseline_first, baseline_first_ms = _predict(fused, fused_feed)
     candidate_first, candidate_first_ms = _predict(candidate, {"x_pre": x_pre, "ref_s": ref_s, "har_source": har_source})
     for _ in range(max(0, args.warmup)):
-        _predict(fused, {"x_pre": x_pre, "ref_s": ref_s, "har": har})
+        _predict(fused, fused_feed)
         _predict(candidate, {"x_pre": x_pre, "ref_s": ref_s, "har_source": har_source})
 
     baseline_times: list[float] = []
@@ -243,7 +248,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     last_baseline = baseline_first
     last_candidate = candidate_first
     for _ in range(max(1, args.iterations)):
-        last_baseline, baseline_ms = _predict(fused, {"x_pre": x_pre, "ref_s": ref_s, "har": har})
+        last_baseline, baseline_ms = _predict(fused, fused_feed)
         last_candidate, candidate_ms = _predict(candidate, {"x_pre": x_pre, "ref_s": ref_s, "har_source": har_source})
         baseline_times.append(baseline_ms)
         candidate_times.append(candidate_ms)

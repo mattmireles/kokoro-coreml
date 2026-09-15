@@ -126,14 +126,28 @@ class AdaIN1d(nn.Module):
         self.eps = 1e-5
         self.fc = nn.Linear(style_dim, num_features * 2)
 
-    def forward(self, x, s):
+    def forward(self, x, s, m=None):
         # Apply adaptive instance normalization with style conditioning.
         # Manual per-channel normalization to keep shapes explicit for exporters.
         # x: (B, C, T), s: (B, style_dim)
+        # m: optional (B, 1, T) float mask, 1.0 on valid frames, 0.0 on bucket
+        #    padding. Bucketed export pads the time axis to a fixed length, and a
+        #    mean/var over that axis folds the padding into the statistics the
+        #    valid region is normalised by. With a mask both moments are taken
+        #    over valid frames only; with None the path is unchanged.
         B, C, T = x.shape
-        # Compute channel-wise mean/var over time
-        mean = x.mean(dim=2, keepdim=True)
-        var = x.var(dim=2, unbiased=False, keepdim=True)
+        if m is None:
+            mean = x.mean(dim=2, keepdim=True)
+            var = x.var(dim=2, unbiased=False, keepdim=True)
+        else:
+            # Ratios of means, not sums over a count: the fp16 export runs this
+            # on generator axes up to 144k frames, where a sum of squares
+            # overflows and a 1/valid pre-scale drops into fp16 subnormals.
+            # The clamp only guards an all-padding mask against division by zero.
+            fill = m.mean(dim=2, keepdim=True).clamp(min=1e-4)
+            mean = (x * m).mean(dim=2, keepdim=True) / fill
+            diff = (x - mean) * m
+            var = (diff * diff).mean(dim=2, keepdim=True) / fill
         x_norm = (x - mean) / torch.sqrt(var + self.eps)
 
         # Project style to gamma/beta: (B, 2C) -> (B, C, 1)
@@ -147,7 +161,13 @@ class AdaIN1d(nn.Module):
         # Expand across time to avoid implicit broadcasting pitfalls
         gamma_exp = gamma.expand(B, C, T)
         beta_exp = beta.expand(B, C, T)
-        return (1.0 + gamma_exp) * x_norm + beta_exp
+        out = (1.0 + gamma_exp) * x_norm + beta_exp
+        if m is None:
+            return out
+        # Zero the padded frames as well: the affine leaves beta there, the next
+        # conv reads it across the boundary, and that shifts every later
+        # statistic. Zeros match the implicit padding of a native-length run.
+        return out * m
 
 
 class AdaINResBlock1(nn.Module):
@@ -184,12 +204,14 @@ class AdaINResBlock1(nn.Module):
         self.alpha1 = nn.ParameterList([nn.Parameter(torch.ones(1, channels, 1)) for i in range(len(self.convs1))])
         self.alpha2 = nn.ParameterList([nn.Parameter(torch.ones(1, channels, 1)) for i in range(len(self.convs2))])
 
-    def forward(self, x, s):
+    def forward(self, x, s, m=None):
+        # m: optional (B, 1, T) mask. The convs are stride 1, so one mask
+        # resolution serves both AdaIN calls.
         for c1, c2, n1, n2, a1, a2 in zip(self.convs1, self.convs2, self.adain1, self.adain2, self.alpha1, self.alpha2):
-            xt = n1(x, s)
+            xt = n1(x, s, m)
             xt = xt + (1 / a1) * (torch.sin(a1 * xt) ** 2)  # Snake1D
             xt = c1(xt)
-            xt = n2(xt, s)
+            xt = n2(xt, s, m)
             xt = xt + (1 / a2) * (torch.sin(a2 * xt) ** 2)  # Snake1D
             xt = c2(xt)
             x = xt + x
@@ -507,18 +529,29 @@ class AdainResBlk1d(nn.Module):
             x = self.conv1x1(x)
         return x
 
-    def _residual(self, x, s):
-        x = self.norm1(x, s)
+    def _residual(self, x, s, m=None, m_up=None):
+        """Residual branch; ``norm1`` takes ``m`` at the input axis, ``norm2`` takes
+        ``m_up`` at the post-pool axis.
+
+        No ``m_up or m`` fallback on purpose: on an upsampling block the two
+        differ in length, and a caller that forgets ``m_up`` should fail on the
+        shape rather than normalise over the wrong frames.
+        """
+        x = self.norm1(x, s, m)
         x = self.actv(x)
         x = self.pool(x)
         x = self.conv1(self.dropout(x))
-        x = self.norm2(x, s)
+        x = self.norm2(x, s, m_up)
         x = self.actv(x)
         x = self.conv2(self.dropout(x))
         return x
 
-    def forward(self, x, s):
-        out = self._residual(x, s)
+    def forward(self, x, s, m=None, m_up=None):
+        # m: mask at the input axis; m_up: mask at the output axis (m itself on a
+        # non-upsampling block, m.repeat_interleave(2, dim=2) on an upsampling one).
+        if (m is None) != (m_up is None):
+            raise ValueError("AdainResBlk1d takes both m and m_up, or neither")
+        out = self._residual(x, s, m, m_up)
         out = (out + self._shortcut(x)) * torch.rsqrt(torch.tensor(2.0))
         return out
 

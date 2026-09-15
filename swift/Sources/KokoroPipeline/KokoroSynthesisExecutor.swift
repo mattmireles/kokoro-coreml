@@ -60,6 +60,7 @@ private struct DurationProbe {
     let bucketSec: Int
     let tFrames: Int
     let fullF0Len: Int
+    let validFrames: Int
 }
 
 /// Run the Core ML Kokoro pipeline once.
@@ -206,10 +207,10 @@ public func executeKokoroSynthesis(
     try tensorDump?.writeMLMultiArray(name: "en_padded", array: enPadded)
     try tensorDump?.writeMLMultiArray(name: "s", array: sArray)
 
-    let f0nInput = try MLDictionaryFeatureProvider(dictionary: [
+    let f0nInput = try stageInputs(for: f0nModel, [
         "en": MLFeatureValue(multiArray: enPadded),
         "s": MLFeatureValue(multiArray: sArray),
-    ])
+    ], validFrames: frames, totalFrames: tFrames)
     let f0nOutput = try f0nModel.prediction(from: f0nInput)
     let f0PredArray = f0nOutput.featureValue(for: "F0_pred")!.multiArrayValue!
     let nPredArray = f0nOutput.featureValue(for: "N_pred")!.multiArrayValue!
@@ -251,12 +252,12 @@ public func executeKokoroSynthesis(
     let decRefS = try makeZeroArray2D(dim: PipelineConstants.voiceEmbeddingDim)
     copyInto(array: decRefS, from: request.refS)
 
-    let decPreInput = try MLDictionaryFeatureProvider(dictionary: [
+    let decPreInput = try stageInputs(for: decPreModel, [
         "asr": MLFeatureValue(multiArray: asrPadded),
         "f0": MLFeatureValue(multiArray: f0Array3D),
         "n_input": MLFeatureValue(multiArray: nArray3D),
         "ref_s": MLFeatureValue(multiArray: decRefS),
-    ])
+    ], validFrames: frames, totalFrames: frameCount)
     let decPreOutput = try decPreModel.prediction(from: decPreInput)
     let xPre = decPreOutput.featureValue(for: "x_pre")!.multiArrayValue!
     let t11 = CFAbsoluteTimeGetCurrent()
@@ -336,11 +337,13 @@ public func executeKokoroSynthesis(
     try tensorDump?.writeMLMultiArray(name: "x_pre_padded", array: xPrePadded)
     try tensorDump?.writeMLMultiArray(name: "har_padded", array: harPadded)
 
-    let genInput = try MLDictionaryFeatureProvider(dictionary: [
+    // `x_pre` is at twice the decoder frame rate (decode's last block upsamples
+    // 2x), so the valid region doubles with it.
+    let genInput = try stageInputs(for: genModel, [
         "x_pre": MLFeatureValue(multiArray: xPrePadded),
         "ref_s": MLFeatureValue(multiArray: genRefS),
         "har": MLFeatureValue(multiArray: harPadded),
-    ])
+    ], validFrames: frames * 2, totalFrames: xPreExpectedTime)
     let genOutput = try genModel.prediction(from: genInput)
     let t15 = CFAbsoluteTimeGetCurrent()
     timings.generatorCoreML = t15 - t14
@@ -518,7 +521,8 @@ private func probeDurationAndBucket(
     return DurationProbe(
         bucketSec: bucketSec,
         tFrames: tFrames,
-        fullF0Len: fullF0Len
+        fullF0Len: fullF0Len,
+        validFrames: totalFrames
     )
 }
 
@@ -536,10 +540,10 @@ private func warmModels(
         time: probe.tFrames
     )
     let warmSArr = try makeZeroArray2D(dim: PipelineConstants.styleDim)
-    let warmF0nIn = try MLDictionaryFeatureProvider(dictionary: [
+    let warmF0nIn = try stageInputs(for: f0nModel, [
         "en": MLFeatureValue(multiArray: warmEnArr),
         "s": MLFeatureValue(multiArray: warmSArr),
-    ])
+    ], validFrames: probe.validFrames, totalFrames: probe.tFrames)
     _ = try f0nModel.prediction(from: warmF0nIn)
 
     let decPreModel = try modelProvider.decoderPreModel(bucketSec: probe.bucketSec)
@@ -551,18 +555,21 @@ private func warmModels(
     let warmF0 = try makeZeroArray3D(channels: 1, time: probe.fullF0Len)
     let warmN = try makeZeroArray3D(channels: 1, time: probe.fullF0Len)
     let warmRefS = try makeZeroArray2D(dim: PipelineConstants.voiceEmbeddingDim)
-    let warmDecIn = try MLDictionaryFeatureProvider(dictionary: [
+    let warmDecIn = try stageInputs(for: decPreModel, [
         "asr": MLFeatureValue(multiArray: warmAsr),
         "f0": MLFeatureValue(multiArray: warmF0),
         "n_input": MLFeatureValue(multiArray: warmN),
         "ref_s": MLFeatureValue(multiArray: warmRefS),
-    ])
+    ], validFrames: probe.validFrames, totalFrames: warmFrameCount)
     _ = try decPreModel.prediction(from: warmDecIn)
 
     let genModel = try modelProvider.generatorModel(bucketSec: probe.bucketSec)
     let genShapes = inputShapes(from: genModel)
     var warmGenInputs: [String: MLFeatureValue] = [:]
     for (name, shape) in genShapes {
+        if name == "mask" {
+            continue
+        }
         if shape.count == 3 {
             warmGenInputs[name] = MLFeatureValue(
                 multiArray: try makeZeroArray3D(channels: shape[1], time: shape[2])
@@ -573,7 +580,14 @@ private func warmModels(
             )
         }
     }
-    _ = try genModel.prediction(from: try MLDictionaryFeatureProvider(dictionary: warmGenInputs))
+    let warmGenFrameCount = genShapes["x_pre"]?.last ?? probe.validFrames * 2
+    let warmGenIn = try stageInputs(
+        for: genModel,
+        warmGenInputs,
+        validFrames: probe.validFrames * 2,
+        totalFrames: warmGenFrameCount
+    )
+    _ = try genModel.prediction(from: warmGenIn)
 }
 
 private func decoderPreFrameCount(fullF0Len: Int) -> Int {

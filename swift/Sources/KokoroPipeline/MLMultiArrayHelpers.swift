@@ -460,3 +460,37 @@ public func inputShapes(from model: MLModel) -> [String: [Int]] {
     }
     return result
 }
+
+/// Builds the `(1, 1, totalFrames)` validity mask the mask-aware Core ML stages take:
+/// 1.0 on `[0, validFrames)`, 0.0 on the bucket padding added by `zeroPad3D`.
+///
+/// Without it the model's time-axis statistics fold the padding into the values
+/// the valid region is normalised by. `stageInputs` attaches it to every stage
+/// whose model declares a `mask` input.
+public func makeBucketMask(validFrames: Int, totalFrames: Int) throws -> MLMultiArray {
+    let mask = try makeZeroArray3D(channels: 1, time: totalFrames)
+    let ptr = mask.dataPointer.assumingMemoryBound(to: Float.self)
+    let valid = min(max(validFrames, 0), totalFrames)
+    for i in 0..<valid {
+        ptr[i] = 1.0
+    }
+    return mask
+}
+
+/// Builds one padded Core ML stage's inputs, attaching a validity mask whenever
+/// the artifact declares one. Newly exported artifacts require the input;
+/// legacy maskless artifacts remain loadable during the artifact rollout.
+public func stageInputs(
+    for model: MLModel,
+    _ features: [String: MLFeatureValue],
+    validFrames: Int,
+    totalFrames: Int
+) throws -> MLDictionaryFeatureProvider {
+    var features = features
+    if model.modelDescription.inputDescriptionsByName["mask"] != nil {
+        features["mask"] = MLFeatureValue(
+            multiArray: try makeBucketMask(validFrames: validFrames, totalFrames: totalFrames)
+        )
+    }
+    return try MLDictionaryFeatureProvider(dictionary: features)
+}

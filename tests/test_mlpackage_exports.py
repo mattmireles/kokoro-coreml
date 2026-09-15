@@ -1,4 +1,4 @@
-"""Optional integration tests: load shipped CoreML packages and assert I/O contracts.
+"""Core ML export contract tests, plus optional shipped-package integration.
 
 Skipped when ``coreml/kokoro_duration.mlpackage`` is absent or coremltools is not installed.
 """
@@ -128,17 +128,25 @@ def test_kokoro_decoder_only_3s_mlpackage_loads_and_predict_shapes():
 
 @pytest.mark.skipif(not _DECODER_HAR_POST_3S_PKG.is_dir(), reason="coreml/kokoro_decoder_har_post_3s.mlpackage not in tree")
 def test_kokoro_decoder_har_post_3s_mlpackage_loads_and_predict_shapes():
-    """Post-hn-nsf tail: x_pre + ref_s + har -> waveform."""
+    """Post-hn-nsf tail: x_pre + ref_s + har + mask -> waveform.
+
+    The mask-aware export added a `mask` input. The shape contract assertion still uses a
+    subset (>=) so older packages without `mask` are tolerated for the
+    contract check, but predict() requires every spec input to be supplied.
+    """
     model = ct.models.MLModel(str(_DECODER_HAR_POST_3S_PKG))
     spec = model.get_spec()
     inputs = {i.name: i for i in spec.description.input}
     assert set(inputs) >= {"x_pre", "ref_s", "har"}
 
     test_inputs = {}
-    for name in ("x_pre", "ref_s", "har"):
+    for name in inputs:
         shape = _multiarray_shape(inputs[name])
         assert shape, f"missing static shape for {name}"
-        test_inputs[name] = np.zeros(shape, dtype=np.float32)
+        # `mask` is full-fill (ones) at the contract level; per-fill behavior
+        # is gated by the parity harness instead.
+        fill = 1.0 if name == "mask" else 0.0
+        test_inputs[name] = np.full(shape, fill, dtype=np.float32)
 
     out = model.predict(test_inputs)
     assert isinstance(out, dict)
@@ -160,10 +168,11 @@ def test_kokoro_decoder_har_post_10s_mlpackage_loads_and_predict_shapes():
     assert set(inputs) >= {"x_pre", "ref_s", "har"}
 
     test_inputs = {}
-    for name in ("x_pre", "ref_s", "har"):
+    for name in inputs:
         shape = _multiarray_shape(inputs[name])
         assert shape, f"missing static shape for {name}"
-        test_inputs[name] = np.zeros(shape, dtype=np.float32)
+        fill = 1.0 if name == "mask" else 0.0
+        test_inputs[name] = np.full(shape, fill, dtype=np.float32)
 
     out = model.predict(test_inputs)
     assert isinstance(out, dict)
@@ -174,3 +183,29 @@ def test_kokoro_decoder_har_post_10s_mlpackage_loads_and_predict_shapes():
     expected = _multiarray_shape(out_specs["waveform"])
     if expected:
         assert tuple(waveform.shape) == expected
+
+
+_DECODER_PRE_10S_PKG = _ROOT / "coreml" / "kokoro_decoder_pre_10s.mlpackage"
+_F0NTRAIN_T400_PKG = _ROOT / "coreml" / "kokoro_f0ntrain_t400.mlpackage"
+_GENERATOR_10S_PKG = _ROOT / "coreml" / "kokoro_decoder_har_post_10s.mlpackage"
+
+
+@pytest.mark.parametrize(
+    "pkg",
+    [
+        pytest.param(_DECODER_PRE_10S_PKG, id="decoder_pre_10s"),
+        pytest.param(_F0NTRAIN_T400_PKG, id="f0ntrain_t400"),
+        pytest.param(_GENERATOR_10S_PKG, id="generator_10s"),
+    ],
+)
+def test_mask_input_is_required_on_exported_package(pkg):
+    """Mask-aware artifacts must fail loudly when callers omit validity."""
+    if not pkg.exists():
+        pytest.skip(f"{pkg.name} not present")
+    spec = ct.models.MLModel(str(pkg), skip_model_load=True).get_spec()
+    by_name = {i.name: i for i in spec.description.input}
+    assert "mask" in by_name, f"{pkg.name} declares no mask input"
+    assert not by_name["mask"].type.isOptional, (
+        f"{pkg.name} declares `mask` optional, which lets callers silently "
+        "restore padding-contaminated inference"
+    )

@@ -60,6 +60,55 @@ def _summary(array: np.ndarray) -> dict[str, Any]:
     }
 
 
+def bucket_mask_from_tensors(
+    tensors: dict[str, np.ndarray],
+    target_frames: int,
+    *,
+    frame_scale: int = 2,
+) -> np.ndarray:
+    """Build a padded-stage mask from a dump's valid duration frames.
+
+    Generator inputs follow the decoder's final 2x upsample. Decoder-pre
+    callers pass ``frame_scale=1``.
+    """
+    if "pred_dur_valid" not in tensors:
+        raise KeyError("tensor dump has no pred_dur_valid for required mask construction")
+    valid_frames = int(np.asarray(tensors["pred_dur_valid"], dtype=np.int64).sum()) * frame_scale
+    mask = np.zeros((1, 1, target_frames), dtype=np.float32)
+    mask[:, :, : min(max(valid_frames, 0), target_frames)] = 1.0
+    return mask
+
+
+def mask_aware_inputs(
+    model: Any,
+    inputs: dict[str, np.ndarray],
+    tensors: dict[str, np.ndarray],
+    *,
+    frame_scale: int = 2,
+) -> dict[str, np.ndarray]:
+    """Attach the required mask when a loaded Core ML artifact declares it."""
+    shapes = {
+        item.name: tuple(int(value) for value in item.type.multiArrayType.shape)
+        for item in model.get_spec().description.input
+    }
+    mask = bucket_mask_from_tensors(tensors, shapes["mask"][-1], frame_scale=frame_scale) if "mask" in shapes else None
+    return inputs_with_mask_if_declared(model, inputs, mask)
+
+
+def inputs_with_mask_if_declared(
+    model: Any,
+    inputs: dict[str, np.ndarray],
+    mask: np.ndarray | None,
+) -> dict[str, np.ndarray]:
+    """Add a precomputed mask only to artifacts that declare the input."""
+    input_names = {item.name for item in model.get_spec().description.input}
+    if "mask" not in input_names:
+        return inputs
+    if mask is None:
+        raise ValueError("mask-aware Core ML artifact requires a validity mask")
+    return {**inputs, "mask": mask}
+
+
 class TensorDumpWriter:
     """Write tensors to a parity dump directory."""
 

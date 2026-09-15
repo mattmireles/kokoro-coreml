@@ -23,7 +23,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from scripts.audio_parity_tensor_io import load_tensor_dump  # noqa: E402
+from scripts.audio_parity_tensor_io import load_tensor_dump, mask_aware_inputs  # noqa: E402
 from scripts.probe_generator_exact_geometry import _compute_units, _metrics  # noqa: E402
 
 
@@ -40,8 +40,9 @@ def _package(root: Path, bucket: str) -> Path:
 
 
 def _inputs(tensors: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    x_pre = tensors["x_pre_padded"].astype(np.float32)
     return {
-        "x_pre": tensors["x_pre_padded"].astype(np.float32),
+        "x_pre": x_pre,
         "ref_s": tensors["ref_s"].astype(np.float32),
         "har": tensors["har_padded"].astype(np.float32),
     }
@@ -72,14 +73,15 @@ def _benchmark_bucket(args: argparse.Namespace, bucket: str) -> dict[str, Any]:
     warm_times: dict[str, list[float]] = {}
     outputs: dict[str, np.ndarray] = {}
     for name, model in models.items():
-        first_out, first = _predict(model, inputs)
+        model_inputs = mask_aware_inputs(model, inputs, tensors)
+        first_out, first = _predict(model, model_inputs)
         first_ms[name] = first
         last = first_out
         for _ in range(max(0, args.warmup)):
-            last, _ = _predict(model, inputs)
+            last, _ = _predict(model, model_inputs)
         times: list[float] = []
         for _ in range(max(1, args.iterations)):
-            last, elapsed = _predict(model, inputs)
+            last, elapsed = _predict(model, model_inputs)
             times.append(elapsed)
         outputs[name] = last
         warm_times[name] = times

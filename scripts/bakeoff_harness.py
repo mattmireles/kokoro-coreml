@@ -846,7 +846,7 @@ def _run_config_a_timed(
     # Stage 2: CPU tensor prep (decoder pre-stack + hn-nsf).
     dec = ctx.pipe.pytorch_model.decoder
     t0 = time.perf_counter()
-    x_pre_np, ref_s, har_np, _t_check, _fc = build_decoder_har_post_inputs_np(
+    x_pre_np, ref_s, har_np, _t_check, _fc, mask_np = build_decoder_har_post_inputs_np(
         dec, vi, sec, asr_len, har_t, warn_geometry=False
     )
     t_har_builder_cpu = time.perf_counter() - t0
@@ -856,6 +856,8 @@ def _run_config_a_timed(
     # Stage 2b: CPU dict assembly (negligible but counted for completeness).
     t0 = time.perf_counter()
     inputs = {"x_pre": x_pre_np, "ref_s": ref_s, "har": har_np}
+    if "mask" in shapes:
+        inputs["mask"] = mask_np
     t_decoder_pre_cpu = time.perf_counter() - t0
 
     # Stage 3: Core ML predict.

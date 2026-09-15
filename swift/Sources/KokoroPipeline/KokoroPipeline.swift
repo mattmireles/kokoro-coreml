@@ -434,6 +434,7 @@ public class KokoroPipeline: KokoroModelProvider {
 public enum PipelineError: Error, LocalizedError {
     case noBucketAvailable
     case modelNotLoaded(String)
+    case modelContractMismatch(String)
     case inputTooLong(tokens: Int, maxTokens: Int)
 
     public var errorDescription: String? {
@@ -442,6 +443,8 @@ public enum PipelineError: Error, LocalizedError {
             return "No bucket available for the requested duration"
         case .modelNotLoaded(let name):
             return "Model not loaded: \(name)"
+        case .modelContractMismatch(let message):
+            return "Model contract mismatch: \(message)"
         case .inputTooLong(let tokens, let maxTokens):
             return "Input has \(tokens) tokens, but the largest loaded duration model supports \(maxTokens)"
         }

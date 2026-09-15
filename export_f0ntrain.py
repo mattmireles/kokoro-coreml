@@ -37,6 +37,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from coreml_export_lstm import MaskedBidirectionalLSTM
+
 _ROOT = Path(__file__).resolve().parent
 
 # ---------------------------------------------------------------------------
@@ -81,45 +83,41 @@ def _remove_training_ops(model: nn.Module) -> None:
 
 
 class F0NtrainWrapper(nn.Module):
-    """Thin wrapper around ``predictor.F0Ntrain`` for clean tracing.
+    """``predictor.F0Ntrain`` with explicit tensor I/O and bucket masking.
 
-    Exposes the shared LSTM + F0/N branches with explicit tensor I/O.
+    The shared BiLSTM runs as ``MaskedBidirectionalLSTM``, so its backward
+    direction starts at the last valid frame instead of walking the padding,
+    and each ``AdainResBlk1d`` gets the mask at its own resolution (each branch
+    is [no-upsample, 2x-upsample, no-upsample]). The wrapper's ``None`` path is
+    for full-fill export diagnostics; the exported package input is required.
     """
 
     def __init__(self, predictor):
         super().__init__()
-        # Copy the sub-modules used by F0Ntrain
-        self.shared = predictor.shared
+        self.shared = MaskedBidirectionalLSTM(predictor.shared)
         self.F0 = predictor.F0
         self.N = predictor.N
         self.F0_proj = predictor.F0_proj
         self.N_proj = predictor.N_proj
 
-    def forward(self, en: torch.FloatTensor, s: torch.FloatTensor):
-        """Run F0Ntrain prediction.
+    def forward(self, en: torch.FloatTensor, s: torch.FloatTensor, mask: torch.Tensor | None = None):
+        """en: (1, 640, T); s: (1, 128); mask: (1, 1, T) float, 1.0 on valid frames.
 
-        Args:
-            en: Aligned features, shape (1, 640, T).
-            s:  Style embedding, shape (1, 128).
-
-        Returns:
-            Tuple of (F0_pred, N_pred), each shape (1, 2*T).
+        Returns (F0_pred, N_pred), each (1, 2*T).
         """
-        # shared LSTM expects (batch, seq, features)
-        x, _ = self.shared(en.transpose(-1, -2))
-
-        # F0 branch
+        if mask is None:
+            mask = en.new_ones(en.shape[0], 1, en.shape[-1])
+        x = self.shared(en.transpose(-1, -2), mask.squeeze(1))
+        mask_up = mask.repeat_interleave(2, dim=2)
+        per_block = ((mask, mask), (mask, mask_up), (mask_up, mask_up))
         F0 = x.transpose(-1, -2)
-        for block in self.F0:
-            F0 = block(F0, s)
+        for block, (m_in, m_out) in zip(self.F0, per_block):
+            F0 = block(F0, s, m_in, m_out)
         F0 = self.F0_proj(F0)
-
-        # N branch
         N = x.transpose(-1, -2)
-        for block in self.N:
-            N = block(N, s)
+        for block, (m_in, m_out) in zip(self.N, per_block):
+            N = block(N, s, m_in, m_out)
         N = self.N_proj(N)
-
         return F0.squeeze(1), N.squeeze(1)
 
 
@@ -153,13 +151,14 @@ def export_f0ntrain(t_frames: int = 120, output_dir: Path | None = None) -> Path
     for m in wrapper.modules():
         m.eval()
 
-    # Dummy inputs for tracing
+    # Dummy inputs; the mask traces as all-ones (full fill).
     en_dummy = torch.randn(1, 640, t_frames, dtype=torch.float32)
     s_dummy = torch.randn(1, 128, dtype=torch.float32)
+    mask_dummy = torch.ones(1, 1, t_frames, dtype=torch.float32)
 
     # Test forward pass
     with torch.no_grad():
-        F0_test, N_test = wrapper(en_dummy, s_dummy)
+        F0_test, N_test = wrapper(en_dummy, s_dummy, mask_dummy)
         print(f"Forward pass OK: F0 {F0_test.shape}, N {N_test.shape}")
         assert F0_test.shape == (1, 2 * t_frames), f"Expected F0 (1, {2*t_frames}), got {F0_test.shape}"
         assert N_test.shape == (1, 2 * t_frames), f"Expected N (1, {2*t_frames}), got {N_test.shape}"
@@ -167,7 +166,7 @@ def export_f0ntrain(t_frames: int = 120, output_dir: Path | None = None) -> Path
     # Trace
     print(f"Tracing with T={t_frames}...")
     with torch.no_grad():
-        traced = torch.jit.trace(wrapper, (en_dummy, s_dummy), strict=False)
+        traced = torch.jit.trace(wrapper, (en_dummy, s_dummy, mask_dummy), strict=False)
 
     # Convert to CoreML
     print("Converting to CoreML...")
@@ -176,6 +175,9 @@ def export_f0ntrain(t_frames: int = 120, output_dir: Path | None = None) -> Path
         inputs=[
             ct.TensorType(name="en", shape=(1, 640, t_frames), dtype=np.float32),
             ct.TensorType(name="s", shape=(1, 128), dtype=np.float32),
+            # Required: omitting the validity mask silently restores the
+            # padding contamination this export exists to remove.
+            ct.TensorType(name="mask", shape=(1, 1, t_frames), dtype=np.float32),
         ],
         outputs=[
             ct.TensorType(name="F0_pred"),
@@ -207,13 +209,15 @@ def validate_f0ntrain(traced, ml_model, t_frames: int, n_tests: int = 5) -> None
     for i in range(n_tests):
         en = torch.randn(1, 640, t_frames, dtype=torch.float32)
         s = torch.randn(1, 128, dtype=torch.float32)
+        # Validated at full fill (mask=ones), where masking must be a no-op.
+        mask = torch.ones(1, 1, t_frames, dtype=torch.float32)
 
         with torch.no_grad():
-            pt_f0, pt_n = traced(en, s)
+            pt_f0, pt_n = traced(en, s, mask)
         pt_f0_np = pt_f0.numpy().flatten()
         pt_n_np = pt_n.numpy().flatten()
 
-        coreml_out = ml_model.predict({"en": en.numpy(), "s": s.numpy()})
+        coreml_out = ml_model.predict({"en": en.numpy(), "s": s.numpy(), "mask": mask.numpy()})
         cm_f0 = np.asarray(coreml_out["F0_pred"]).flatten()
         cm_n = np.asarray(coreml_out["N_pred"]).flatten()
 

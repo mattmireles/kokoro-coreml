@@ -489,11 +489,15 @@ func runGeneratorInputDump(modelsDir: String, tensorInputDumpPath: String,
     let refSArray = try makeFloatArray(shape: refS.shape, values: refS.values)
     let harArray = try makeFloatArray(shape: har.shape, values: har.values)
 
-    let inputProvider = try MLDictionaryFeatureProvider(dictionary: [
+    let naturalFrames = reader.metadata["natural_frames"] as? Int
+    guard let naturalFrames else {
+        throw PipelineError.modelContractMismatch("tensor dump has no natural_frames for generator mask")
+    }
+    let inputProvider = try stageInputs(for: genModel, [
         "x_pre": MLFeatureValue(multiArray: xPreArray),
         "ref_s": MLFeatureValue(multiArray: refSArray),
         "har": MLFeatureValue(multiArray: harArray),
-    ])
+    ], validFrames: naturalFrames * 2, totalFrames: xPre.shape.last ?? naturalFrames * 2)
 
     for _ in 0..<discardedWarmups {
         _ = try genModel.prediction(from: inputProvider)

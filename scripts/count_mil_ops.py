@@ -33,7 +33,7 @@ def _iter_operation_types(spec) -> list[str]:
 
 
 def histogram_for_mlpackage(path: Path) -> tuple[Counter, int]:
-    model = ct.models.MLModel(str(path))
+    model = ct.models.MLModel(str(path), skip_model_load=True)
     spec = model.get_spec()
     types = _iter_operation_types(spec)
     return Counter(types), len(types)

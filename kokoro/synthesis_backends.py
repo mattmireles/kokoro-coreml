@@ -40,15 +40,18 @@ def build_decoder_har_post_inputs_np(
     har_t: int,
     *,
     warn_geometry: bool = True,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, int, int]:
-    """Build ``x_pre`` / ``ref_s`` / ``har`` numpy tensors for ``kokoro_decoder_har_post_*s``.
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, int, int, np.ndarray]:
+    """Build ``x_pre`` / ``ref_s`` / ``har`` / ``mask`` numpy tensors for ``kokoro_decoder_har_post_*s``.
 
     Single source of truth for geometry shared with ``decoder_har_post_bucket_impl`` and
     ``scripts/compare_decoder_har_post_waveforms.py``.
 
     Returns:
         ``x_pre`` (float32), ``ref_s`` (float32), ``har`` (float32), ``T_f0`` (int),
-        ``frame_count`` (int; decoder time dim before Core ML padding to ``asr_len``).
+        ``frame_count`` (int; decoder input time dim before its final 2x upsample),
+        ``mask`` (float32, shape ``(1, 1, asr_len)``; 1.0 on the valid
+        post-upsample ``x_pre`` prefix, 0.0 on bucket padding). Packages without
+        a mask input ignore the returned feature.
     """
     gen = dec.generator
     f0_samples_per_step = int(round(float(gen.f0_upsamp.scale_factor)))
@@ -69,6 +72,8 @@ def build_decoder_har_post_inputs_np(
     asr_pad = np.zeros((1, 512, frame_count), dtype=np.float32)
     t_asr = min(frame_count, asr.shape[-1])
     asr_pad[:, :, :t_asr] = asr[:, :, :t_asr]
+    decoder_mask = torch.zeros((1, 1, frame_count), dtype=torch.float32)
+    decoder_mask[:, :, :t_asr] = 1.0
     f0_pad = np.zeros((1, full_f0_len), dtype=np.float32)
     n_pad = np.zeros((1, full_f0_len), dtype=np.float32)
     t_f0 = min(full_f0_len, f0.shape[-1])
@@ -82,13 +87,20 @@ def build_decoder_har_post_inputs_np(
         F0 = dec.F0_conv(torch.from_numpy(f0_pad).unsqueeze(1))
         N = dec.N_conv(torch.from_numpy(n_pad).unsqueeze(1))
         x = torch.cat([asr_t, F0, N], dim=1)
-        x = dec.encode(x, s)
+        x = dec.encode(x, s, m=decoder_mask, m_up=decoder_mask)
         asr_res = dec.asr_res(asr_t)
         res = True
+        current_mask = decoder_mask
         for block in dec.decode:
             if res:
                 x = torch.cat([x, asr_res, F0, N], dim=1)
-            x = block(x, s)
+            output_mask = (
+                current_mask.repeat_interleave(2, dim=2)
+                if block.upsample_type != "none"
+                else current_mask
+            )
+            x = block(x, s, m=current_mask, m_up=output_mask)
+            current_mask = output_mask
             if block.upsample_type != "none":
                 res = False
         x_pre = x
@@ -112,7 +124,14 @@ def build_decoder_har_post_inputs_np(
         h_new[:, :, :cpy] = har_np[:, :, :cpy]
         har_np = h_new
 
-    return x_pre_np, ref_s, har_np, T_f0, frame_count
+    # Align the decoder's post-upsample mask to the Core ML x_pre input exactly
+    # as x_pre itself was aligned above.
+    mask_np = np.zeros((1, 1, asr_len), dtype=np.float32)
+    decoded_mask = current_mask.numpy().astype(np.float32)
+    copy_mask = min(decoded_mask.shape[-1], asr_len)
+    mask_np[:, :, :copy_mask] = decoded_mask[:, :, :copy_mask]
+
+    return x_pre_np, ref_s, har_np, T_f0, frame_count, mask_np
 
 
 def synth_bucket_impl(pipe: HybridTTSPipeline, text: str, voice: str = "af_heart", speed: float = 1.0) -> np.ndarray | None:
@@ -191,7 +210,7 @@ def decoder_har_post_bucket_impl(
     har_t = int(har_shape[-1])
 
     dec = pipe.pytorch_model.decoder
-    x_pre_np, ref_s, har_np, _t_check, _fc = build_decoder_har_post_inputs_np(
+    x_pre_np, ref_s, har_np, _t_check, _fc, mask_np = build_decoder_har_post_inputs_np(
         dec, vi, sec, asr_len, har_t, warn_geometry=True
     )
     assert _t_check == T_f0
@@ -205,6 +224,8 @@ def decoder_har_post_bucket_impl(
         "ref_s": ref_s,
         "har": har_np,
     }
+    if "mask" in {i.name for i in spec.description.input}:
+        inputs["mask"] = mask_np
     res = model.predict(inputs)
     key = "waveform" if "waveform" in res else list(res.keys())[0]
     audio = np.asarray(res[key], dtype=np.float32).squeeze()

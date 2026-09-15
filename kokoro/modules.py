@@ -331,12 +331,14 @@ class ProsodyPredictor(nn.Module):
     # The shared LSTM provides common feature processing before branching.
     #
     # Parameters:
-    # - x: Duration-aligned features, shape (batch, sequence, hidden)
+    # - x: Duration-aligned features, shape (batch, hidden, T_in)
     # - s: Style vector for voice conditioning, shape (batch, style_dim)
     #
     # Returns:
-    # - F0: Fundamental frequency predictions, shape (batch, sequence)
-    # - N: Noise characteristics, shape (batch, sequence)
+    # - F0: Fundamental frequency predictions, shape (batch, T_out)
+    # - N: Noise characteristics, shape (batch, T_out)
+    #   where T_out = 2 * T_in due to the 2× upsample inside the second
+    #   AdainResBlk1d of each branch.
     #
     # Processing Pipeline:
     # 1. Shared LSTM: Common feature extraction from aligned inputs

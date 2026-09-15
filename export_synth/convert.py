@@ -350,6 +350,9 @@ def export_synthesizers(
                     dec_out_ch = int(kmodel.decoder.decode[-1].conv1.out_channels)
                     x_pre = torch.zeros((1, dec_out_ch, frame_count), dtype=torch.float32)
                     har_in = torch.zeros((1, har_c, har_t), dtype=torch.float32)
+                    # Trace with an all-ones mask (full fill); the runtime supplies
+                    # the real one.
+                    mask_rep = torch.ones((1, 1, frame_count), dtype=torch.float32)
                     # GeneratorFromHar wraps the Generator conv/AdaIN/iSTFT stack.
                     # The IdentityAdaIN loop above targets AdainResBlk1d (Decoder stack)
                     # only. Generator.resblocks and noise_res use AdaINResBlock1 — a
@@ -365,11 +368,11 @@ def export_synthesizers(
                         )
                     traced_model = torch.jit.trace(
                         gen_from_har,
-                        (x_pre, ref_s_out, har_in),
+                        (x_pre, ref_s_out, har_in, mask_rep),
                         strict=False,
                         check_trace=False,
                     )
-                    traced_out = traced_model(x_pre, ref_s_out, har_in)
+                    traced_out = traced_model(x_pre, ref_s_out, har_in, mask_rep)
                     traced_samples = int(traced_out.shape[-1])
                     if traced_samples < bucket_samples:
                         raise ValueError(
@@ -419,6 +422,7 @@ def export_synthesizers(
             har_t = int(har_rep.shape[2])
             x_pre_shape = (1, dec_out_ch, frame_count)
             har_shape = (1, har_c, har_t)
+            mask_shape = (1, 1, frame_count)
         elif mode == "full":
             d_channels = int(d.shape[1])
             t_en_channels = int(t_en.shape[1])
@@ -460,6 +464,9 @@ def export_synthesizers(
                             ct.TensorType(name="x_pre", shape=x_pre_shape, dtype=np.float32),
                             ct.TensorType(name="ref_s", shape=(1, CoreMLExportConstants.VOICE_EMBEDDING_DIM), dtype=np.float32),
                             ct.TensorType(name="har", shape=har_shape, dtype=np.float32),
+                            # Required: omission silently restores padding
+                            # contamination in the generator statistics.
+                            ct.TensorType(name="mask", shape=mask_shape, dtype=np.float32),
                         ],
                         outputs=[ct.TensorType(name="waveform")],
                         convert_to=convert_backend,
@@ -538,6 +545,9 @@ def export_synthesizers(
                             ct.TensorType(name="x_pre", shape=x_pre_shape, dtype=np.float32),
                             ct.TensorType(name="ref_s", shape=(1, CoreMLExportConstants.VOICE_EMBEDDING_DIM), dtype=np.float32),
                             ct.TensorType(name="har", shape=har_shape, dtype=np.float32),
+                            # Required: omission silently restores padding
+                            # contamination in the generator statistics.
+                            ct.TensorType(name="mask", shape=mask_shape, dtype=np.float32),
                         ],
                         outputs=[ct.TensorType(name="waveform")],
                         convert_to=convert_backend,
@@ -584,14 +594,17 @@ def export_synthesizers(
                 }
             elif mode == "decoder-har":
                 # Bounded inputs: FP16 Core ML can overflow on unconstrained random har/spec paths.
+                # Validated at full fill (mask=ones), where masking must be a no-op.
                 torch.manual_seed(42)
                 x_pre = torch.clamp(torch.randn(x_pre_shape, dtype=torch.float32) * 0.02, -0.05, 0.05)
                 har_in = torch.clamp(torch.randn(har_shape, dtype=torch.float32) * 0.02, -0.05, 0.05)
-                torch_args = (x_pre, ref_s_out, har_in)
+                mask_in = torch.ones(mask_shape, dtype=torch.float32)
+                torch_args = (x_pre, ref_s_out, har_in, mask_in)
                 sp = {
                     "x_pre": x_pre.detach().cpu().numpy().astype(np.float32),
                     "ref_s": ref_s_out.detach().cpu().numpy().astype(np.float32),
                     "har": har_in.detach().cpu().numpy().astype(np.float32),
+                    "mask": mask_in.detach().cpu().numpy().astype(np.float32),
                 }
             elif mode == "full":
                 torch_args = (d, t_en, s, ref_s_out, pred_aln_trg)
@@ -654,6 +667,7 @@ def export_synthesizers(
                 "har": torch.clamp(torch.randn(har_shape, dtype=torch.float32) * 0.02, -0.05, 0.05)
                 .numpy()
                 .astype(np.float32),
+                "mask": np.ones(mask_shape, dtype=np.float32),
             }
         elif mode == "full":
             smoke_pred = {

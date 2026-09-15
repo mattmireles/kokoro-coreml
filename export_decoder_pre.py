@@ -64,6 +64,11 @@ class DecoderPreWrapper(nn.Module):
     """Wraps the decoder pre-processing for CoreML export.
 
     Runs F0_conv + N_conv + encode + decode blocks to produce x_pre.
+
+    ``mask`` is a (B, 1, frame_count) validity mask threaded through every
+    ``AdainResBlk1d`` call; ``decode[-1]`` upsamples 2x, so its ``norm2`` sees
+    the 2x-repeated mask. The exported package requires this input because
+    omission silently restores padding-contaminated statistics.
     """
 
     def __init__(self, decoder):
@@ -80,6 +85,7 @@ class DecoderPreWrapper(nn.Module):
         f0: torch.FloatTensor,    # (1, 1, full_f0_len)
         n_input: torch.FloatTensor,     # (1, 1, full_f0_len)
         ref_s: torch.FloatTensor, # (1, 256)
+        mask: torch.Tensor | None = None,  # internal full-fill fallback; exported input is required
     ) -> torch.Tensor:
         s = ref_s[:, :128]  # baseline embedding
 
@@ -87,14 +93,21 @@ class DecoderPreWrapper(nn.Module):
         N = self.N_conv(n_input)
 
         x = torch.cat([asr, F0, N], dim=1)
-        x = self.encode_block(x, s)
+        x = self.encode_block(x, s, m=mask, m_up=mask)
         asr_res = self.asr_res(asr)
 
         res = True
+        current_mask = mask
         for block in self.decode:
             if res:
                 x = torch.cat([x, asr_res, F0, N], dim=1)
-            x = block(x, s)
+            output_mask = (
+                current_mask.repeat_interleave(2, dim=2)
+                if current_mask is not None and block.upsample_type != "none"
+                else current_mask
+            )
+            x = block(x, s, m=current_mask, m_up=output_mask)
+            current_mask = output_mask
             if block.upsample_type != "none":
                 res = False
 
@@ -128,21 +141,22 @@ def export_decoder_pre(bucket_sec: int, output_dir: Path | None = None) -> Path 
     for m in wrapper.modules():
         m.train(False)
 
-    # Dummy inputs
+    # Dummy inputs; the mask traces as all-ones (full fill).
     asr_dummy = torch.randn(1, 512, frame_count, dtype=torch.float32)
     f0_dummy = torch.randn(1, 1, full_f0_len, dtype=torch.float32)
     n_dummy = torch.randn(1, 1, full_f0_len, dtype=torch.float32)
     ref_s_dummy = torch.randn(1, 256, dtype=torch.float32)
+    mask_dummy = torch.ones(1, 1, frame_count, dtype=torch.float32)
 
     # Test forward
     with torch.no_grad():
-        x_pre_test = wrapper(asr_dummy, f0_dummy, n_dummy, ref_s_dummy)
+        x_pre_test = wrapper(asr_dummy, f0_dummy, n_dummy, ref_s_dummy, mask_dummy)
         print(f"Forward pass OK: x_pre {x_pre_test.shape}")
 
     # Trace
     print("Tracing...")
     with torch.no_grad():
-        traced = torch.jit.trace(wrapper, (asr_dummy, f0_dummy, n_dummy, ref_s_dummy), strict=False)
+        traced = torch.jit.trace(wrapper, (asr_dummy, f0_dummy, n_dummy, ref_s_dummy, mask_dummy), strict=False)
 
     # Convert
     print("Converting to CoreML...")
@@ -154,6 +168,9 @@ def export_decoder_pre(bucket_sec: int, output_dir: Path | None = None) -> Path 
                 ct.TensorType(name="f0", shape=(1, 1, full_f0_len), dtype=np.float32),
                 ct.TensorType(name="n_input", shape=(1, 1, full_f0_len), dtype=np.float32),
                 ct.TensorType(name="ref_s", shape=(1, 256), dtype=np.float32),
+                # Required: omitting the validity mask silently restores the
+                # padding contamination this export exists to remove.
+                ct.TensorType(name="mask", shape=(1, 1, frame_count), dtype=np.float32),
             ],
             outputs=[
                 ct.TensorType(name="x_pre"),
@@ -165,7 +182,7 @@ def export_decoder_pre(bucket_sec: int, output_dir: Path | None = None) -> Path 
         )
     except Exception as e:
         print(f"\nCoreML conversion FAILED: {e}")
-        print("This is the known AdaIN export risk. See plan Phase 4 fallback options.")
+        print("This is the known AdaIN export risk.")
         return None
 
     out_path = output_dir / f"kokoro_decoder_pre_{bucket_sec}s.mlpackage"
@@ -189,9 +206,11 @@ def validate_decoder_pre(traced, ml_model, frame_count: int, full_f0_len: int, n
         f0 = torch.randn(1, 1, full_f0_len, dtype=torch.float32)
         n_in = torch.randn(1, 1, full_f0_len, dtype=torch.float32)
         ref_s = torch.randn(1, 256, dtype=torch.float32)
+        # Validated at full fill (mask=ones), where masking must be a no-op.
+        mask = torch.ones(1, 1, frame_count, dtype=torch.float32)
 
         with torch.no_grad():
-            pt_out = traced(asr, f0, n_in, ref_s)
+            pt_out = traced(asr, f0, n_in, ref_s, mask)
         pt_np = pt_out.numpy().flatten()
 
         coreml_out = ml_model.predict({
@@ -199,6 +218,7 @@ def validate_decoder_pre(traced, ml_model, frame_count: int, full_f0_len: int, n
             "f0": f0.numpy(),
             "n_input": n_in.numpy(),
             "ref_s": ref_s.numpy(),
+            "mask": mask.numpy(),
         })
         cm_np = np.asarray(coreml_out["x_pre"]).flatten()
 

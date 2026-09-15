@@ -131,11 +131,12 @@ Trim (Swift) --> final audio
 | Model | Sizes | Input | Output | Role |
 | --- | --- | --- | --- | --- |
 | `kokoro_duration_t{N}` | T=32, 64, 128, 256, 320, 384, 512 | input_ids, attention_mask, ref_s, speed | pred_dur, d, t_en, s, ref_s_out | BERT + prosody prediction |
-| `kokoro_f0ntrain_t{N}` | T=120, 400, 560, 1200, 2400 | en, s | F0_pred, N_pred | Pitch/noise from aligned features |
-| `kokoro_decoder_pre_{N}s` | 3s, 7s, 10s, 15s, 30s | asr, f0, n_input, ref_s | x_pre | Decoder stack (Conv + AdaIN) |
-| `kokoro_decoder_har_post_{N}s` | 3s, 7s, 10s, 15s, 30s | x_pre, ref_s, har | waveform | Generator (0 linear ops, all Conv1d for ANE) |
+| `kokoro_f0ntrain_t{N}` | T=120, 400, 560, 1200, 2400 | en, s, mask | F0_pred, N_pred | Pitch/noise from aligned features |
+| `kokoro_decoder_pre_{N}s` | 3s, 7s, 10s, 15s, 30s | asr, f0, n_input, ref_s, mask | x_pre | Decoder stack (Conv + AdaIN) |
+| `kokoro_decoder_har_post_{N}s` | 3s, 7s, 10s, 15s, 30s | x_pre, ref_s, har, mask | waveform | Generator (0 linear ops, all Conv1d for ANE) |
 
 The Duration model uses per-size exports because E5RT (Apple Neural Engine runtime) cannot handle `RangeDim` or `EnumeratedShapes` with multiple variable inputs. The caller pads tokens to the nearest enumeration.
+Newly exported padded-stage packages require the binary prefix `mask`; the runtime also recognizes legacy published packages that predate that input.
 
 </details>
 

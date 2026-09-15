@@ -1326,6 +1326,52 @@ Inputs used:
 - `tiny`: `"Hello world!"`
 - `long`: bakeoff-style longer sentence routed to the 10s HAR-post bucket
 
+## Bakeoff v11: mask-aware bucketing branch, Config F stages on M3 Max
+
+### Summary
+
+The `mask-aware-bucketing` branch replaces the duration model's unrolled BiLSTM with two stock `lstm` ops and masks bucket padding out of every time-axis statistic. Measured with `kokoro-bench --batch` under the production compute policy (duration and f0ntrain on `cpuAndGPU`, decoder-pre on `cpuAndNeuralEngine`, generator on `cpuAndGPU`), warm median of 10 runs after 3 warmups, seven inputs chosen to sit just under and just over the bucket boundaries. The duration stage is 7x to 14x faster and end-to-end time roughly halves; the masks cost 2-5% on decoder-pre, 0.3-1.5 ms on f0ntrain and under 3% on the generator.
+
+### End-to-end wall time (warm median, milliseconds)
+
+| input | bucket | upstream main | duration fix only | full branch |
+| --- | --- | ---: | ---: | ---: |
+| 44 tokens, 2.8 s | 3 s | 110.0 | 54.7 | 55.5 |
+| 50 tokens, 3.3 s | 7 s | 160.0 | 106.5 | 107.9 |
+| 105 tokens, 6.8 s | 7 s | 232.4 | 110.7 | 112.8 |
+| 113 tokens, 7.1 s | 10 s | 267.4 | 148.0 | 150.4 |
+| 219 tokens, 13.9 s | 15 s | 486.1 | 229.1 | 232.6 |
+| 234 tokens, 15.1 s | 30 s | 710.1 | 447.5 | 452.6 |
+| 476 tokens, 27.4 s | 30 s | 1,050.2 | 474.3 | 475.9 |
+
+### Stage medians (milliseconds)
+
+| input | duration main → branch | f0ntrain | decoder-pre | generator |
+| --- | ---: | ---: | ---: | ---: |
+| 44 tokens, 2.8 s | 63.3 → 8.9 | 3.6 → 3.7 | 4.0 → 3.1 | 33.5 → 34.1 |
+| 219 tokens, 13.9 s | 276.2 → 24.0 | 9.8 → 10.5 | 20.1 → 15.7 | 152.6 → 153.8 |
+| 476 tokens, 27.4 s | 615.4 → 43.1 | 16.5 → 17.1 | 53.2 → 49.0 | 304.8 → 305.6 |
+
+The 30 s generator varies by about 10% between passes on this machine; on the same real tensors (medians of 10 warm runs) it is 308 ms on main and 301 ms on the branch, 157 and 154 ms at 15 s.
+
+### Cold load and memory
+
+| | upstream main | full branch |
+| --- | ---: | ---: |
+| first load and compile, 476 tokens | 567 s | 5 s |
+| peak RSS, one synthesis incl. load, 44 tokens | 594 MB | 302 MB |
+| peak RSS, one synthesis incl. load, 476 tokens | 3,051 MB | 585 MB |
+| `export_duration.py`, four padded sizes | 1,248 s, 9.1 GB | 56 s, 2.1 GB |
+
+The opt-in exact-length duration packages (`KOKORO_USE_EXACT_DURATION_MODELS=1`) take 7.4, 11.1, 20.3 and 37.2 ms on the four frozen texts; the padded path on the branch takes 8.9, 13.5, 24.0 and 43.1 ms.
+
+### Provenance
+
+- Machine: Apple M3 Max, 36 GB, macOS 26.5.1, Xcode 26.6, coremltools 8.3.0, torch 2.6.0
+- Branch: `mask-aware-bucketing` on top of upstream `fa57641`
+- Packages exported locally from each commit; unchanged stages linked from the commit that last exported them, verified exact by re-export (identical op histograms, bit-identical predictions). The generator packages are the re-export after the int32 mask-alignment fix (see the debug note); the two branch columns were re-measured afterwards in one quiet window, two interleaved passes each (means shown), with the duration-fix-only column reproducing its earlier pass within 2% as the control for the main column measured earlier in the session
+- Quality evidence for the same branch: [debug-notes.md](debug-notes.md), issue "Bucket padding contaminated every time-axis statistic and the f0ntrain BiLSTM"
+
 ## Bakeoff v10: PyTorch baselines on M1 Mini (Configs A/F initially blocked)
 
 **First collected:** 2026-04-17
