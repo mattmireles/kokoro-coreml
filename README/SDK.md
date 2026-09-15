@@ -24,6 +24,19 @@ mono PCM output.
 The platform floor is intentionally high. A reliable iOS 18/macOS 15 SDK is
 better than a broader SDK that fails under real app conditions.
 
+## Platform Scope
+
+The macOS SDK build surface includes both `arm64` and `x86_64`. Apple Silicon
+is the accelerated path because the runtime can use the Neural Engine; Intel
+Macs have no ANE and should be treated as CPU/GPU Core ML targets with lower
+performance expectations.
+
+The SDK supports iOS 18.0+ for iPhone/iPad app builds. It does not support
+watchOS in V1. The raw-text SDK depends on MisakiSwift/MLX, and the current MLX
+dependency does not build for watchOS (`IOSurface/IOSurfaceRef.h` is unavailable
+in the watchOS SDK). Do not add a watchOS release claim until the phonemizer
+dependency is isolated or replaced and a watchOS build plus device smoke pass.
+
 ## Install
 
 Use the package under `swift-tts` from a local checkout:
@@ -261,6 +274,16 @@ xcodebuild -quiet \
   -destination 'platform=macOS,arch=arm64' \
   -derivedDataPath /tmp/kokoro-tts-smoke-dd \
   build
+xcodebuild -quiet \
+  -scheme kokoro-sdk-smoke \
+  -destination 'platform=macOS,arch=x86_64' \
+  -derivedDataPath /tmp/kokoro-tts-smoke-x86_64-dd \
+  build
+xcodebuild -quiet \
+  -scheme KokoroTTS \
+  -destination 'generic/platform=iOS' \
+  -derivedDataPath /tmp/kokoro-tts-ios-dd \
+  build
 popd
 
 DYLD_FRAMEWORK_PATH=/tmp/kokoro-tts-smoke-dd/Build/Products/Debug/PackageFrameworks \
@@ -308,6 +331,8 @@ python3 scripts/inspect_hf_artifacts.py \
 
 Before claiming iOS readiness, run the physical-device demo smoke and record the
 device evidence in [kokoro-drop-in-sdk-v1 notes](Notes/kokoro-drop-in-sdk-v1.md).
+Do not claim watchOS readiness unless the SDK builds for watchOS and the
+MisakiSwift/MLX dependency boundary has been replaced or made watch-safe.
 
 ## Troubleshooting
 

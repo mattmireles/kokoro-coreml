@@ -81,8 +81,10 @@ public func floatValues(from array: MLMultiArray, limit: Int? = nil) -> [Float] 
         return stridedValues(from: ptr, shape: shape, strides: strides, limit: count) { $0 }
     }
     if array.dataType == .float16 {
-        let ptr = array.dataPointer.assumingMemoryBound(to: Float16.self)
-        return stridedValues(from: ptr, shape: shape, strides: strides, limit: count) { Float($0) }
+        let ptr = array.dataPointer.assumingMemoryBound(to: UInt16.self)
+        return stridedValues(from: ptr, shape: shape, strides: strides, limit: count) {
+            floatFromIEEEFloat16Bits($0)
+        }
     }
 
     var values = [Float]()
@@ -139,6 +141,38 @@ private func stridedValues<Element>(
     }
 
     return values
+}
+
+/// Converts raw IEEE-754 binary16 storage to Float without referencing Swift's
+/// `Float16` type, which is unavailable for x86_64 macOS in current Xcode.
+private func floatFromIEEEFloat16Bits(_ bits: UInt16) -> Float {
+    let sign = UInt32(bits & 0x8000) << 16
+    let exponent = UInt32((bits >> 10) & 0x1f)
+    let fraction = UInt32(bits & 0x03ff)
+
+    if exponent == 0 {
+        guard fraction != 0 else {
+            return Float(bitPattern: sign)
+        }
+        var normalizedFraction = fraction
+        var normalizedExponent: Int32 = -14
+        while (normalizedFraction & 0x0400) == 0 {
+            normalizedFraction <<= 1
+            normalizedExponent -= 1
+        }
+        normalizedFraction &= 0x03ff
+        let singleExponent = UInt32(normalizedExponent + 127) << 23
+        let singleFraction = normalizedFraction << 13
+        return Float(bitPattern: sign | singleExponent | singleFraction)
+    }
+
+    if exponent == 0x1f {
+        return Float(bitPattern: sign | 0x7f80_0000 | (fraction << 13))
+    }
+
+    let singleExponent = (exponent + UInt32(127 - 15)) << 23
+    let singleFraction = fraction << 13
+    return Float(bitPattern: sign | singleExponent | singleFraction)
 }
 
 private func isContiguousRowMajor(shape: [Int], strides: [Int]) -> Bool {
