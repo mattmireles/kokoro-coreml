@@ -1365,6 +1365,10 @@ The 30 s generator varies by about 10% between passes on this machine; on the sa
 
 The opt-in exact-length duration packages (`KOKORO_USE_EXACT_DURATION_MODELS=1`) take 7.4, 11.1, 20.3 and 37.2 ms on the four frozen texts; the padded path on the branch takes 8.9, 13.5, 24.0 and 43.1 ms.
 
+### Swift harmonic source: concurrent harmonics, streamed through scratch chunks
+
+`sineGenFromF0Frames` was 59 ms of the 65 ms hn-nsf stage at 30 s (the STFT is 5 ms). Running the nine harmonics and the Gaussian noise generation concurrently, with each task streaming its sample-rate work through a 64k-sample scratch chunk, brings it to 28 ms (15 s: 25 → 15 ms, 3 s: 5.5 → 3.4 ms) with bit-identical output. A first attempt that only parallelised the harmonics with per-task full-length buffers reached 45 ms: allocating and zero-filling about 180 MB of temporaries per call cost most of what the parallelism saved, which is the lesson worth keeping. End to end on the same machine, on top of the native-har generator: 30 s 427 → 410 ms, 15 s 207 → 200 ms.
+
 ### Provenance
 
 - Machine: Apple M3 Max, 36 GB, macOS 26.5.1, Xcode 26.6, coremltools 8.3.0, torch 2.6.0
