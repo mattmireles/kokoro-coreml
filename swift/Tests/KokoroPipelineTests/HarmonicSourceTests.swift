@@ -55,6 +55,27 @@ final class HarmonicSourceTests: XCTestCase {
 
     // MARK: - buildHar
 
+    func testSTFTEdgeBinsReportPositivePiForNegativeRealParts() {
+        // A negative constant has a negative DC real part; a negative Nyquist
+        // alternation (-cos(pi n)) has a negative Nyquist real part. Both have a
+        // mathematically zero imaginary part, and torch.stft reports +pi there.
+        let n = 400
+        let negativeDC = [Float](repeating: -0.5, count: n)
+        let negativeNyquist = (0..<n).map { -0.5 * Float(($0 % 2 == 0) ? 1 : -1) }
+        let (_, dcPhase) = stftTransform(negativeDC)
+        let (_, nyPhase) = stftTransform(negativeNyquist)
+        let frames = dcPhase.count / HarmonicConstants.stftFreqBins
+        let nyquist = HarmonicConstants.stftFreqBins - 1
+        for t in 2..<(frames - 2) {
+            XCTAssertEqual(dcPhase[t], Float.pi, accuracy: 1e-5, "DC phase at frame \(t)")
+            // Hop 5 is odd, so the alternation flips sign every frame: the
+            // Nyquist real part is negative on even frames (+pi) and positive
+            // on odd frames (0). Never -pi.
+            let expected: Float = (t % 2 == 0) ? Float.pi : 0
+            XCTAssertEqual(nyPhase[nyquist * frames + t], expected, accuracy: 1e-5, "Nyquist phase at frame \(t)")
+        }
+    }
+
     func testBuildHarOutputShape() {
         // 80 F0 frames -> upsample 300x -> 24000 samples
         // STFT: (24000 + 20 - 20) / 5 + 1 = 4801 frames (with center padding)
