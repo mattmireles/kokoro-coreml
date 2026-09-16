@@ -6,6 +6,90 @@ Institutional memory for Kokoro PyTorch → Core ML (`mlprogram`) export, synthe
 
 ---
 
+## Issue: Bucket padding cost every utterance the price of its bucket — Resolved
+
+**First spotted:** 2026-09-16
+**Resolved:** 2026-09-16
+**Status:** Resolved
+
+### Summary
+
+Every synthesis stage was a fixed-shape Core ML graph per bucket (3, 7, 10, 15, 30 s); masking stopped the padding from contaminating statistics but every padded frame was still computed, so an utterance that spilled into the next bucket paid for that bucket (a 15.05 s sentence cost the same as a 30 s one). The generator and the long decoder-pre now run as flexible (`RangeDim`) programs on the real length rounded up to a 0.5 s granule, with the mask kept; the stages whose cost is an LSTM keep their buckets. Latency is linear in the audio length on an M3 Max and an M1, memory is bounded, and the decoder-pre placement is measured per machine.
+
+### Symptom
+
+Warm end-to-end medians with the bucketed pipeline (post PR #11, decoder-pre on the GPU from 15 s), M3 Max, staged compute units:
+
+| input | audio | end to end | realtime |
+| --- | ---: | ---: | ---: |
+| 15s | 13.90 s | 194 ms | 72x |
+| over15 (15.05 s, 30 s bucket) | 15.05 s | 349 ms | 43x |
+| over3 (3.25 s, 7 s bucket) | 3.25 s | 92 ms | 35x |
+| over7 (7.12 s, 10 s bucket) | 7.12 s | 128 ms | 56x |
+
+The generator dominates (257 of the 349 ms at over15) and its cost is the bucket's 2,400 x_pre frames, not the utterance's 1,204.
+
+### Root Cause
+
+A bucket is a static graph: the runtime computes every frame of every padded tensor whether the mask marks it valid or not. Only a flexible-shape program computes the frames that exist.
+
+Bucketing exists to give a stage a fighting chance on the Neural Engine, which needs fixed shapes. It was applied to every stage while every stage was meant for the Neural Engine. The generator and the long decoder-pre resisted it (the GPU wins them on every machine measured), and for a stage that lives on the GPU a bucket is pure overhead: the GPU accepts flexible shapes and computes only the frames that exist. This branch is that insight applied: buckets stay where the Neural Engine wins (duration, f0ntrain, the short decoder-pre), flexible programs take the rest.
+
+### Related Guides
+
+- [Core ML compute-unit scheduling guide](../Guides/apple-silicon/CoreML-Compute-Unit-Scheduling-guide.md) - the Neural Engine runtime rejects flexible shapes (`tensor_buffer has known strides while the model has FlexibleShapeInfo`), so flexible programs are GPU programs; the compute plans and the placement measurements below.
+- [Apple Silicon warmed-inference benchmark hygiene](../Guides/apple-silicon/Apple-Silicon-warmed-inference-benchmark-hygiene-guide.md) - every timing here is a warm median over interleaved passes on an otherwise idle machine; the M1 runs were repeated once a CI runner on it was noticed.
+
+### Fix
+
+**Files:**
+
+- `kokoro/istftnet.py` - `AdaIN1d` broadcasts gamma/beta implicitly (an explicit `expand` to a symbolic axis traces to a `tile` the GPU runtime crashes on above about 100k frames), and its masked statistics can be matrix products with the mask vector (`matmul_stats`, flexible exports only): under a symbolic axis the runtime cannot fuse the mask multiply into the reduction, and the ratio-of-means form costs three extra passes per AdaIN (286 vs 253 ms at 30 s); `(x @ m) / sum m` is the masked sum in one kernel, the mask scaled by 1/1024 inside the graph so an fp16 sum over 144k frames stays in range. `AdainResBlk1d._residual` zeroes the padded frames of its transposed-conv pool before conv1: the pool writes its bias on the padding and conv1's last valid output read one frame into it, which capped x_pre parity at 29-37 dB; with the multiply it is 51-60 dB on every input (fixed packages included, so the #6 decoder-pre and f0ntrain packages are re-exported).
+- `export_synth/convert.py`, `export_synth/main.py`, `export_synth/wrappers.py` - `--time-axis range` exports the generator as one program with `RangeDim` axes (x_pre 40..2400 frames, har 60x+1) that takes the mask at every internal resolution (`mask`, `mask_x10`, `mask_x60`): aligning the mask inside the graph (nearest upsample + concat) costs 0.3 ms on its own but breaks the runtime's fusion of the whole program (93 ms instead of 29 at 3 s). Fixed packages keep the constant-index alignment.
+- `export_decoder_pre.py` - `--time-axis range` for decoder-pre (asr 20..1200 frames), with the mask.
+- `scripts/build_multifunction_packages.py` - the bucketed stages (duration t64-t512, f0ntrain t120-t1200, decoder-pre 3-30 s) merge into one multifunction package each, weights stored once: 664 MB -> 242 MB on disk for the set; disk only, each loaded function is resident on its own.
+- `swift/Sources/KokoroPipeline/KokoroSynthesisExecutor.swift`, `KokoroPipeline.swift`, `MLMultiArrayHelpers.swift` - the flexible generator serves every utterance and the flexible decoder-pre the buckets above the Neural Engine range; lengths round up to the 0.5 s granule (`flexibleTimeAxis`), the masks are built from each input's declared bounds (`flexibleMaskInputs`), the harmonic source runs on a background queue while decoder-pre predicts (`decoderPreHnsfOverlap`), and a bucket without a fixed model is served by the flexible program.
+- `swift/Sources/KokoroPipeline/DecoderPrePlacement.swift` - decoder-pre on the Neural Engine up to 10 s and on the GPU above (the rule measured on the M3 Max, overridable with `KOKORO_DECODER_PRE_ANE_MAX_SECONDS` and `--decoder-pre-ane-max`); the M1 prefers its Neural Engine throughout, which the next commit measures per machine.
+- `swift/Sources/KokoroPipeline/MultifunctionPackages.swift`, `KokoroBenchmark/main.swift` - loading by function name, falling back to the separate packages when no multifunction package is present.
+
+### Verification
+
+```bash
+pytest -q tests/test_export_wrappers_shapes.py           # 27 passed: mask alignment, matmul statistics, masked pool, Core ML conversion of the flexible axes
+cd swift && swift test                                    # 58 passed: granule, mask inputs, placement rule, multifunction discovery
+python -m export_synth.main --mode decoder-har --buckets 30s --time-axis range
+python export_decoder_pre.py --buckets 30 --time-axis range
+python scripts/build_multifunction_packages.py --models-dir coreml
+```
+
+Final numbers, best warm median over three interleaved passes, seven frozen inputs (the `over` inputs spill into the next bucket):
+
+| input | M3 Max post #7-#11 | M3 Max this branch | M1 post #7-#11 | M1 this branch |
+| --- | ---: | ---: | ---: | ---: |
+| 3s | 48 ms (58x) | 46 ms (61x) | 209 ms (13x) | 198 ms (14x) |
+| over3 | 92 ms (35x) | 55 ms (59x) | 408 ms (8x) | 230 ms (14x) |
+| 7s | 97 ms (70x) | 91 ms (74x) | 418 ms (16x) | 399 ms (17x) |
+| over7 | 128 ms (56x) | 97 ms (74x) | 563 ms (13x) | 426 ms (17x) |
+| 15s | 198 ms (70x) | 173 ms (80x) | 851 ms (16x) | 791 ms (18x) |
+| over15 | 384 ms (39x) | 194 ms (78x) | 1,579 ms (10x) | 883 ms (17x) |
+| 30s | 406 ms (67x) | 331 ms (83x) | 1,662 ms (16x) | 1,531 ms (18x) |
+
+Parity of the flexible generator against PyTorch fp32 on the same tensors is 43.2-44.3 dB at exact lengths (the fixed packages 45.8-46.3 dB: the fp16 kernels the runtime selects for symbolic shapes lose 1-2 dB at every tap from the first conv, a single conv already 1.1 dB; fp32 convs restore it at +30%). A masked granule tail costs 0-5 dB against the exact-length render. WAV renders against the bucketed arm correlate at 0.993-0.995; Willem heard the M3 Max and M1 renders as identical to each other and to the PyTorch reference. Peak RSS 382 / 578 MB at 3 / 30 s on the M3 Max (buckets 314 / 599), bounded over many lengths.
+
+### Investigation Log
+
+- The unmasked flexible program (exact lengths, no mask) was 2.4 dB under the fixed packages and grew a process by about 6 MB per distinct input shape (100 lengths -> 1.0-1.2 GB, 200 -> 1.66 GB; the GPU backend caches a compiled executable per shape and evicts slowly; the optimisation hints make it worse, `Infrequent` compiling a 28 MB specialisation per shape). Rounding lengths to a 0.5 s granule bounds it (48 shapes over 100 random lengths, +52 MB) but 2% of unmasked tail already costs 20 dB because every conv bias refills the padding, so the mask stays.
+- `EnumeratedShapes` keeps the fixed-shape parity (45.7-46.2 dB) but pays about 140 ms on every call whose shape differs from the previous one, whatever the hints, plus ~725 ms per shape once per machine (disk-cached) and 10-17 MB per specialised shape: a no-go for a pipeline whose length changes every call.
+- f0ntrain and duration lose under a symbolic axis: an `lstm` over a symbolic length runs ~5x slower on the CPU whatever its form (51 vs 10.8 ms at 1,200 frames), and the duration planner pins the whole symbolic graph to the CPU behind the no-op `masked_fill` ops of the exact wrappers. Both keep their buckets and masks.
+- The masked path's residual against the native run (x_pre 29-37 dB on every input, whatever the fill) was the last valid output frame of each upsampling block: the transposed-conv pool (kernel 3, stride 2, output padding 1) writes its bias on the padded frames and conv1 (kernel 3) reads one of them for its last valid output; multiplying the pool output by the upsampled mask before conv1 lifts x_pre to 51-60 dB at every length (f0 and n unchanged). The fixed packages had the same one-frame residual since #6.
+- Every other stage's placement was swept on both machines: on the M3 Max the Neural Engine wins duration up to t256 by 1.5-4 ms and f0ntrain up to t280 by a tie's width; on the M1 it wins duration from t128 by 10-16 ms and f0ntrain up to t600 by 3-6 ms, and decoder-pre throughout. A measured per-machine placement of all three stages is the next commit.
+
+### If This Recurs
+
+A flexible export that runs but is slow: dump its compute plan (`scripts/dump_device_compute_plan.py`) and count `matmul` against `reduce_mean` in the package; an all-CPU plan means a shape-dependent op (`select`, `shape`, `tile`) dragged the graph, a GPU plan with no `matmul` means the export loaded the model under a suffixed package name and the class match for `matmul_stats` did not fire. A process whose memory grows with every utterance is the per-shape cache: check that lengths are rounded (`flexibleTimeAxis`).
+
+---
+
 ## Issue: Bucket padding contaminated every time-axis statistic and the f0ntrain BiLSTM — Resolved
 
 **First spotted:** 2026-09-14
