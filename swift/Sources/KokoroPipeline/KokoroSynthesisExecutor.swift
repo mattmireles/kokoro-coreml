@@ -17,19 +17,29 @@ public protocol KokoroModelProvider {
     func flexibleGeneratorModel() -> MLModel?
     /// Flexible decoder-pre program for the GPU buckets, or nil to use the bucket packages.
     func flexibleDecoderPreModel() -> MLModel?
+    /// Where decoder-pre runs on this machine (see `DecoderPrePlacement`).
+    func decoderPrePlacement() -> DecoderPrePlacement
+    /// Whether a fixed decoder-pre model (package or multifunction function) exists for the bucket.
+    func hasFixedDecoderPre(bucketSec: Int) -> Bool
 }
 
 public extension KokoroModelProvider {
     func prepareForBucket(bucketSec: Int, tFrames: Int) throws {}
     func flexibleGeneratorModel() -> MLModel? { nil }
     func flexibleDecoderPreModel() -> MLModel? { nil }
+    func decoderPrePlacement() -> DecoderPrePlacement {
+        DecoderPrePlacement(neuralEngineMaxBucketSeconds: DecoderPrePlacement.gpuWinsThresholdSeconds, source: "default", deviceName: DecoderPrePlacement.currentDeviceName)
+    }
+    func hasFixedDecoderPre(bucketSec: Int) -> Bool { true }
 }
 
 /// Which decoder-pre program serves `bucketSec`: the flexible GPU program when
-/// one is loaded and the bucket is above the Neural Engine range, else the
-/// bucket's fixed package.
-public func usesFlexibleDecoderPre(bucketSec: Int, flexibleLoaded: Bool) -> Bool {
-    flexibleLoaded && bucketSec > PipelineConstants.decoderPreNeuralEngineMaxBucketSeconds
+/// one is loaded and the bucket is above the Neural Engine range of this
+/// machine's placement, or when the bucket has no fixed model at all (a model
+/// set that ships only the short Neural Engine packages); else the bucket's
+/// fixed package.
+public func usesFlexibleDecoderPre(bucketSec: Int, flexibleLoaded: Bool, neuralEngineMaxBucketSeconds: Int = DecoderPrePlacement.gpuWinsThresholdSeconds, fixedAvailable: Bool = true) -> Bool {
+    flexibleLoaded && (bucketSec > neuralEngineMaxBucketSeconds || !fixedAvailable)
 }
 
 /// Pre-tokenized synthesis request for the shared Swift/Core ML pipeline.
@@ -243,7 +253,7 @@ public func executeKokoroSynthesis(
     let t8 = CFAbsoluteTimeGetCurrent()
     let flexibleGen = modelProvider.flexibleGeneratorModel()
     let flexiblePre = modelProvider.flexibleDecoderPreModel()
-    let preIsFlexible = usesFlexibleDecoderPre(bucketSec: bucketSec, flexibleLoaded: flexiblePre != nil)
+    let preIsFlexible = usesFlexibleDecoderPre(bucketSec: bucketSec, flexibleLoaded: flexiblePre != nil, neuralEngineMaxBucketSeconds: modelProvider.decoderPrePlacement().neuralEngineMaxBucketSeconds, fixedAvailable: modelProvider.hasFixedDecoderPre(bucketSec: bucketSec))
     let bucketSamples = bucketSec * PipelineConstants.sampleRate
     let bucketF0Len = Int(round(Double(bucketSamples) / Double(HarmonicConstants.upsampleScale)))
     let fullF0Len: Int
@@ -576,7 +586,7 @@ private func warmModels(
 
     // Same program choice and lengths as the timed run.
     let flexiblePre = modelProvider.flexibleDecoderPreModel()
-    let preIsFlexible = usesFlexibleDecoderPre(bucketSec: probe.bucketSec, flexibleLoaded: flexiblePre != nil)
+    let preIsFlexible = usesFlexibleDecoderPre(bucketSec: probe.bucketSec, flexibleLoaded: flexiblePre != nil, neuralEngineMaxBucketSeconds: modelProvider.decoderPrePlacement().neuralEngineMaxBucketSeconds, fixedAvailable: modelProvider.hasFixedDecoderPre(bucketSec: probe.bucketSec))
     let decPreModel = try preIsFlexible ? flexiblePre! : modelProvider.decoderPreModel(bucketSec: probe.bucketSec)
     let warmFrameCount: Int
     if preIsFlexible, let flexiblePre, let accepted = flexibleTimeRange(of: flexiblePre, input: "asr") {

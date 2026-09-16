@@ -119,8 +119,12 @@ class ModelCache: KokoroModelProvider {
     private var f0nMulti: MultifunctionPackage??
     private var preMulti: MultifunctionPackage??
 
+    /// Resolved once for staged units: override, cache, or a measurement on this arm's 30 s decoder-pre.
+    private(set) var placement: DecoderPrePlacement
+
     init(modelsDir: URL, computeUnits: MLComputeUnits = .all, stagedComputeUnits: Bool = false) {
         self.modelsDir = modelsDir
+        self.placement = DecoderPrePlacement(neuralEngineMaxBucketSeconds: DecoderPrePlacement.neuralEngineThroughoutSeconds, source: "pending", deviceName: DecoderPrePlacement.currentDeviceName)
         self.computeUnits = computeUnits
         self.stagedComputeUnits = stagedComputeUnits
         if stagedComputeUnits {
@@ -134,7 +138,19 @@ class ModelCache: KokoroModelProvider {
         }
         self.durationChoices = KokoroPipeline.discoverDurationChoices(modelsDirectory: modelsDir)
         if stagedComputeUnits {
-            fputs("  Compute units: staged (duration/f0n/generator=cpuAndGPU, decoderPre=cpuAndNeuralEngine up to \(PipelineConstants.decoderPreNeuralEngineMaxBucketSeconds)s, cpuAndGPU above)\n", stderr)
+            let fingerprint = [PipelineConstants.decoderPreMultifunctionPackage, PipelineConstants.durationMultifunctionPackage, PipelineConstants.f0ntrainMultifunctionPackage, "kokoro_decoder_pre_30s.mlpackage"]
+                .map { DecoderPrePlacement.packageFingerprint(of: modelsDir.appendingPathComponent($0)) }.joined(separator: ",")
+            placement = DecoderPrePlacement.resolve(cacheKey: DecoderPrePlacement.cacheKey(deviceName: DecoderPrePlacement.currentDeviceName, packageFingerprint: fingerprint), measure: { [self] in
+                fputs("  Measuring placement (Neural Engine vs GPU: decoder-pre 30 s, duration t256, f0ntrain t1200/t600/t280)...\n", stderr)
+                return try DecoderPrePlacement.measuredThresholds(largestBucketSeconds: 30) { stage, size, units in
+                    switch stage {
+                    case "decoder-pre": return size == 30 && units == .cpuAndGPU ? (self.flexibleDecoderPreModel() ?? (try? self.loadDecoderPreForMeasurement(bucket: size, units: units))) : (try? self.loadDecoderPreForMeasurement(bucket: size, units: units))
+                    case "duration": return try? self.loadDurationForMeasurement(tokens: size, units: units)
+                    default: return try? self.loadF0ForMeasurement(tFrames: size, units: units)
+                    }
+                }
+            })
+            fputs("  Compute units: staged (generator=cpuAndGPU; Neural Engine for decoderPre up to \(placement.neuralEngineMaxBucketSeconds)s, duration up to t\(placement.durationNeuralEngineMaxTokens), f0ntrain up to t\(placement.f0ntrainNeuralEngineMaxFrames); GPU above [\(placement.source), \(placement.deviceName)])\n", stderr)
         } else {
             fputs("  Compute units: \(computeUnitLabel(computeUnits))\n", stderr)
         }
@@ -144,7 +160,34 @@ class ModelCache: KokoroModelProvider {
     /// decoder-pre placement follows the bucket under the staged policy (see
     /// `PipelineConstants.decoderPreComputeUnits`); other policies use one unit.
     private func decoderPreConfig(bucket: Int) -> MLModelConfiguration {
-        Self.makeConfig(stagedComputeUnits ? PipelineConstants.decoderPreComputeUnits(bucketSec: bucket) : computeUnits)
+        Self.makeConfig(stagedComputeUnits ? placement.computeUnits(bucketSec: bucket) : computeUnits)
+    }
+
+    func decoderPrePlacement() -> DecoderPrePlacement { placement }
+
+    /// Models for the placement measurement only (not cached).
+    private func loadDurationForMeasurement(tokens: Int, units: MLComputeUnits) throws -> MLModel {
+        guard let choice = durationChoices.first(where: { $0.allowsPadding && $0.tokenLength == tokens }) else { throw PipelineError.modelNotLoaded("duration t\(tokens)") }
+        let config = Self.makeConfig(units)
+        if let functionName = choice.functionName {
+            guard #available(macOS 15.0, *) else { throw PipelineError.modelNotLoaded("\(choice.cacheKey): function \(functionName) needs macOS 15") }
+            config.functionName = functionName
+        }
+        return try MLModel(contentsOf: try compiledDurationURL(choice: choice), configuration: config)
+    }
+
+    private func loadF0ForMeasurement(tFrames: Int, units: MLComputeUnits) throws -> MLModel {
+        if let multi = f0nMultifunction(), multi.functionNames.contains(PipelineConstants.f0ntrainFunctionName(tFrames: tFrames)) {
+            return try multi.load(function: PipelineConstants.f0ntrainFunctionName(tFrames: tFrames), computeUnits: units)
+        }
+        return try MLModel(contentsOf: try compiledF0nURL(tFrames: tFrames), configuration: Self.makeConfig(units))
+    }
+
+    private func loadDecoderPreForMeasurement(bucket: Int, units: MLComputeUnits) throws -> MLModel {
+        if let multi = preMultifunction(), multi.functionNames.contains(PipelineConstants.decoderPreFunctionName(bucketSec: bucket)) {
+            return try multi.load(function: PipelineConstants.decoderPreFunctionName(bucketSec: bucket), computeUnits: units)
+        }
+        return try MLModel(contentsOf: try compiledDecPreURL(bucket: bucket), configuration: Self.makeConfig(units))
     }
 
     private static func makeConfig(_ computeUnits: MLComputeUnits) -> MLModelConfiguration {
@@ -188,6 +231,11 @@ class ModelCache: KokoroModelProvider {
         let model = loadFlexible(PipelineConstants.flexibleGeneratorPackage, label: "generator")
         flexibleGen = .some(model)
         return model
+    }
+
+    func hasFixedDecoderPre(bucketSec: Int) -> Bool {
+        if let multi = preMultifunction(), multi.functionNames.contains(PipelineConstants.decoderPreFunctionName(bucketSec: bucketSec)) { return true }
+        return FileManager.default.fileExists(atPath: modelsDir.appendingPathComponent("kokoro_decoder_pre_\(bucketSec)s.mlpackage").path)
     }
 
     func flexibleDecoderPreModel() -> MLModel? {
@@ -278,12 +326,12 @@ class ModelCache: KokoroModelProvider {
         if let cached = durationModels[choice.cacheKey] { return cached }
         let compiled = try compiledDurationURL(choice: choice)
         fputs("  Loading duration \(choice.cacheKey)...\n", stderr)
-        let config = Self.makeConfig(durationConfig.computeUnits)
+        let config = Self.makeConfig(stagedComputeUnits ? placement.computeUnits(durationTokens: choice.tokenLength) : durationConfig.computeUnits)
         if let functionName = choice.functionName {
             guard #available(macOS 15.0, *) else { throw PipelineError.modelNotLoaded("\(choice.cacheKey): function \(functionName) needs macOS 15") }
             config.functionName = functionName
         }
-        let model = try MLModel(contentsOf: compiled, configuration: config)
+        let model = try MLModel.withGPUFallback(config, log: { fputs("  \($0)\n", stderr) }) { try MLModel(contentsOf: compiled, configuration: $0) }
         durationModels[choice.cacheKey] = model
         return model
     }
@@ -292,13 +340,13 @@ class ModelCache: KokoroModelProvider {
         if let cached = f0nModels[tFrames] { return cached }
         if let multi = f0nMultifunction(), multi.functionNames.contains(PipelineConstants.f0ntrainFunctionName(tFrames: tFrames)) {
             fputs("  Loading f0ntrain function t\(tFrames)...\n", stderr)
-            let model = try multi.load(function: PipelineConstants.f0ntrainFunctionName(tFrames: tFrames), computeUnits: f0nConfig.computeUnits)
+            let model = try multi.load(function: PipelineConstants.f0ntrainFunctionName(tFrames: tFrames), computeUnits: stagedComputeUnits ? placement.computeUnits(f0ntrainFrames: tFrames) : f0nConfig.computeUnits)
             f0nModels[tFrames] = model
             return model
         }
         let compiled = try compiledF0nURL(tFrames: tFrames)
         fputs("  Loading f0ntrain tFrames=\(tFrames)...\n", stderr)
-        let model = try MLModel(contentsOf: compiled, configuration: f0nConfig)
+        let model = try MLModel.withGPUFallback(Self.makeConfig(stagedComputeUnits ? placement.computeUnits(f0ntrainFrames: tFrames) : f0nConfig.computeUnits), log: { fputs("  \($0)\n", stderr) }) { try MLModel(contentsOf: compiled, configuration: $0) }
         f0nModels[tFrames] = model
         return model
     }
@@ -313,7 +361,7 @@ class ModelCache: KokoroModelProvider {
         }
         let compiled = try compiledDecPreURL(bucket: bucket)
         fputs("  Loading decoder_pre \(bucket)s...\n", stderr)
-        let model = try MLModel(contentsOf: compiled, configuration: decoderPreConfig(bucket: bucket))
+        let model = try MLModel.withGPUFallback(decoderPreConfig(bucket: bucket), log: { fputs("  \($0)\n", stderr) }) { try MLModel(contentsOf: compiled, configuration: $0) }
         decPreModels[bucket] = model
         return model
     }
@@ -785,6 +833,14 @@ func main() throws {
             batchMode = true
         case "--compute-units":
             i += 1; computeUnitsStr = args[i]
+        case "--decoder-pre-ane-max":
+            // Neural Engine up to this bucket, GPU above: overrides the measured
+            // placement through the environment variable DecoderPrePlacement reads.
+            setenv(DecoderPrePlacement.overrideEnvironmentVariable, args[i + 1], 1); i += 1
+        case "--duration-ane-max":
+            setenv(DecoderPrePlacement.durationOverrideEnvironmentVariable, args[i + 1], 1); i += 1
+        case "--f0ntrain-ane-max":
+            setenv(DecoderPrePlacement.f0ntrainOverrideEnvironmentVariable, args[i + 1], 1); i += 1
         case "--no-duration-check":
             // Forced-bucket sweeps render an utterance in a bucket its
             // canonical duration would not select; the length is still right.
@@ -798,7 +854,7 @@ func main() throws {
     guard let modelsDir = modelsDir,
           let inputsDir = inputsDir,
           let hnsfWeightsPath = hnsfWeightsPath else {
-        fputs("Usage: kokoro-bench --models-dir DIR --inputs-dir DIR --hnsf-weights FILE [--input-key KEY | --batch] [--no-duration-check]\n", stderr)
+        fputs("Usage: kokoro-bench --models-dir DIR --inputs-dir DIR --hnsf-weights FILE [--input-key KEY | --batch] [--no-duration-check] [--decoder-pre-ane-max SEC] [--duration-ane-max TOKENS] [--f0ntrain-ane-max FRAMES]\n", stderr)
         exit(1)
     }
 

@@ -62,6 +62,6 @@ public struct MultifunctionPackage {
         let config = MLModelConfiguration()
         config.computeUnits = computeUnits
         config.functionName = name
-        return try MLModel(contentsOf: compiledURL, configuration: config)
+        return try MLModel.withGPUFallback(config) { try MLModel(contentsOf: compiledURL, configuration: $0) }
     }
 }

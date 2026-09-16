@@ -49,14 +49,15 @@ Bucketing exists to give a stage a fighting chance on the Neural Engine, which n
 - `export_decoder_pre.py` - `--time-axis range` for decoder-pre (asr 20..1200 frames), with the mask.
 - `scripts/build_multifunction_packages.py` - the bucketed stages (duration t64-t512, f0ntrain t120-t1200, decoder-pre 3-30 s) merge into one multifunction package each, weights stored once: 664 MB -> 242 MB on disk for the set; disk only, each loaded function is resident on its own.
 - `swift/Sources/KokoroPipeline/KokoroSynthesisExecutor.swift`, `KokoroPipeline.swift`, `MLMultiArrayHelpers.swift` - the flexible generator serves every utterance and the flexible decoder-pre the buckets above the Neural Engine range; lengths round up to the 0.5 s granule (`flexibleTimeAxis`), the masks are built from each input's declared bounds (`flexibleMaskInputs`), the harmonic source runs on a background queue while decoder-pre predicts (`decoderPreHnsfOverlap`), and a bucket without a fixed model is served by the flexible program.
-- `swift/Sources/KokoroPipeline/DecoderPrePlacement.swift` - decoder-pre on the Neural Engine up to 10 s and on the GPU above (the rule measured on the M3 Max, overridable with `KOKORO_DECODER_PRE_ANE_MAX_SECONDS` and `--decoder-pre-ane-max`); the M1 prefers its Neural Engine throughout, which the next commit measures per machine.
+- `swift/Sources/KokoroPipeline/DecoderPrePlacement.swift` - three thresholds (decoder-pre in bucket seconds, duration in tokens, f0ntrain in frames): per-stage overrides (`KOKORO_DECODER_PRE_ANE_MAX_SECONDS`, `KOKORO_DURATION_ANE_MAX_TOKENS`, `KOKORO_F0NTRAIN_ANE_MAX_FRAMES`, bench flags `--decoder-pre-ane-max`, `--duration-ane-max`, `--f0ntrain-ane-max`), else a cached answer keyed by Metal device, macOS version and the fingerprints of the three multifunction packages and the 30 s decoder-pre package (sizes and newest file date, `Manifest.json` excluded because coremltools rewrites it on open), else one measurement per machine: decoder-pre at the 30 s bucket, duration at t512 then t256, f0ntrain at t1200, t600, t280, largest first, sizes below the smallest measured following it; the Neural Engine must be 5% faster to be chosen (a tie flapped between runs). Measured: M3 Max decoder-pre up to 10 s, duration up to t256, f0ntrain up to t280; M1 Neural Engine throughout for decoder-pre, duration up to t512, f0ntrain up to t280. A set without the 30 s fixed model keeps the Neural Engine for the buckets it has and still measures the other stages.
 - `swift/Sources/KokoroPipeline/MultifunctionPackages.swift`, `KokoroBenchmark/main.swift` - loading by function name, falling back to the separate packages when no multifunction package is present.
+- `swift/Sources/KokoroPipeline/NeuralEngineFallback.swift` - a Neural Engine load that throws is retried on the GPU with the same configuration: the M1 (macOS 26.6) cannot compile the duration t64 program for its Neural Engine (`ANECCompile() FAILED`; through a multifunction package it surfaces as `functionName must be nil unless the model type is ML Program`) while t128 and above compile, and the placement lets t64 follow the measured t256.
 
 ### Verification
 
 ```bash
 pytest -q tests/test_export_wrappers_shapes.py           # 27 passed: mask alignment, matmul statistics, masked pool, Core ML conversion of the flexible axes
-cd swift && swift test                                    # 58 passed: granule, mask inputs, placement rule, multifunction discovery
+cd swift && swift test                                    # 70 passed: granule, mask inputs, placement resolution, cache and margin, Neural Engine fallback, multifunction discovery
 python -m export_synth.main --mode decoder-har --buckets 30s --time-axis range
 python export_decoder_pre.py --buckets 30 --time-axis range
 python scripts/build_multifunction_packages.py --models-dir coreml
@@ -66,13 +67,13 @@ Final numbers, best warm median over three interleaved passes, seven frozen inpu
 
 | input | M3 Max post #7-#11 | M3 Max this branch | M1 post #7-#11 | M1 this branch |
 | --- | ---: | ---: | ---: | ---: |
-| 3s | 48 ms (58x) | 46 ms (61x) | 209 ms (13x) | 198 ms (14x) |
-| over3 | 92 ms (35x) | 55 ms (59x) | 408 ms (8x) | 230 ms (14x) |
-| 7s | 97 ms (70x) | 91 ms (74x) | 418 ms (16x) | 399 ms (17x) |
-| over7 | 128 ms (56x) | 97 ms (74x) | 563 ms (13x) | 426 ms (17x) |
-| 15s | 198 ms (70x) | 173 ms (80x) | 851 ms (16x) | 791 ms (18x) |
-| over15 | 384 ms (39x) | 194 ms (78x) | 1,579 ms (10x) | 883 ms (17x) |
-| 30s | 406 ms (67x) | 331 ms (83x) | 1,662 ms (16x) | 1,531 ms (18x) |
+| 3s | 48 ms (58x) | 44 ms (63x) | 209 ms (13x) | 197 ms (14x) |
+| over3 | 92 ms (35x) | 53 ms (61x) | 408 ms (8x) | 229 ms (14x) |
+| 7s | 97 ms (70x) | 89 ms (75x) | 418 ms (16x) | 408 ms (17x) |
+| over7 | 128 ms (56x) | 95 ms (75x) | 563 ms (13x) | 436 ms (16x) |
+| 15s | 198 ms (70x) | 170 ms (82x) | 851 ms (16x) | 775 ms (18x) |
+| over15 | 384 ms (39x) | 190 ms (79x) | 1,579 ms (10x) | 875 ms (17x) |
+| 30s | 406 ms (67x) | 330 ms (83x) | 1,662 ms (16x) | 1,487 ms (18x) |
 
 Parity of the flexible generator against PyTorch fp32 on the same tensors is 43.2-44.3 dB at exact lengths (the fixed packages 45.8-46.3 dB: the fp16 kernels the runtime selects for symbolic shapes lose 1-2 dB at every tap from the first conv, a single conv already 1.1 dB; fp32 convs restore it at +30%). A masked granule tail costs 0-5 dB against the exact-length render. WAV renders against the bucketed arm correlate at 0.993-0.995; Willem heard the M3 Max and M1 renders as identical to each other and to the PyTorch reference. Peak RSS 382 / 578 MB at 3 / 30 s on the M3 Max (buckets 314 / 599), bounded over many lengths.
 
@@ -82,7 +83,7 @@ Parity of the flexible generator against PyTorch fp32 on the same tensors is 43.
 - `EnumeratedShapes` keeps the fixed-shape parity (45.7-46.2 dB) but pays about 140 ms on every call whose shape differs from the previous one, whatever the hints, plus ~725 ms per shape once per machine (disk-cached) and 10-17 MB per specialised shape: a no-go for a pipeline whose length changes every call.
 - f0ntrain and duration lose under a symbolic axis: an `lstm` over a symbolic length runs ~5x slower on the CPU whatever its form (51 vs 10.8 ms at 1,200 frames), and the duration planner pins the whole symbolic graph to the CPU behind the no-op `masked_fill` ops of the exact wrappers. Both keep their buckets and masks.
 - The masked path's residual against the native run (x_pre 29-37 dB on every input, whatever the fill) was the last valid output frame of each upsampling block: the transposed-conv pool (kernel 3, stride 2, output padding 1) writes its bias on the padded frames and conv1 (kernel 3) reads one of them for its last valid output; multiplying the pool output by the upsampled mask before conv1 lifts x_pre to 51-60 dB at every length (f0 and n unchanged). The fixed packages had the same one-frame residual since #6.
-- Every other stage's placement was swept on both machines: on the M3 Max the Neural Engine wins duration up to t256 by 1.5-4 ms and f0ntrain up to t280 by a tie's width; on the M1 it wins duration from t128 by 10-16 ms and f0ntrain up to t600 by 3-6 ms, and decoder-pre throughout. A measured per-machine placement of all three stages is the next commit.
+- Every other stage's placement was swept on both machines: on the M3 Max the Neural Engine wins duration up to t256 by 1.5-4 ms and f0ntrain up to t280 by a tie's width; on the M1 it wins duration from t128 by 10-16 ms and f0ntrain up to t600 by 3-6 ms. The measurement now covers all three stages (above). Its cold-start price: the Neural Engine program of the duration model takes about 3 s to build per process when the package is compiled afresh (bench and library), 0.08 s once the OS has cached it for a compiled model at a stable path, so an app that ships `.mlmodelc` pays it once; the bench's cold numbers pay it every process (M3 Max 3 s input: 5.3 s with duration on the GPU, 8.8 s on the Neural Engine).
 
 ### If This Recurs
 

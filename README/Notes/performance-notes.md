@@ -3446,60 +3446,62 @@ Bakeoff plan Phase 7: `README/Plans/003-kokoro-bakeoff-plan.md`
 
 ### Summary
 
-The generator runs as one `RangeDim` program for every length (40 to 2,400 x_pre frames) and decoder-pre as one for the buckets above the Neural Engine range, both masked, lengths rounded up to a 0.5 s granule; duration and f0ntrain keep their buckets (an LSTM over a symbolic axis is ~5x slower). The bucketed stages ship as one multifunction package each (242 MB for the set against 881). Decoder-pre runs on the Neural Engine up to 10 s and on the GPU above, duration and f0ntrain on the GPU. Cost is now linear in the audio length on both machines; the arms below follow the PR sequence.
+The generator runs as one `RangeDim` program for every length (40 to 2,400 x_pre frames) and decoder-pre as one for the buckets above the Neural Engine range, both masked, lengths rounded up to a 0.5 s granule; duration and f0ntrain keep their buckets (an LSTM over a symbolic axis is ~5x slower). The bucketed stages ship as one multifunction package each (242 MB for the set against 881). The engine of each stage is measured once per machine (decoder-pre at 30 s, duration at t256, f0ntrain at t1200 / t600 / t280) and cached by device, macOS version and package fingerprint. Cost is now linear in the audio length on both machines; the arms below follow the PR sequence.
 
 ### End-to-end wall time (best warm median over three interleaved passes, milliseconds)
 
-Four arms: original main (`fa57641`), post #6 (mask-aware buckets), post #7-#11, dynamic lengths + multifunction (this branch: Neural Engine for decoder-pre up to 10 s, duration and f0ntrain on the GPU). Seven frozen inputs; `over` inputs spill into the next bucket.
+Five arms: original main (`fa57641`), post #6 (mask-aware buckets), post #7-#11, dynamic lengths + multifunction (this PR's packages under the pipeline commit's constant: Neural Engine for decoder-pre up to 10 s, duration and f0ntrain on the GPU), generalised automatic placement (the same packages with the measured placement). Seven frozen inputs; `over` inputs spill into the next bucket.
 
-M3 Max (MacBook Pro, 2023), staged compute units:
+M3 Max (MacBook Pro, 2023), staged compute units; measured placement: decoder-pre up to 10 s, duration up to t256, f0ntrain up to t280 on the Neural Engine:
 
-| input | audio s | original main | post #6 | post #7-#11 | dynamic + multifunction |
+| input | audio s | original main | post #6 | post #7-#11 | dynamic + multifunction | automatic placement |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 3s | 2.80 | 110.0 | 55.1 | 48.5 | 45.9 | 44.2 |
+| over3 | 3.25 | 160.0 | 107.2 | 92.2 | 55.1 | 53.4 |
+| 7s | 6.75 | 232.4 | 112.8 | 97.0 | 91.2 | 89.4 |
+| over7 | 7.12 | 267.4 | 149.9 | 128.0 | 96.6 | 94.7 |
+| 15s | 13.90 | 486.1 | 230.9 | 197.5 | 172.8 | 170.3 |
+| over15 | 15.05 | 710.1 | 452.5 | 383.7 | 193.9 | 190.3 |
+| 30s | 27.38 | 1,050.2 | 475.1 | 406.2 | 331.3 | 330.4 |
+
+M1 (Mac mini, 8 GB), same packages and binaries; measured placement: decoder-pre throughout, duration up to t256 (t64 falls back to the GPU: its Neural Engine program does not compile there), f0ntrain up to t600:
+
+| input | original main | post #6 | post #7-#11 | dynamic + multifunction | automatic placement |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 3s | 2.80 | 110.0 | 55.1 | 48.5 | 45.9 |
-| over3 | 3.25 | 160.0 | 107.2 | 92.2 | 55.1 |
-| 7s | 6.75 | 232.4 | 112.8 | 97.0 | 91.2 |
-| over7 | 7.12 | 267.4 | 149.9 | 128.0 | 96.6 |
-| 15s | 13.90 | 486.1 | 230.9 | 197.5 | 172.8 |
-| over15 | 15.05 | 710.1 | 452.5 | 383.7 | 193.9 |
-| 30s | 27.38 | 1,050.2 | 475.1 | 406.2 | 331.3 |
-
-M1 (Mac mini, 8 GB), same packages and binaries:
-
-| input | original main | post #6 | post #7-#11 | dynamic + multifunction |
-| --- | ---: | ---: | ---: | ---: |
-| 3s | 288.5 | 239.0 | 209.3 | 197.8 |
-| over3 | 535.7 | 480.4 | 408.1 | 229.9 |
-| 7s | 617.0 | 487.7 | 417.7 | 399.3 |
-| over7 | 786.8 | 664.9 | 563.4 | 426.2 |
-| 15s | 1,265.6 | 995.9 | 851.1 | 791.2 |
-| over15 | 2,145.6 | 1,876.8 | 1,578.8 | 883.2 |
-| 30s | 2,549.1 | 1,960.3 | 1,661.9 | 1,531.4 |
+| 3s | 288.5 | 239.0 | 209.3 | 197.8 | 196.6 |
+| over3 | 535.7 | 480.4 | 408.1 | 229.9 | 229.3 |
+| 7s | 617.0 | 487.7 | 417.7 | 399.3 | 408.2 |
+| over7 | 786.8 | 664.9 | 563.4 | 426.2 | 436.1 |
+| 15s | 1,265.6 | 995.9 | 851.1 | 791.2 | 775.1 |
+| over15 | 2,145.6 | 1,876.8 | 1,578.8 | 883.2 | 875.1 |
+| 30s | 2,549.1 | 1,960.3 | 1,661.9 | 1,531.4 | 1,487.0 |
 
 The M1 is a CI runner; its passes were taken with the runner idle (load below 2.5 for three minutes before each chain; the unchanged duration stage is the tell, 177 ms at 30 s when idle). Passes agree within 1-4 ms on both machines.
 
 ### Realtime factor, memory, disk, load
 
-| | M3 Max post #7-#11 | M3 Max this branch | M1 post #7-#11 | M1 this branch |
+| | M3 Max post #7-#11 | M3 Max automatic placement | M1 post #7-#11 | M1 automatic placement |
 | --- | ---: | ---: | ---: | ---: |
-| realtime, well-filled inputs | 58-70x | 61-83x | 13-16x | 14-18x |
-| realtime, spills | 35-56x | 59-78x | 8-13x | 14-17x |
-| peak RSS 3 s / 30 s | 316 / 517 MB | 436 / 601 MB | 312 / 524 MB | 408 / 593 MB |
+| realtime, well-filled inputs | 58-70x | 63-83x | 13-16x | 14-18x |
+| realtime, spills | 35-56x | 61-79x | 8-13x | 14-17x |
+| peak RSS 3 s / 30 s | 316 / 517 MB | 299 / 600 MB | 312 / 524 MB | 386 / 596 MB |
 | model set on disk | 881 MB, 20 packages | 242 MB, 5 packages | same | same |
-| cold process, 3 s / 30 s | 3.0 / 5.5 s | 5.3 / 4.5 s | 3.8 / 8.9 s | 5.6 / 7.3 s |
+| cold process, 3 s / 30 s | 3.0 / 5.5 s | 8.8 / 4.6 s | 3.8 / 8.9 s | 7.7 / 10.5 s |
 
-Original main for scale: 1,050 ms at 30 s on the M3 Max (26x), 3,051 MB peak, 533 s cold process for its unrolled duration graph; 2,549 ms (11x), 2,847 MB and 1,167 s on the M1.
+Dynamic + multifunction under the fixed rule: peak RSS 436 / 601 MB and cold process 5.3 / 4.5 s on the M3 Max, 408 / 593 MB and 5.6 / 7.3 s on the M1. Original main for scale: 1,050 ms at 30 s on the M3 Max (26x), 3,051 MB peak, 533 s cold process for its unrolled duration graph; 2,549 ms (11x), 2,847 MB and 1,167 s on the M1.
 
 ### Interpretation
 
 - Cost is linear in the audio length on both machines: the spill inputs sit on the same line as the well-filled ones (M3 Max 12-17 ms per second of audio across 3-27 s; buckets swung 14-33).
 - The two stages that stayed bucketed cost 4-17 ms (f0ntrain) and 7-44 ms (duration) in total on the M3 Max, so their padding is a few milliseconds at most.
+- The automatic placement is worth 1-4 ms on the M3 Max (duration and f0ntrain on the Neural Engine at the short sizes; decoder-pre lands where the constant had it) and 8-44 ms at 15-30 s on the M1 (decoder-pre 92 -> 40 ms at 30 s), while it loses 9-10 ms at 7 s there (duration t128 and f0ntrain t280 win on the engine probe but lose inside the pipeline). Duration t512 is never placed on the Neural Engine: it rounds one token of 1,241 the other way (1,096 frames instead of 1,095 at 30 s) where t64 to t256 agree with PyTorch token for token; the 27 ms it would save on the M1 does not buy that.
+- Cold start is where the Neural Engine placement costs: its programs compile per process when the package is compiled afresh (duration about 3 s), and the OS caches them only for a compiled model at a stable path (t64 load 4.3 s in the first process, 0.08 s after). The bench and the library compile per process, so the cold numbers above pay it every time; an app that ships `.mlmodelc` pays it once.
 - The multifunction packaging regains about 420 MB of disk (664 MB with separate packages, 242 MB with each stage's weights stored once) for about 1.5 s of cold start and about 30 MB of resident memory.
-- Quality against native PyTorch fp32 on the same tensors: x_pre 50-60 dB at every length on both machines after the last-frame fix (29-37 before it), f0 46-64 dB, n 57-66; the flexible generator's output 43-44 dB (fp16 symbolic kernels, inaudible in the listening pass). The quality gate reports `needs_listening` with no reject reasons on both machines.
+- Quality against native PyTorch fp32 on the same tensors: x_pre 50-60 dB at every length on both machines after the last-frame fix (29-37 before it), f0 46-64 dB, n 57-66; the flexible generator's output 43-44 dB (fp16 symbolic kernels, inaudible in the listening pass). The automatic placement changes which engine renders f0ntrain and duration at the short sizes, so their audio is a new path: `audio/dynamic-mf` against `audio/dynamic-mf-fixed` (M3 Max) and `audio-m1/` likewise; the quality gate reports `needs_listening` with no reject reasons on both machines.
 
 ### Provenance
 
-- Measurements: `outputs/mask-aware-bucketing/measurements/<arm>/bench_staged*/summary.json` (M3 Max), `measurements-m1/` (M1), `rss/`, `cold_*.log`, `load_disk_by_arm.json`; arm `dynamic-mf-fixed`; every intermediate number in `outputs/mask-aware-bucketing/harness/findings.md`.
+- Measurements: `outputs/mask-aware-bucketing/measurements/<arm>/bench_staged*/summary.json` (M3 Max), `measurements-m1/` (M1), `rss/`, `cold_*.log`, `load_disk_by_arm.json`; arms `dynamic-mf` (automatic placement) and `dynamic-mf-fixed` (fixed rule, placement forced through `KOKORO_DECODER_PRE_ANE_MAX_SECONDS=10 KOKORO_DURATION_ANE_MAX_TOKENS=0 KOKORO_F0NTRAIN_ANE_MAX_FRAMES=0`); every intermediate number in `outputs/mask-aware-bucketing/harness/findings.md`.
 - Charts: `outputs/mask-aware-bucketing/charts/m3-max/`, `charts/m1/`, `charts/m3-max-vs-m1/` with `data.md` tables; generated by the session's `dyn_charts_all.py` from the summaries above.
 - Quality: Swift tensor dumps scored against the native-length PyTorch fp32 run (`measurements*/<arm>/quality/snr_vs_native_pytorch.json`), WAVs against the PyTorch reference renders (`compare_pytorch_vs_<arm>.json`), `scripts/audio_quality_probe.py` gate reports.
 
