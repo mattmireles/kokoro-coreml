@@ -331,45 +331,16 @@ public func sineGenFromF0Frames(
 
     guard frameCount > 0 else { return [] }
 
-    var radDS = [Double](repeating: 0, count: frameCount)
-    var cumPhase = [Double](repeating: 0, count: frameCount)
-    var phaseScaled = [Double](repeating: 0, count: frameCount)
-    var phaseUp = [Double](repeating: 0, count: L)
-    var sinResult = [Double](repeating: 0, count: L)
-    var floatSines = [Float](repeating: 0, count: L)
-    var sineWaves = [Float](repeating: 0, count: dim * L)
+    // Legacy RNG draws: the initial-phase perturbation of the overtones lived at
+    // sample 0 of the old nearest-neighbour geometry and is not sampled by the
+    // align_corners=false downsample point, but the draws are kept so a seed
+    // still yields the same stream. Consumed in order before the fan-out.
     var rng: RandomNumberGenerator = seed.map { SeededRNG(seed: $0) as RandomNumberGenerator } ?? SystemRandomNumberGenerator()
-    let twoPiTimesScale = 2.0 * Double.pi * Double(scale)
-
-    for h in 0..<dim {
-        let invSr = Double(h + 1) / sr
-        for t in 0..<frameCount {
-            let r = (Double(f0Frames[t]) * invSr).truncatingRemainder(dividingBy: 1.0)
-            radDS[t] = r < 0 ? r + 1.0 : r
-        }
-        if h > 0 {
-            // Preserve the legacy RNG draw count. In the nearest-neighbor
-            // geometry, the old random phase perturbation lived at sample 0 and
-            // was not sampled by the align_corners=false downsample point.
-            _ = Double.random(in: 0..<1, using: &rng)
-        }
-
-        cumPhase[0] = radDS[0]
-        for t in 1..<frameCount {
-            cumPhase[t] = cumPhase[t - 1] + radDS[t]
-        }
-
-        vDSP_vsmulD(cumPhase, 1, [twoPiTimesScale], &phaseScaled, 1, vDSP_Length(frameCount))
-        linearInterpolateInto(from: phaseScaled, count: frameCount, into: &phaseUp, targetLen: L)
-
-        var n = Int32(L)
-        vvsin(&sinResult, phaseUp, &n)
-
-        vDSP_vdpsp(sinResult, 1, &floatSines, 1, vDSP_Length(L))
-        var ampScalar = sineAmp
-        vDSP_vsmul(floatSines, 1, &ampScalar, &sineWaves[h * L], 1, vDSP_Length(L))
+    for h in 0..<dim where h > 0 {
+        _ = Double.random(in: 0..<1, using: &rng)
     }
 
+    // Voiced/unvoiced mask and noise amplitude per sample, shared by all harmonics.
     let unvoicedNoiseAmp = sineAmp / 3.0
     var uvMask = [Float](repeating: 0, count: L)
     var noiseAmp = [Float](repeating: 0, count: L)
@@ -383,33 +354,89 @@ public func sineGenFromF0Frames(
         }
     }
 
+    // Stage 1, concurrent: one task per harmonic plus one task generating the
+    // Gaussian noise for all harmonics (it depends on nothing the harmonics
+    // compute). Each harmonic keeps its Double-precision phase integrator at
+    // frame rate and streams the sample-rate work through a small scratch
+    // chunk, so the working set stays in cache and nothing full-length is
+    // allocated per task. The arithmetic per value is unchanged from the
+    // sequential form, so the output is bit-identical.
     let totalNoise = dim * L
     var gaussianNoise = [Float](repeating: 0, count: totalNoise)
-    generateGaussianNoise(into: &gaussianNoise, count: totalNoise, seed: seed)
-
-    var maskedSine = [Float](repeating: 0, count: L)
-    var scaledNoise = [Float](repeating: 0, count: L)
+    var sineWaves = [Float](repeating: 0, count: dim * L)
+    let twoPiTimesScale = 2.0 * Double.pi * Double(scale)
+    let chunk = 65_536
     sineWaves.withUnsafeMutableBufferPointer { sinePtr in
-        gaussianNoise.withUnsafeBufferPointer { noisePtr in
+        gaussianNoise.withUnsafeMutableBufferPointer { noisePtr in
+            DispatchQueue.concurrentPerform(iterations: dim + 1) { task in
+                if task == dim {
+                    generateGaussianNoise(into: noisePtr, seed: seed)
+                    return
+                }
+                let h = task
+                let invSr = Double(h + 1) / sr
+                var radDS = [Double](repeating: 0, count: frameCount)
+                var cumPhase = [Double](repeating: 0, count: frameCount)
+                var phaseScaled = [Double](repeating: 0, count: frameCount)
+                for t in 0..<frameCount {
+                    let r = (Double(f0Frames[t]) * invSr).truncatingRemainder(dividingBy: 1.0)
+                    radDS[t] = r < 0 ? r + 1.0 : r
+                }
+                cumPhase[0] = radDS[0]
+                for t in 1..<frameCount {
+                    cumPhase[t] = cumPhase[t - 1] + radDS[t]
+                }
+                vDSP_vsmulD(cumPhase, 1, [twoPiTimesScale], &phaseScaled, 1, vDSP_Length(frameCount))
+
+                // Same interpolation as linearInterpolateInto, evaluated per chunk.
+                let srcLen = Double(frameCount)
+                let ratio = srcLen / Double(L)
+                var phaseUp = [Double](repeating: 0, count: chunk)
+                var sinResult = [Double](repeating: 0, count: chunk)
+                var floatSines = [Float](repeating: 0, count: chunk)
+                var ampScalar = sineAmp
+                let sineBase = sinePtr.baseAddress!.advanced(by: h * L)
+                var a = 0
+                while a < L {
+                    let b = min(a + chunk, L)
+                    let n = b - a
+                    for i in a..<b {
+                        let srcIdx = (Double(i) + 0.5) * ratio - 0.5
+                        let srcIdxClamped = max(0, min(srcIdx, srcLen - 1))
+                        let lo = Int(srcIdxClamped)
+                        let hi = min(lo + 1, frameCount - 1)
+                        let frac = srcIdxClamped - Double(lo)
+                        phaseUp[i - a] = phaseScaled[lo] * (1.0 - frac) + phaseScaled[hi] * frac
+                    }
+                    var count32 = Int32(n)
+                    vvsin(&sinResult, phaseUp, &count32)
+                    vDSP_vdpsp(sinResult, 1, &floatSines, 1, vDSP_Length(n))
+                    vDSP_vsmul(floatSines, 1, &ampScalar, sineBase.advanced(by: a), 1, vDSP_Length(n))
+                    a = b
+                }
+            }
+
+            // Stage 2, concurrent per harmonic: voiced sine plus amplitude-scaled noise, per chunk.
             uvMask.withUnsafeBufferPointer { uvPtr in
                 noiseAmp.withUnsafeBufferPointer { ampPtr in
-                    maskedSine.withUnsafeMutableBufferPointer { maskedPtr in
-                        scaledNoise.withUnsafeMutableBufferPointer { scaledPtr in
-                            for h in 0..<dim {
-                                let offset = h * L
-                                let sineBase = sinePtr.baseAddress!.advanced(by: offset)
-                                let noiseBase = noisePtr.baseAddress!.advanced(by: offset)
-                                vDSP_vmul(sineBase, 1, uvPtr.baseAddress!, 1, maskedPtr.baseAddress!, 1, vDSP_Length(L))
-                                vDSP_vmul(noiseBase, 1, ampPtr.baseAddress!, 1, scaledPtr.baseAddress!, 1, vDSP_Length(L))
-                                vDSP_vadd(maskedPtr.baseAddress!, 1, scaledPtr.baseAddress!, 1, sineBase, 1, vDSP_Length(L))
-                            }
+                    DispatchQueue.concurrentPerform(iterations: dim) { h in
+                        var maskedSine = [Float](repeating: 0, count: chunk)
+                        var scaledNoise = [Float](repeating: 0, count: chunk)
+                        let sineBase = sinePtr.baseAddress!.advanced(by: h * L)
+                        let noiseBase = UnsafePointer(noisePtr.baseAddress!.advanced(by: h * L))
+                        var a = 0
+                        while a < L {
+                            let n = min(chunk, L - a)
+                            vDSP_vmul(sineBase.advanced(by: a), 1, uvPtr.baseAddress!.advanced(by: a), 1, &maskedSine, 1, vDSP_Length(n))
+                            vDSP_vmul(noiseBase.advanced(by: a), 1, ampPtr.baseAddress!.advanced(by: a), 1, &scaledNoise, 1, vDSP_Length(n))
+                            vDSP_vadd(maskedSine, 1, scaledNoise, 1, sineBase.advanced(by: a), 1, vDSP_Length(n))
+                            a += n
                         }
                     }
                 }
             }
         }
     }
-
     assert(linearWeights.count == dim, "Linear weights must have \(dim) elements")
     var merged = [Float](repeating: 0, count: L)
     linearWeights.withUnsafeBufferPointer { weightsPtr in
@@ -716,41 +743,52 @@ struct SeededRNG: RandomNumberGenerator {
 /// Much faster than per-sample generation because it avoids protocol dispatch
 /// overhead on `RandomNumberGenerator` and can vectorize the math.
 func generateGaussianNoise(into buffer: inout [Float], count: Int, seed: UInt64? = nil) {
+    buffer.withUnsafeMutableBufferPointer { ptr in
+        generateGaussianNoise(into: UnsafeMutableBufferPointer(rebasing: ptr[0..<count]), seed: seed)
+    }
+}
+
+/// Box-Muller Gaussian noise into `buffer` (its full count): the same draw order
+/// and per-value arithmetic as before, streamed through a scratch chunk of
+/// pairs so no full-length temporaries are allocated; the pair interleave is
+/// two strided vDSP multiplies.
+func generateGaussianNoise(into buffer: UnsafeMutableBufferPointer<Float>, seed: UInt64? = nil) {
+    let count = buffer.count
     var rng = SeededRNG(seed: seed ?? UInt64.random(in: 0..<UInt64.max))
     let pairCount = (count + 1) / 2
     guard pairCount > 0 else { return }
-
-    var u1 = [Float](repeating: 0, count: pairCount)
-    var u2 = [Float](repeating: 0, count: pairCount)
     let scale = Float(0xFFFFFF)
     let tiny = Float.ulpOfOne
-    for i in 0..<pairCount {
-        u1[i] = max(tiny, Float(rng.next() & 0xFFFFFF) / scale)
-        u2[i] = Float(rng.next() & 0xFFFFFF) / scale
-    }
-
     var minusTwo = Float(-2.0)
     var twoPi = Float(2.0 * Float.pi)
-    var radii = [Float](repeating: 0, count: pairCount)
-    var theta = [Float](repeating: 0, count: pairCount)
-    vForce.log(u1, result: &radii)
-    vDSP_vsmul(radii, 1, &minusTwo, &radii, 1, vDSP_Length(pairCount))
-    vForce.sqrt(radii, result: &radii)
-    vDSP_vsmul(u2, 1, &twoPi, &theta, 1, vDSP_Length(pairCount))
-
-    var cosTheta = [Float](repeating: 0, count: pairCount)
-    var sinTheta = [Float](repeating: 0, count: pairCount)
-    var n = Int32(pairCount)
-    vvcosf(&cosTheta, theta, &n)
-    vvsinf(&sinTheta, theta, &n)
-
-    var outIndex = 0
-    for i in 0..<pairCount {
-        buffer[outIndex] = radii[i] * cosTheta[i]
-        outIndex += 1
-        if outIndex < count {
-            buffer[outIndex] = radii[i] * sinTheta[i]
-            outIndex += 1
+    let chunkPairs = 32_768
+    var u1 = [Float](repeating: 0, count: chunkPairs)
+    var u2 = [Float](repeating: 0, count: chunkPairs)
+    var radii = [Float](repeating: 0, count: chunkPairs)
+    var theta = [Float](repeating: 0, count: chunkPairs)
+    var cosTheta = [Float](repeating: 0, count: chunkPairs)
+    var sinTheta = [Float](repeating: 0, count: chunkPairs)
+    let out = buffer.baseAddress!
+    var p0 = 0
+    while p0 < pairCount {
+        let n = min(chunkPairs, pairCount - p0)
+        for i in 0..<n {
+            u1[i] = max(tiny, Float(rng.next() & 0xFFFFFF) / scale)
+            u2[i] = Float(rng.next() & 0xFFFFFF) / scale
         }
+        var n32 = Int32(n)
+        vvlogf(&radii, u1, &n32)
+        vDSP_vsmul(radii, 1, &minusTwo, &radii, 1, vDSP_Length(n))
+        vvsqrtf(&radii, radii, &n32)
+        vDSP_vsmul(u2, 1, &twoPi, &theta, 1, vDSP_Length(n))
+        vvcosf(&cosTheta, theta, &n32)
+        vvsinf(&sinTheta, theta, &n32)
+        // buffer[2i] = radii * cos, buffer[2i + 1] = radii * sin (an odd count drops the last sin).
+        vDSP_vmul(radii, 1, cosTheta, 1, out.advanced(by: 2 * p0), 2, vDSP_Length(n))
+        let sinCount = min(n, count / 2 - p0)
+        if sinCount > 0 {
+            vDSP_vmul(radii, 1, sinTheta, 1, out.advanced(by: 2 * p0 + 1), 2, vDSP_Length(sinCount))
+        }
+        p0 += n
     }
 }
