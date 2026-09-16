@@ -47,6 +47,9 @@ public enum HarmonicConstants {
     public static let sampleRate: Double = 24000.0
     /// F0 upsample factor = prod(upsample_rates) * gen_istft_hop_size = 10*6*5 = 300.
     public static let upsampleScale: Int = 300
+    /// `har` has `upsampleScale / stftHop` frames per x_pre frame plus one
+    /// (60 per 80 Hz frame: 144,001 frames for 2,400).
+    public static var stftFramesPerXPreFrame: Int { upsampleScale / stftHop }
     /// Number of harmonic overtones above fundamental. Total harmonics = harmonicNum + 1 = 9.
     public static let harmonicNum: Int = 8
     /// Total number of harmonic components (fundamental + overtones).

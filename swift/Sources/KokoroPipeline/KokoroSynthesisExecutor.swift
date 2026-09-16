@@ -13,10 +13,23 @@ public protocol KokoroModelProvider {
     func decoderPreModel(bucketSec: Int) throws -> MLModel
     func generatorModel(bucketSec: Int) throws -> MLModel
     func prepareForBucket(bucketSec: Int, tFrames: Int) throws
+    /// Flexible (RangeDim) generator program, or nil to use the bucket packages.
+    func flexibleGeneratorModel() -> MLModel?
+    /// Flexible decoder-pre program for the GPU buckets, or nil to use the bucket packages.
+    func flexibleDecoderPreModel() -> MLModel?
 }
 
 public extension KokoroModelProvider {
     func prepareForBucket(bucketSec: Int, tFrames: Int) throws {}
+    func flexibleGeneratorModel() -> MLModel? { nil }
+    func flexibleDecoderPreModel() -> MLModel? { nil }
+}
+
+/// Which decoder-pre program serves `bucketSec`: the flexible GPU program when
+/// one is loaded and the bucket is above the Neural Engine range, else the
+/// bucket's fixed package.
+public func usesFlexibleDecoderPre(bucketSec: Int, flexibleLoaded: Bool) -> Bool {
+    flexibleLoaded && bucketSec > PipelineConstants.decoderPreNeuralEngineMaxBucketSeconds
 }
 
 /// Pre-tokenized synthesis request for the shared Swift/Core ML pipeline.
@@ -223,13 +236,27 @@ public func executeKokoroSynthesis(
     try tensorDump?.writeFloatArray(name: "f0", values: f0Curve, shape: [1, f0Curve.count])
     try tensorDump?.writeFloatArray(name: "n", values: nCurve, shape: [1, nCurve.count])
 
-    // Stage 5: pad to bucket geometry.
+    // Stage 5: geometry. A flexible stage runs on the real frame counts (the
+    // f0ntrain output is cut back to them); a bucketed stage is zero-padded to
+    // its bucket and masked. Frame counts: `frames` at 40 Hz (asr, decoder-pre
+    // input), `2 * frames` at 80 Hz (f0, n, x_pre).
     let t8 = CFAbsoluteTimeGetCurrent()
+    let flexibleGen = modelProvider.flexibleGeneratorModel()
+    let flexiblePre = modelProvider.flexibleDecoderPreModel()
+    let preIsFlexible = usesFlexibleDecoderPre(bucketSec: bucketSec, flexibleLoaded: flexiblePre != nil)
     let bucketSamples = bucketSec * PipelineConstants.sampleRate
-    let fullF0Len = Int(round(Double(bucketSamples) / Double(HarmonicConstants.upsampleScale)))
+    let bucketF0Len = Int(round(Double(bucketSamples) / Double(HarmonicConstants.upsampleScale)))
+    let fullF0Len: Int
+    let frameCount: Int
+    if preIsFlexible, let flexiblePre, let accepted = flexibleTimeRange(of: flexiblePre, input: "asr") {
+        frameCount = try flexibleTimeAxis(realFrames: frames, accepted: accepted, granule: PipelineConstants.flexibleDecoderGranuleFrames, stage: "decoder-pre")
+        fullF0Len = 2 * frameCount
+    } else {
+        fullF0Len = bucketF0Len
+        frameCount = decoderPreFrameCount(fullF0Len: fullF0Len)
+    }
     let f0Padded = zeroPad1D(source: f0Curve, targetLength: fullF0Len)
     let nPadded = zeroPad1D(source: nCurve, targetLength: fullF0Len)
-    let frameCount = decoderPreFrameCount(fullF0Len: fullF0Len)
     let asrPadded = try zeroPad3D(
         source: asr,
         channels: PipelineConstants.textEncoderDim,
@@ -242,9 +269,39 @@ public func executeKokoroSynthesis(
     try tensorDump?.writeFloatArray(name: "n_padded", values: nPadded, shape: [1, fullF0Len])
     try tensorDump?.writeMLMultiArray(name: "asr_padded", array: asrPadded)
 
+    // The flexible generator takes x_pre and har at the real length rounded up
+    // to the granule (and the program's bounds); har is then built from the F0
+    // curve at that length, and stageInputs masks the padded tail.
+    let genXPreTime: Int?
+    if let flexibleGen, let accepted = flexibleTimeRange(of: flexibleGen, input: "x_pre") {
+        genXPreTime = try flexibleTimeAxis(realFrames: 2 * frames, accepted: accepted, granule: PipelineConstants.flexibleXPreGranuleFrames, stage: "generator")
+    } else {
+        genXPreTime = nil
+    }
+    let harF0 = genXPreTime.map { zeroPad1D(source: f0Curve, targetLength: $0) } ?? f0Padded
+
+    // Stage 7 starts here: the hn-nsf harmonic source needs only the F0 curve,
+    // so it runs on a background thread while decoder-pre (stage 6) predicts on
+    // the GPU. `decoderPreHnsfOverlap` records the shared span so the stage sum
+    // still matches the wall time.
+    let wantDebug = tensorDump != nil
+    let harGroup = DispatchGroup()
+    var harResult: (har: [Float], nFrames: Int, debug: HarDebugComponents?, start: Double, end: Double) = ([], 0, nil, 0, 0)
+    let harQueue = DispatchQueue(label: "kokoro.hnsf", qos: .userInitiated)
+    harQueue.async(group: harGroup) {
+        let start = CFAbsoluteTimeGetCurrent()
+        if wantDebug {
+            let components = buildHarComponents(f0Padded: harF0, linearWeights: linearWeights, linearBias: linearBias, seed: request.seed)
+            harResult = (components.har, components.nFrames, components, start, CFAbsoluteTimeGetCurrent())
+        } else {
+            let built = buildHar(f0Padded: harF0, linearWeights: linearWeights, linearBias: linearBias, seed: request.seed)
+            harResult = (built.har, built.nFrames, nil, start, CFAbsoluteTimeGetCurrent())
+        }
+    }
+
     // Stage 6: DecoderPre Core ML.
     let t10 = CFAbsoluteTimeGetCurrent()
-    let decPreModel = try modelProvider.decoderPreModel(bucketSec: bucketSec)
+    let decPreModel = try preIsFlexible ? flexiblePre! : modelProvider.decoderPreModel(bucketSec: bucketSec)
     let f0Array3D = try makeZeroArray3D(channels: 1, time: fullF0Len)
     copyInto(array: f0Array3D, from: f0Padded)
     let nArray3D = try makeZeroArray3D(channels: 1, time: fullF0Len)
@@ -265,34 +322,13 @@ public func executeKokoroSynthesis(
 
     try tensorDump?.writeMLMultiArray(name: "x_pre", array: xPre)
 
-    // Stage 7: hn-nsf Swift DSP.
-    let t12 = CFAbsoluteTimeGetCurrent()
-    let harFlat: [Float]
-    let harFrames: Int
-    let harDebug: HarDebugComponents?
-    if tensorDump != nil {
-        let components = buildHarComponents(
-            f0Padded: f0Padded,
-            linearWeights: linearWeights,
-            linearBias: linearBias,
-            seed: request.seed
-        )
-        harFlat = components.har
-        harFrames = components.nFrames
-        harDebug = components
-    } else {
-        let built = buildHar(
-            f0Padded: f0Padded,
-            linearWeights: linearWeights,
-            linearBias: linearBias,
-            seed: request.seed
-        )
-        harFlat = built.har
-        harFrames = built.nFrames
-        harDebug = nil
-    }
-    let t13 = CFAbsoluteTimeGetCurrent()
-    timings.hnsfSwift = t13 - t12
+    // Stage 7: join the hn-nsf harmonic source.
+    harGroup.wait()
+    let harFlat = harResult.har
+    let harFrames = harResult.nFrames
+    let harDebug = harResult.debug
+    timings.hnsfSwift = harResult.end - harResult.start
+    timings.decoderPreHnsfOverlap = max(0, min(t11, harResult.end) - max(t10, harResult.start))
 
     if let harDebug {
         try tensorDump?.writeFloatArray(
@@ -315,13 +351,19 @@ public func executeKokoroSynthesis(
 
     // Stage 8: GeneratorFromHar Core ML.
     let t14 = CFAbsoluteTimeGetCurrent()
-    let genModel = try modelProvider.generatorModel(bucketSec: bucketSec)
+    let genModel = try flexibleGen ?? modelProvider.generatorModel(bucketSec: bucketSec)
     let genRefS = try makeZeroArray2D(dim: PipelineConstants.voiceEmbeddingDim)
     copyInto(array: genRefS, from: request.refS)
 
     let genShapes = inputShapes(from: genModel)
-    let xPreExpectedTime = genShapes["x_pre"]?.last ?? xPre.shape.last!.intValue
-    let harExpectedTime = genShapes["har"]?.last ?? harFrames
+    let xPreExpectedTime = genXPreTime ?? genShapes["x_pre"]?.last ?? xPre.shape.last!.intValue
+    let harExpectedTime = genXPreTime == nil ? (genShapes["har"]?.last ?? harFrames) : harFrames
+    if let genModel = flexibleGen, let harRange = flexibleTimeRange(of: genModel, input: "har"),
+       !harRange.contains(harFrames) {
+        throw PipelineError.modelContractMismatch(
+            "generator: har has \(harFrames) frames, the flexible program accepts \(harRange)"
+        )
+    }
     let xPrePadded = try zeroPad3D(
         source: xPre,
         channels: xPre.shape[1].intValue,
@@ -343,7 +385,8 @@ public func executeKokoroSynthesis(
         "x_pre": MLFeatureValue(multiArray: xPrePadded),
         "ref_s": MLFeatureValue(multiArray: genRefS),
         "har": MLFeatureValue(multiArray: harPadded),
-    ], validFrames: frames * 2, totalFrames: xPreExpectedTime)
+    ].merging(try flexibleMaskInputs(for: genModel, xPreTime: xPreExpectedTime, validXPreFrames: frames * 2)) { $1 },
+    validFrames: frames * 2, totalFrames: xPreExpectedTime)
     let genOutput = try genModel.prediction(from: genInput)
     let t15 = CFAbsoluteTimeGetCurrent()
     timings.generatorCoreML = t15 - t14
@@ -531,14 +574,23 @@ private func warmModels(
     ], validFrames: probe.validFrames, totalFrames: probe.tFrames)
     _ = try f0nModel.prediction(from: warmF0nIn)
 
-    let decPreModel = try modelProvider.decoderPreModel(bucketSec: probe.bucketSec)
-    let warmFrameCount = decoderPreFrameCount(fullF0Len: probe.fullF0Len)
+    // Same program choice and lengths as the timed run.
+    let flexiblePre = modelProvider.flexibleDecoderPreModel()
+    let preIsFlexible = usesFlexibleDecoderPre(bucketSec: probe.bucketSec, flexibleLoaded: flexiblePre != nil)
+    let decPreModel = try preIsFlexible ? flexiblePre! : modelProvider.decoderPreModel(bucketSec: probe.bucketSec)
+    let warmFrameCount: Int
+    if preIsFlexible, let flexiblePre, let accepted = flexibleTimeRange(of: flexiblePre, input: "asr") {
+        warmFrameCount = try flexibleTimeAxis(realFrames: probe.validFrames, accepted: accepted, granule: PipelineConstants.flexibleDecoderGranuleFrames, stage: "decoder-pre")
+    } else {
+        warmFrameCount = decoderPreFrameCount(fullF0Len: probe.fullF0Len)
+    }
+    let warmF0Len = preIsFlexible ? 2 * warmFrameCount : probe.fullF0Len
     let warmAsr = try makeZeroArray3D(
         channels: PipelineConstants.textEncoderDim,
         time: warmFrameCount
     )
-    let warmF0 = try makeZeroArray3D(channels: 1, time: probe.fullF0Len)
-    let warmN = try makeZeroArray3D(channels: 1, time: probe.fullF0Len)
+    let warmF0 = try makeZeroArray3D(channels: 1, time: warmF0Len)
+    let warmN = try makeZeroArray3D(channels: 1, time: warmF0Len)
     let warmRefS = try makeZeroArray2D(dim: PipelineConstants.voiceEmbeddingDim)
     let warmDecIn = try stageInputs(for: decPreModel, [
         "asr": MLFeatureValue(multiArray: warmAsr),
@@ -548,16 +600,29 @@ private func warmModels(
     ], validFrames: probe.validFrames, totalFrames: warmFrameCount)
     _ = try decPreModel.prediction(from: warmDecIn)
 
-    let genModel = try modelProvider.generatorModel(bucketSec: probe.bucketSec)
+    let flexibleGen = modelProvider.flexibleGeneratorModel()
+    let genModel = try flexibleGen ?? modelProvider.generatorModel(bucketSec: probe.bucketSec)
     let genShapes = inputShapes(from: genModel)
+    var warmXPreTime: Int? = nil
+    if let flexibleGen, let accepted = flexibleTimeRange(of: flexibleGen, input: "x_pre") {
+        warmXPreTime = try flexibleTimeAxis(realFrames: 2 * probe.validFrames, accepted: accepted, granule: PipelineConstants.flexibleXPreGranuleFrames, stage: "generator")
+    }
     var warmGenInputs: [String: MLFeatureValue] = [:]
     for (name, shape) in genShapes {
-        if name == "mask" {
+        if name.hasPrefix("mask") {
             continue
         }
         if shape.count == 3 {
+            // A flexible program reports its default (largest) shape here; warm
+            // it at the length the timed run will use instead.
+            let time: Int
+            switch (name, warmXPreTime) {
+            case ("x_pre", let t?): time = t
+            case ("har", let t?): time = HarmonicConstants.stftFramesPerXPreFrame * t + 1
+            default: time = shape[2]
+            }
             warmGenInputs[name] = MLFeatureValue(
-                multiArray: try makeZeroArray3D(channels: shape[1], time: shape[2])
+                multiArray: try makeZeroArray3D(channels: shape[1], time: time)
             )
         } else if shape.count == 2 {
             warmGenInputs[name] = MLFeatureValue(
@@ -565,10 +630,10 @@ private func warmModels(
             )
         }
     }
-    let warmGenFrameCount = genShapes["x_pre"]?.last ?? probe.validFrames * 2
+    let warmGenFrameCount = warmXPreTime ?? genShapes["x_pre"]?.last ?? probe.validFrames * 2
     let warmGenIn = try stageInputs(
         for: genModel,
-        warmGenInputs,
+        warmGenInputs.merging(try flexibleMaskInputs(for: genModel, xPreTime: warmGenFrameCount, validXPreFrames: probe.validFrames * 2)) { $1 },
         validFrames: probe.validFrames * 2,
         totalFrames: warmGenFrameCount
     )

@@ -468,6 +468,57 @@ public func inputShapes(from model: MLModel) -> [String: [Int]] {
     return result
 }
 
+/// The accepted time-axis lengths of a flexible (RangeDim) model input, or nil
+/// when the input has a static shape. Reads the last dimension of the input's
+/// shape constraint; Core ML reports a range as an `NSRange` whose `location`
+/// is the lower bound and whose `length` counts the accepted sizes.
+public func flexibleTimeRange(of model: MLModel, input name: String) -> ClosedRange<Int>? {
+    guard let constraint = model.modelDescription.inputDescriptionsByName[name]?.multiArrayConstraint,
+          constraint.shapeConstraint.type == .range,
+          let last = constraint.shapeConstraint.sizeRangeForDimension.last else {
+        return nil
+    }
+    let range = last.rangeValue
+    guard range.length > 0 else { return nil }
+    return range.location...(range.location + range.length - 1)
+}
+
+/// Time-axis length to feed a flexible stage for `realFrames` real frames:
+/// the real count rounded up to `granule` frames, raised to the program's
+/// lower bound for very short inputs and capped at its upper bound (the
+/// pipeline zero-pads the tail, masks it and trims the audio, as with a
+/// bucket). Throws when the real input is longer than the program accepts.
+public func flexibleTimeAxis(realFrames: Int, accepted: ClosedRange<Int>, granule: Int, stage: String) throws -> Int {
+    guard realFrames <= accepted.upperBound else {
+        throw PipelineError.modelContractMismatch(
+            "\(stage): \(realFrames) frames exceed the flexible program's \(accepted.upperBound)"
+        )
+    }
+    let rounded = (realFrames + granule - 1) / granule * granule
+    return min(max(rounded, accepted.lowerBound), accepted.upperBound)
+}
+
+/// Mask inputs of a flexible generator. Besides `mask` on the x_pre axis the
+/// program declares `mask_x10` and `mask_x60` at its upsampled axes (10 T and
+/// 60 T + 1 for T x_pre frames); aligning them inside the graph broke the
+/// runtime's fusion, so the caller builds them. Each declared mask input's
+/// factor and extra frame come from its upper bound against x_pre's: output
+/// frame j is valid when input frame j / factor is, and the extra last frame
+/// follows the last input frame (`_align_mask_to` in `export_synth.wrappers`).
+public func flexibleMaskInputs(for model: MLModel, xPreTime: Int, validXPreFrames: Int) throws -> [String: MLFeatureValue] {
+    guard let xPreRange = flexibleTimeRange(of: model, input: "x_pre") else { return [:] }
+    var features: [String: MLFeatureValue] = [:]
+    for name in model.modelDescription.inputDescriptionsByName.keys where name.hasPrefix("mask") {
+        guard let range = flexibleTimeRange(of: model, input: name) else { continue }
+        let factor = range.upperBound / xPreRange.upperBound
+        let extra = range.upperBound - factor * xPreRange.upperBound
+        let total = factor * xPreTime + extra
+        let valid = factor * min(validXPreFrames, xPreTime) + (validXPreFrames >= xPreTime ? extra : 0)
+        features[name] = MLFeatureValue(multiArray: try makeBucketMask(validFrames: valid, totalFrames: total))
+    }
+    return features
+}
+
 /// Builds the `(1, 1, totalFrames)` validity mask the mask-aware Core ML stages take:
 /// 1.0 on `[0, validFrames)`, 0.0 on the bucket padding added by `zeroPad3D`.
 ///
