@@ -228,3 +228,39 @@ def test_align_mask_to_is_exact_after_core_ml_conversion(cur_t, target_t):
     got = np.asarray(next(iter(model.predict({"m": m.numpy()}).values())), dtype=np.float32)
     assert got.shape == expected.shape
     assert np.array_equal(got, expected)
+
+
+def test_matmul_masked_statistics_match_the_ratio_of_means_form():
+    """AdaIN1d.matmul_stats (flexible exports) must give the same masked mean/var as the
+    ratio-of-means form on a padded tensor, in fp32 to well below the fp16 export floor."""
+    from kokoro.istftnet import AdaIN1d
+    torch.manual_seed(0)
+    x = torch.randn(1, 8, 300)
+    m = torch.zeros(1, 1, 300)
+    m[..., :211] = 1.0
+    s = torch.randn(1, 4)
+    a = AdaIN1d(4, 8)
+    b = AdaIN1d(4, 8)
+    b.load_state_dict(a.state_dict())
+    b.matmul_stats = True
+    with torch.no_grad():
+        ref = a(x, s, m)
+        out = b(x, s, m)
+    assert torch.allclose(ref, out, atol=1e-4, rtol=1e-4)
+    assert torch.equal(out[..., 211:], torch.zeros_like(out[..., 211:]))
+
+
+def test_masked_upsampling_block_matches_the_native_run_on_every_valid_frame():
+    """AdainResBlk1d with a mask on a padded input must equal the unpadded run on the
+    valid frames including the last two (the pool bias used to leak into them)."""
+    from kokoro.istftnet import AdainResBlk1d
+    torch.manual_seed(0)
+    block = AdainResBlk1d(8, 8, style_dim=4, upsample="half").eval()
+    x = torch.randn(1, 8, 20)
+    s = torch.randn(1, 4)
+    with torch.no_grad():
+        native = block(x[..., :13], s)
+        padded = torch.cat([x[..., :13], torch.zeros(1, 8, 7)], dim=2)
+        m = torch.zeros(1, 1, 20); m[..., :13] = 1
+        masked = block(padded, s, m, m.repeat_interleave(2, dim=2))
+    assert torch.allclose(native, masked[..., : native.shape[-1]], atol=1e-5, rtol=1e-4)

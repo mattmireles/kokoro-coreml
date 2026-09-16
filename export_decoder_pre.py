@@ -114,8 +114,17 @@ class DecoderPreWrapper(nn.Module):
         return x
 
 
-def export_decoder_pre(bucket_sec: int, output_dir: Path | None = None) -> Path | None:
-    """Export DecoderPre for a specific bucket."""
+def export_decoder_pre(bucket_sec: int, output_dir: Path | None = None, time_axis: str = "fixed") -> Path | None:
+    """Export DecoderPre for a specific bucket.
+
+    ``time_axis="range"`` exports one program whose frame axis accepts every
+    length from ``FLEXIBLE_MIN_DECODER_FRAMES`` up to the bucket's frame count
+    (``f0``/``n_input`` at twice that). It keeps the ``mask`` input: the
+    pipeline rounds lengths up to a granule so the GPU runtime holds few
+    per-shape executables (about 6 MB each), and the padded tail must stay
+    out of the AdaIN statistics. Needs macOS 15, runs on the GPU (the ANE
+    runtime rejects flexible shapes), validated on cpuAndGPU.
+    """
     import coremltools as ct
     from kokoro.conv_length import conv1d_output_length_from_module
 
@@ -155,12 +164,34 @@ def export_decoder_pre(bucket_sec: int, output_dir: Path | None = None) -> Path 
 
     # Trace
     print("Tracing...")
+    trace_args = (asr_dummy, f0_dummy, n_dummy, ref_s_dummy, mask_dummy)
     with torch.no_grad():
-        traced = torch.jit.trace(wrapper, (asr_dummy, f0_dummy, n_dummy, ref_s_dummy, mask_dummy), strict=False)
+        traced = torch.jit.trace(wrapper, trace_args, strict=False)
 
     # Convert
     print("Converting to CoreML...")
     try:
+      if time_axis == "range":
+        from export_synth.wrappers import CoreMLExportConstants
+        f_min = min(CoreMLExportConstants.FLEXIBLE_MIN_DECODER_FRAMES, frame_count)
+        ml = ct.convert(
+            traced,
+            inputs=[
+                ct.TensorType(name="asr", shape=(1, 512, ct.RangeDim(f_min, frame_count, default=frame_count)), dtype=np.float32),
+                ct.TensorType(name="f0", shape=(1, 1, ct.RangeDim(2 * f_min, full_f0_len, default=full_f0_len)), dtype=np.float32),
+                ct.TensorType(name="n_input", shape=(1, 1, ct.RangeDim(2 * f_min, full_f0_len, default=full_f0_len)), dtype=np.float32),
+                ct.TensorType(name="ref_s", shape=(1, 256), dtype=np.float32),
+                # The mask stays: the pipeline rounds lengths up to a granule and
+                # the padded tail must not enter the AdaIN statistics.
+                ct.TensorType(name="mask", shape=(1, 1, ct.RangeDim(f_min, frame_count, default=frame_count)), dtype=np.float32),
+            ],
+            outputs=[ct.TensorType(name="x_pre")],
+            convert_to="mlprogram",
+            minimum_deployment_target=ct.target.macOS15,
+            compute_precision=ct.precision.FLOAT16,
+            compute_units=ct.ComputeUnit.CPU_AND_GPU,
+        )
+      else:
         ml = ct.convert(
             traced,
             inputs=[
@@ -185,7 +216,7 @@ def export_decoder_pre(bucket_sec: int, output_dir: Path | None = None) -> Path 
         print("This is the known AdaIN export risk.")
         return None
 
-    out_path = output_dir / f"kokoro_decoder_pre_{bucket_sec}s.mlpackage"
+    out_path = output_dir / (f"kokoro_decoder_pre_{bucket_sec}s.mlpackage" if time_axis == "fixed" else "kokoro_decoder_pre_range.mlpackage")
     ml.save(str(out_path))
     print(f"Saved: {out_path}")
 
@@ -196,7 +227,7 @@ def export_decoder_pre(bucket_sec: int, output_dir: Path | None = None) -> Path 
     return out_path
 
 
-def validate_decoder_pre(traced, ml_model, frame_count: int, full_f0_len: int, n_tests: int = 3) -> None:
+def validate_decoder_pre(traced, ml_model, frame_count: int, full_f0_len: int, n_tests: int = 3, masked: bool = True) -> None:
     """Compare PyTorch traced vs CoreML predict."""
     torch.manual_seed(42)
     correlations = []
@@ -210,7 +241,7 @@ def validate_decoder_pre(traced, ml_model, frame_count: int, full_f0_len: int, n
         mask = torch.ones(1, 1, frame_count, dtype=torch.float32)
 
         with torch.no_grad():
-            pt_out = traced(asr, f0, n_in, ref_s, mask)
+            pt_out = traced(asr, f0, n_in, ref_s, mask) if masked else traced(asr, f0, n_in, ref_s)
         pt_np = pt_out.numpy().flatten()
 
         coreml_out = ml_model.predict({
@@ -218,7 +249,7 @@ def validate_decoder_pre(traced, ml_model, frame_count: int, full_f0_len: int, n
             "f0": f0.numpy(),
             "n_input": n_in.numpy(),
             "ref_s": ref_s.numpy(),
-            "mask": mask.numpy(),
+            **({"mask": mask.numpy()} if masked else {}),
         })
         cm_np = np.asarray(coreml_out["x_pre"]).flatten()
 
@@ -238,6 +269,9 @@ def main():
     parser = argparse.ArgumentParser(description="Export DecoderPre to CoreML")
     parser.add_argument("--buckets", type=int, nargs="+", default=[3, 10])
     parser.add_argument("--output-dir", type=str, default=None)
+    parser.add_argument("--time-axis", type=str, default="fixed", choices=["fixed", "range"],
+                        help="'fixed' (default): one static package per bucket with a required mask; "
+                             "'range': one program with a RangeDim frame axis up to the bucket, no mask (macOS 15, GPU).")
     args = parser.parse_args()
 
     out_dir = Path(args.output_dir) if args.output_dir else None
@@ -246,7 +280,7 @@ def main():
         print(f"\n{'='*60}")
         print(f"Exporting DecoderPre for {sec}s bucket")
         print(f"{'='*60}")
-        result = export_decoder_pre(sec, output_dir=out_dir)
+        result = export_decoder_pre(sec, output_dir=out_dir, time_axis=args.time_axis)
         if result is None:
             print(f"\nDecoderPre {sec}s export failed. Keeping PyTorch bridge.")
 
