@@ -5,7 +5,7 @@ usage() {
   printf '%s\n' \
     "Usage: run-second-opinion.sh <brief-path> [output-dir]" \
     "" \
-    "Run independent GPT-5.6 Sol (xhigh) and Claude Fable 5 (max) opinions." \
+    "Run independent GPT-6 Sol (high) and Claude Opus 5.5 (high) opinions." \
     "Defaults to the repo's Ilya Sutskever persona. Override with" \
     "SECOND_OPINION_PERSONA_FILE=<path>." \
     "Writes both opinions, raw output, logs, and status to the output directory."
@@ -77,17 +77,17 @@ persona_copy="$output_dir/persona.md"
 agent_prompt="$output_dir/agent-prompt.txt"
 status_file="$output_dir/status.txt"
 
-codex_opinion="$output_dir/gpt-5.6-sol-opinion.md"
-codex_raw="$output_dir/gpt-5.6-sol.raw"
-codex_log="$output_dir/gpt-5.6-sol.log"
-codex_status="$output_dir/gpt-5.6-sol.status"
+codex_opinion="$output_dir/gpt-6-sol-opinion.md"
+codex_raw="$output_dir/gpt-6-sol.raw"
+codex_log="$output_dir/gpt-6-sol.log"
+codex_status="$output_dir/gpt-6-sol.status"
 
-claude_opinion="$output_dir/claude-fable-5-opinion.md"
-claude_raw="$output_dir/claude-fable-5.raw"
-claude_log="$output_dir/claude-fable-5.log"
-claude_parse_log="$output_dir/claude-fable-5-parse.log"
-claude_status="$output_dir/claude-fable-5.status"
-claude_mode_file="$output_dir/claude-fable-5.mode"
+claude_opinion="$output_dir/claude-opus-5-5-opinion.md"
+claude_raw="$output_dir/claude-opus-5-5.raw"
+claude_log="$output_dir/claude-opus-5-5.log"
+claude_parse_log="$output_dir/claude-opus-5-5-parse.log"
+claude_status="$output_dir/claude-opus-5-5.status"
+claude_mode_file="$output_dir/claude-opus-5-5.mode"
 
 cp "$brief_abs" "$request_copy"
 cp "$persona_abs" "$persona_copy"
@@ -194,10 +194,10 @@ printf 'brief=%s\n' "$brief_abs" >"$status_file"
 printf 'persona=%s\n' "$persona_abs" >>"$status_file"
 printf 'output_dir=%s\n' "$output_dir" >>"$status_file"
 printf 'timeout_seconds=%s\n' "$timeout_seconds" >>"$status_file"
-printf 'gpt_model=gpt-5.6-sol\n' >>"$status_file"
-printf 'gpt_reasoning_effort=xhigh\n' >>"$status_file"
-printf 'claude_model=claude-fable-5\n' >>"$status_file"
-printf 'claude_effort=max\n' >>"$status_file"
+printf 'gpt_model=gpt-6-sol\n' >>"$status_file"
+printf 'gpt_reasoning_effort=high\n' >>"$status_file"
+printf 'claude_model=claude-opus-5-5\n' >>"$status_file"
+printf 'claude_effort=high\n' >>"$status_file"
 
 classify_codex_failure() {
   if grep -Eiq 'auth|login|credential|token' "$codex_raw" "$codex_log" 2>/dev/null; then
@@ -277,8 +277,8 @@ run_codex() {
     codex exec \
     -C "$repo_root" \
     -c 'service_tier="fast"' \
-    -c 'model_reasoning_effort="xhigh"' \
-    --model gpt-5.6-sol \
+    -c 'model_reasoning_effort="high"' \
+    --model gpt-6-sol \
     --sandbox read-only \
     --ephemeral \
     --json \
@@ -289,17 +289,17 @@ run_codex() {
     printf 'ok\n' >"$codex_status"
   elif [[ $exit_code -eq 0 ]]; then
     printf 'empty-output\n' >"$codex_status"
-    printf 'GPT-5.6 Sol completed without a final message. See %s and %s\n' \
+    printf 'GPT-6 Sol completed without a final message. See %s and %s\n' \
       "$codex_raw" "$codex_log" >"$codex_opinion"
   elif [[ $exit_code -eq $timeout_exit_code ]]; then
     printf 'timed-out\n' >"$codex_status"
-    printf 'GPT-5.6 Sol timed out after %ss. See %s and %s\n' \
+    printf 'GPT-6 Sol timed out after %ss. See %s and %s\n' \
       "$timeout_seconds" "$codex_raw" "$codex_log" >"$codex_opinion"
   else
     local failure
     failure="$(classify_codex_failure)"
     printf '%s\n' "$failure" >"$codex_status"
-    printf 'GPT-5.6 Sol %s (exit %s). See %s and %s\n' \
+    printf 'GPT-6 Sol %s (exit %s). See %s and %s\n' \
       "$failure" "$exit_code" "$codex_raw" "$codex_log" >"$codex_opinion"
   fi
 }
@@ -332,8 +332,8 @@ run_claude() {
     "$timeout_seconds" \
     "${claude_cmd[@]}" \
     -p \
-    --model claude-fable-5 \
-    --effort max \
+    --model claude-opus-5-5 \
+    --effort high \
     --permission-mode plan \
     --tools "Read,Glob,Grep,Bash" \
     --output-format json \
@@ -348,28 +348,28 @@ run_claude() {
       parse_status=$?
       if [[ $parse_status -eq 42 ]]; then
         printf 'auth-failed\n' >"$claude_status"
-        printf 'Claude Fable 5 auth-failed. Run `%s`, then type `/login` or `/status`.\nSee %s, %s, and %s\n' \
+        printf 'Claude Opus 5.5 auth-failed. Run `%s`, then type `/login` or `/status`.\nSee %s, %s, and %s\n' \
           "$(claude_login_hint)" \
           "$claude_raw" "$claude_log" "$claude_parse_log" >"$claude_opinion"
       else
         printf 'parse-failed\n' >"$claude_status"
-        printf 'Claude Fable 5 output was not parseable. See %s, %s, and %s\n' \
+        printf 'Claude Opus 5.5 output was not parseable. See %s, %s, and %s\n' \
           "$claude_raw" "$claude_log" "$claude_parse_log" >"$claude_opinion"
       fi
     fi
   elif [[ $exit_code -eq $timeout_exit_code ]]; then
     printf 'timed-out\n' >"$claude_status"
-    printf 'Claude Fable 5 timed out after %ss. See %s and %s\n' \
+    printf 'Claude Opus 5.5 timed out after %ss. See %s and %s\n' \
       "$timeout_seconds" "$claude_raw" "$claude_log" >"$claude_opinion"
   else
     local failure
     failure="$(classify_claude_failure)"
     printf '%s\n' "$failure" >"$claude_status"
     if [[ "$failure" == "auth-failed" ]]; then
-      printf 'Claude Fable 5 auth-failed. Run `%s`, then type `/login` or `/status`.\nSee %s and %s\n' \
+      printf 'Claude Opus 5.5 auth-failed. Run `%s`, then type `/login` or `/status`.\nSee %s and %s\n' \
         "$(claude_login_hint)" "$claude_raw" "$claude_log" >"$claude_opinion"
     else
-      printf 'Claude Fable 5 %s (exit %s). See %s and %s\n' \
+      printf 'Claude Opus 5.5 %s (exit %s). See %s and %s\n' \
         "$failure" "$exit_code" "$claude_raw" "$claude_log" >"$claude_opinion"
     fi
   fi
@@ -395,6 +395,6 @@ cat <<EOF
 Second-opinion run finished.
 Output dir: $output_dir
 Status: $status_file
-GPT-5.6 Sol: $codex_opinion
-Claude Fable 5: $claude_opinion
+GPT-6 Sol: $codex_opinion
+Claude Opus 5.5: $claude_opinion
 EOF
