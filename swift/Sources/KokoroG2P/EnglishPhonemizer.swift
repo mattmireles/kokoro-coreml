@@ -25,9 +25,9 @@ struct EnglishPhonemizer {
     private static let logger = Logger(subsystem: "KokoroG2P", category: "EnglishPhonemizer")
 
     /// Lower-cased word → phoneme tokens (pre-filtered against the vocab).
-    let wordToPhonemes: [String: [String]]
+    let wordToPhonemes: [String: String]
     /// Original-case word → phoneme tokens (`"AI"`, `"iPhone"`, …).
-    let caseSensitiveWordToPhonemes: [String: [String]]
+    let caseSensitiveWordToPhonemes: [String: String]
     /// Caller overrides (word → IPA). Exact spelling wins over lower-cased.
     var customLexicon: [String: String] = [:]
     /// Punctuation characters the Kokoro vocab can encode; others are dropped.
@@ -139,7 +139,7 @@ struct EnglishPhonemizer {
         else {
             return nil
         }
-        return phonemes.joined()
+        return phonemes
     }
 
     /// Lexicon-only probe of a whole hyphenated possessive stem (`mother-in-law's`).
@@ -226,7 +226,7 @@ struct EnglishPhonemizer {
             guard let tokens = caseSensitiveWordToPhonemes[String(character)], !tokens.isEmpty else {
                 return nil
             }
-            letters.append(tokens.joined())
+            letters.append(tokens)
         }
         return letters.isEmpty ? nil : letters.joined(separator: " ")
     }

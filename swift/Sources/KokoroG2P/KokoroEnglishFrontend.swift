@@ -53,12 +53,15 @@ public actor KokoroEnglishFrontend {
     }
 
     /// Load `us_lexicon_cache.json`, dropping phoneme tokens the Kokoro vocab
-    /// cannot encode.
-    private static func loadLexicon(_ url: URL) throws -> ([String: [String]], [String: [String]]) {
+    /// cannot encode and joining each entry into one string. The file stores
+    /// every phoneme as its own JSON string; kept as `[String]` in memory that
+    /// cost ~127 MB (one heap String per phoneme per word). Every lookup
+    /// joined them anyway.
+    private static func loadLexicon(_ url: URL) throws -> ([String: String], [String: String]) {
         let payload = try JSONDecoder().decode(LexiconPayload.self, from: Data(contentsOf: url))
         let allowed = Set(KokoroSymbols.all.map(String.init))
-        let lower = payload.lower.mapValues { $0.filter { allowed.contains($0) } }
-        let caseSensitive = payload.caseSensitive.mapValues { $0.filter { allowed.contains($0) } }
+        let lower = payload.lower.mapValues { $0.filter { allowed.contains($0) }.joined() }
+        let caseSensitive = payload.caseSensitive.mapValues { $0.filter { allowed.contains($0) }.joined() }
         guard !lower.isEmpty else { throw KokoroG2PError("us_lexicon_cache.json has no usable entries") }
         return (lower, caseSensitive)
     }
