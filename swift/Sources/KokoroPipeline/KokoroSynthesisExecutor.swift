@@ -15,21 +15,11 @@ public protocol KokoroModelProvider {
     func prepareForBucket(bucketSec: Int, tFrames: Int) throws
     /// Flexible (RangeDim) generator program, or nil to use the bucket packages.
     func flexibleGeneratorModel() -> MLModel?
-    /// Flexible decoder-pre program for the GPU buckets, or nil to use the bucket packages.
-    func flexibleDecoderPreModel() -> MLModel?
 }
 
 public extension KokoroModelProvider {
     func prepareForBucket(bucketSec: Int, tFrames: Int) throws {}
     func flexibleGeneratorModel() -> MLModel? { nil }
-    func flexibleDecoderPreModel() -> MLModel? { nil }
-}
-
-/// Which decoder-pre program serves `bucketSec`: the flexible GPU program when
-/// one is loaded and the bucket is above the Neural Engine range, else the
-/// bucket's fixed package.
-public func usesFlexibleDecoderPre(bucketSec: Int, flexibleLoaded: Bool) -> Bool {
-    flexibleLoaded && bucketSec > PipelineConstants.decoderPreNeuralEngineMaxBucketSeconds
 }
 
 /// Pre-tokenized synthesis request for the shared Swift/Core ML pipeline.
@@ -236,25 +226,15 @@ public func executeKokoroSynthesis(
     try tensorDump?.writeFloatArray(name: "f0", values: f0Curve, shape: [1, f0Curve.count])
     try tensorDump?.writeFloatArray(name: "n", values: nCurve, shape: [1, nCurve.count])
 
-    // Stage 5: geometry. A flexible stage runs on the real frame counts (the
-    // f0ntrain output is cut back to them); a bucketed stage is zero-padded to
-    // its bucket and masked. Frame counts: `frames` at 40 Hz (asr, decoder-pre
-    // input), `2 * frames` at 80 Hz (f0, n, x_pre).
+    // Stage 5: geometry. Decoder-pre stays bucketed on the Neural Engine, so
+    // its inputs are zero-padded to the bucket and masked; the flexible
+    // generator below runs on the real length. Frame counts: `frames` at 40 Hz
+    // (asr, decoder-pre input), `2 * frames` at 80 Hz (f0, n, x_pre).
     let t8 = CFAbsoluteTimeGetCurrent()
     let flexibleGen = modelProvider.flexibleGeneratorModel()
-    let flexiblePre = modelProvider.flexibleDecoderPreModel()
-    let preIsFlexible = usesFlexibleDecoderPre(bucketSec: bucketSec, flexibleLoaded: flexiblePre != nil)
     let bucketSamples = bucketSec * PipelineConstants.sampleRate
-    let bucketF0Len = Int(round(Double(bucketSamples) / Double(HarmonicConstants.upsampleScale)))
-    let fullF0Len: Int
-    let frameCount: Int
-    if preIsFlexible, let flexiblePre, let accepted = flexibleTimeRange(of: flexiblePre, input: "asr") {
-        frameCount = try flexibleTimeAxis(realFrames: frames, accepted: accepted, granule: PipelineConstants.flexibleDecoderGranuleFrames, stage: "decoder-pre")
-        fullF0Len = 2 * frameCount
-    } else {
-        fullF0Len = bucketF0Len
-        frameCount = decoderPreFrameCount(fullF0Len: fullF0Len)
-    }
+    let fullF0Len = Int(round(Double(bucketSamples) / Double(HarmonicConstants.upsampleScale)))
+    let frameCount = decoderPreFrameCount(fullF0Len: fullF0Len)
     let f0Padded = zeroPad1D(source: f0Curve, targetLength: fullF0Len)
     let nPadded = zeroPad1D(source: nCurve, targetLength: fullF0Len)
     let asrPadded = try zeroPad3D(
@@ -282,7 +262,7 @@ public func executeKokoroSynthesis(
 
     // Stage 7 starts here: the hn-nsf harmonic source needs only the F0 curve,
     // so it runs on a background thread while decoder-pre (stage 6) predicts on
-    // the GPU. `decoderPreHnsfOverlap` records the shared span so the stage sum
+    // the Neural Engine. `decoderPreHnsfOverlap` records the shared span so the stage sum
     // still matches the wall time.
     let wantDebug = tensorDump != nil
     let harGroup = DispatchGroup()
@@ -298,10 +278,13 @@ public func executeKokoroSynthesis(
             harResult = (built.har, built.nFrames, nil, start, CFAbsoluteTimeGetCurrent())
         }
     }
+    // A throw below must not return while the harmonic source still writes
+    // `harResult`; waiting twice on a finished group returns at once.
+    defer { harGroup.wait() }
 
     // Stage 6: DecoderPre Core ML.
     let t10 = CFAbsoluteTimeGetCurrent()
-    let decPreModel = try preIsFlexible ? flexiblePre! : modelProvider.decoderPreModel(bucketSec: bucketSec)
+    let decPreModel = try modelProvider.decoderPreModel(bucketSec: bucketSec)
     let f0Array3D = try makeZeroArray3D(channels: 1, time: fullF0Len)
     copyInto(array: f0Array3D, from: f0Padded)
     let nArray3D = try makeZeroArray3D(channels: 1, time: fullF0Len)
@@ -575,16 +558,9 @@ private func warmModels(
     _ = try f0nModel.prediction(from: warmF0nIn)
 
     // Same program choice and lengths as the timed run.
-    let flexiblePre = modelProvider.flexibleDecoderPreModel()
-    let preIsFlexible = usesFlexibleDecoderPre(bucketSec: probe.bucketSec, flexibleLoaded: flexiblePre != nil)
-    let decPreModel = try preIsFlexible ? flexiblePre! : modelProvider.decoderPreModel(bucketSec: probe.bucketSec)
-    let warmFrameCount: Int
-    if preIsFlexible, let flexiblePre, let accepted = flexibleTimeRange(of: flexiblePre, input: "asr") {
-        warmFrameCount = try flexibleTimeAxis(realFrames: probe.validFrames, accepted: accepted, granule: PipelineConstants.flexibleDecoderGranuleFrames, stage: "decoder-pre")
-    } else {
-        warmFrameCount = decoderPreFrameCount(fullF0Len: probe.fullF0Len)
-    }
-    let warmF0Len = preIsFlexible ? 2 * warmFrameCount : probe.fullF0Len
+    let decPreModel = try modelProvider.decoderPreModel(bucketSec: probe.bucketSec)
+    let warmFrameCount = decoderPreFrameCount(fullF0Len: probe.fullF0Len)
+    let warmF0Len = probe.fullF0Len
     let warmAsr = try makeZeroArray3D(
         channels: PipelineConstants.textEncoderDim,
         time: warmFrameCount

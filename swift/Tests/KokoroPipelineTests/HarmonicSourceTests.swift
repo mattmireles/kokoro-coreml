@@ -1,3 +1,4 @@
+import Accelerate
 import XCTest
 @testable import KokoroPipeline
 
@@ -132,6 +133,37 @@ final class HarmonicSourceTests: XCTestCase {
         }
     }
 
+    /// The noise generator streams 32,768 Box-Muller pairs per chunk; a count
+    /// above one chunk must still match the scalar draw order.
+    func testGaussianNoiseMatchesScalarReferenceAcrossChunkBoundary() {
+        let count = 2 * 32_768 + 3
+        let seed: UInt64 = 7
+        var candidate = [Float](repeating: 0, count: count)
+        generateGaussianNoise(into: &candidate, count: count, seed: seed)
+        let reference = scalarGaussianNoiseReference(count: count, seed: seed)
+        for index in [0, 65_535, 65_536, 65_537, count - 1] {
+            XCTAssertEqual(candidate[index], reference[index], accuracy: 2e-6, "noise sample \(index)")
+        }
+        let maxError = zip(candidate, reference).map { abs($0 - $1) }.max() ?? 0
+        XCTAssertLessThan(maxError, 2e-6)
+    }
+
+    /// `sineGenFromF0Frames` runs its harmonics concurrently through 65,536-sample
+    /// chunks and must stay bit-identical to the sequential full-length form
+    /// (PR #11) when the source crosses a chunk boundary.
+    func testSineGenMatchesSequentialReferenceAcrossChunkBoundary() {
+        let frameCount = 223  // 66,900 samples: one full chunk plus a partial one
+        let f0 = (0..<frameCount).map { t -> Float in t % 37 < 5 ? 0 : 90 + Float(t % 50) * 4 }
+        let weights: [Float] = (0..<HarmonicConstants.harmonicDim).map { 0.3 - Float($0) * 0.05 }
+        let bias: Float = 0.01
+        let seed: UInt64 = 11
+
+        let candidate = sineGenFromF0Frames(f0Frames: f0, linearWeights: weights, linearBias: bias, seed: seed)
+        let reference = sequentialSineGenReference(f0Frames: f0, linearWeights: weights, linearBias: bias, seed: seed)
+        XCTAssertEqual(candidate.count, reference.count)
+        XCTAssertTrue(candidate == reference, "concurrent sine generation diverged from the sequential form")
+    }
+
     /// Regression test for the SplitMix64 seed scrambler in `SeededRNG.init`
     /// (HarmonicSource.swift, fixed 2026-07-14).
     ///
@@ -238,4 +270,49 @@ final class HarmonicSourceTests: XCTestCase {
         }
         return output
     }
+}
+
+/// Sequential, full-length form of `sineGenFromF0Frames` (pre-PR #11): same
+/// per-value arithmetic, no chunking and no concurrency.
+private func sequentialSineGenReference(f0Frames: [Float], linearWeights: [Float], linearBias: Float, seed: UInt64) -> [Float] {
+    let frameCount = f0Frames.count
+    let scale = HarmonicConstants.upsampleScale
+    let L = frameCount * scale
+    let dim = HarmonicConstants.harmonicDim
+    let sr = HarmonicConstants.sampleRate
+    var noise = [Float](repeating: 0, count: dim * L)
+    generateGaussianNoise(into: &noise, count: dim * L, seed: seed)
+    var sines = [Float](repeating: 0, count: dim * L)
+    for h in 0..<dim {
+        let invSr = Double(h + 1) / sr
+        var cum = [Double](repeating: 0, count: frameCount)
+        var acc = 0.0
+        for t in 0..<frameCount {
+            let r = (Double(f0Frames[t]) * invSr).truncatingRemainder(dividingBy: 1.0)
+            acc = t == 0 ? (r < 0 ? r + 1.0 : r) : acc + (r < 0 ? r + 1.0 : r)
+            cum[t] = acc
+        }
+        var scaled = [Double](repeating: 0, count: frameCount)
+        vDSP_vsmulD(cum, 1, [2.0 * Double.pi * Double(scale)], &scaled, 1, vDSP_Length(frameCount))
+        var up = [Double](repeating: 0, count: L)
+        linearInterpolateInto(from: scaled, count: frameCount, into: &up, targetLen: L)
+        var sinD = [Double](repeating: 0, count: L)
+        var n32 = Int32(L)
+        vvsin(&sinD, up, &n32)
+        var sinF = [Float](repeating: 0, count: L)
+        vDSP_vdpsp(sinD, 1, &sinF, 1, vDSP_Length(L))
+        for i in 0..<L {
+            let f0 = f0Frames[i / scale]
+            let uv: Float = f0 > HarmonicConstants.voicedThreshold ? 1 : 0
+            let amp = uv * HarmonicConstants.noiseStd + (1 - uv) * (HarmonicConstants.sineAmp / 3)
+            sines[h * L + i] = (sinF[i] * HarmonicConstants.sineAmp) * uv + noise[h * L + i] * amp
+        }
+    }
+    var merged = [Float](repeating: 0, count: L)
+    vDSP_mmul(linearWeights, 1, sines, 1, &merged, 1, 1, vDSP_Length(L), vDSP_Length(dim))
+    var bias = linearBias
+    vDSP_vsadd(merged, 1, &bias, &merged, 1, vDSP_Length(L))
+    var tanhCount = Int32(L)
+    vvtanhf(&merged, merged, &tanhCount)
+    return merged
 }

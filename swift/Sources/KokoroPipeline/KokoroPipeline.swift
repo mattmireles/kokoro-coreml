@@ -56,18 +56,11 @@ public enum PipelineConstants {
 
     /// Default bucket seconds used by the bakeoff and runtime package set.
     public static let defaultBuckets: [Int] = [3, 7, 10, 15, 30]
-    /// Largest bucket whose decoder-pre package runs on the Neural Engine; larger
-    /// buckets run it on the GPU. Every decoder-pre op is ANE-eligible at every
-    /// bucket, but the ANE's cost per frame rises with the axis length (16 us at
-    /// 10 s, 25 at 15 s, 39 at 30 s on an M3 Max) while the GPU's falls (21, 20,
-    /// 14.5 us), so the two cross between the 10 s and 15 s buckets: 47 ms on the
-    /// ANE against 17 ms on the GPU at 30 s. Measured on an M3 Max; a device with
-    /// a weaker GPU may cross later.
-    public static let decoderPreNeuralEngineMaxBucketSeconds: Int = 10
-    /// Compute units for the decoder-pre package of `bucketSec`.
-    public static func decoderPreComputeUnits(bucketSec: Int) -> MLComputeUnits {
-        bucketSec <= decoderPreNeuralEngineMaxBucketSeconds ? .cpuAndNeuralEngine : .cpuAndGPU
-    }
+    /// Compute units for every decoder-pre package. Decoder-pre stays bucketed
+    /// on the Neural Engine at every size: an M1's ANE beats its GPU at every
+    /// bucket, and one placement for every machine keeps the runtime free of a
+    /// per-machine policy. An M3 Max's GPU would be about 30 ms faster at 30 s.
+    public static let decoderPreComputeUnits: MLComputeUnits = .cpuAndNeuralEngine
 
     /// Duration model enumerated token sizes. Caller pads to nearest.
     public static let durationTokenSizes: [Int] = [32, 64, 128, 256, 320, 384, 512]
@@ -81,17 +74,13 @@ public enum PipelineConstants {
     public static let maxCallerChunkTokens = 450
 
     /// Flexible (RangeDim) generator program: one file for every length up to
-    /// its trace bucket, no `mask` input, GPU only. When present it replaces
-    /// the per-bucket generator packages; the bucket then only selects the
-    /// f0ntrain package and the decoder-pre placement.
+    /// its trace bucket, masked at each internal resolution, GPU only, macOS 15 /
+    /// iOS 18. When present it replaces the per-bucket generator packages; the
+    /// bucket then only selects the f0ntrain and decoder-pre packages.
     public static let flexibleGeneratorPackage = "kokoro_decoder_har_post_range.mlpackage"
-    /// Flexible decoder-pre program, used above
-    /// `decoderPreNeuralEngineMaxBucketSeconds` where decoder-pre runs on the
-    /// GPU anyway; the ANE packages below it stay 2-3 ms faster per call.
-    public static let flexibleDecoderPrePackage = "kokoro_decoder_pre_range.mlpackage"
 
-    /// Lengths fed to a flexible program are rounded up to this granule
-    /// (0.5 s: 20 decoder frames at 40 Hz, 40 x_pre frames at 80 Hz). The GPU
+    /// Lengths fed to the flexible generator are rounded up to this granule
+    /// (0.5 s: 40 x_pre frames at 80 Hz). The GPU
     /// runtime keeps a compiled executable per distinct input shape (about
     /// 6 MB each for the generator, evicted only slowly), so unrounded lengths
     /// grew a process past 1 GB over 100 utterances; at most 60 shapes keeps it
@@ -99,7 +88,6 @@ public enum PipelineConstants {
     /// the AdaIN statistics and trimmed from the audio; it costs at most 0.5 s
     /// of generator compute (about 4 ms on an M3 Max).
     public static let flexibleGranuleSeconds: Double = 0.5
-    public static var flexibleDecoderGranuleFrames: Int { Int(flexibleGranuleSeconds * f0FrameRate / 2) }
     public static var flexibleXPreGranuleFrames: Int { Int(flexibleGranuleSeconds * f0FrameRate) }
 }
 
@@ -217,7 +205,6 @@ public class KokoroPipeline: KokoroModelProvider {
     private let decoderPreModels: [Int: MLModel] // keyed by bucket seconds
     private let generatorModels: [Int: MLModel]  // keyed by bucket seconds
     private let flexibleGenerator: MLModel?
-    private let flexibleDecoderPre: MLModel?
 
     /// Learned weights from SourceModuleHnNSF.l_linear.
     private let linearWeights: [Float]
@@ -295,7 +282,7 @@ public class KokoroPipeline: KokoroModelProvider {
         let preMulti = try MultifunctionPackage.open(at: modelsDirectory.appendingPathComponent(PipelineConstants.decoderPreMultifunctionPackage))
         var decPreModels: [Int: MLModel] = [:]
         for sec in buckets {
-            let units = PipelineConstants.decoderPreComputeUnits(bucketSec: sec)
+            let units = PipelineConstants.decoderPreComputeUnits
             if let preMulti, preMulti.functionNames.contains(PipelineConstants.decoderPreFunctionName(bucketSec: sec)) {
                 decPreModels[sec] = try preMulti.load(function: PipelineConstants.decoderPreFunctionName(bucketSec: sec), computeUnits: units)
                 continue
@@ -321,21 +308,24 @@ public class KokoroPipeline: KokoroModelProvider {
         }
         self.generatorModels = genModels
 
-        // Flexible programs (optional). With a flexible generator the bucket
-        // list follows the f0ntrain packages, which stay bucketed.
+        // Flexible generator (optional, macOS 15 / iOS 18). On an older OS it
+        // is skipped and the bucketed generator packages serve every length.
+        // With it the bucket list follows the f0ntrain and decoder-pre
+        // packages, which stay bucketed.
         let flexGenURL = modelsDirectory.appendingPathComponent(PipelineConstants.flexibleGeneratorPackage)
-        let flexPreURL = modelsDirectory.appendingPathComponent(PipelineConstants.flexibleDecoderPrePackage)
-        let gpu = MLModelConfiguration()
-        gpu.computeUnits = .cpuAndGPU
-        self.flexibleGenerator = FileManager.default.fileExists(atPath: flexGenURL.path)
-            ? try MLModel(contentsOf: MLModel.compileModel(at: flexGenURL), configuration: gpu)
-            : nil
-        self.flexibleDecoderPre = FileManager.default.fileExists(atPath: flexPreURL.path)
-            ? try MLModel(contentsOf: MLModel.compileModel(at: flexPreURL), configuration: gpu)
-            : nil
+        self.flexibleGenerator = try Self.loadFlexibleProgram(at: flexGenURL)
+        if self.flexibleGenerator == nil && genModels.isEmpty
+            && FileManager.default.fileExists(atPath: flexGenURL.path) {
+            throw PipelineError.modelNotLoaded(
+                "\(PipelineConstants.flexibleGeneratorPackage) needs macOS 15 / iOS 18 and no kokoro_decoder_har_post_{N}s packages are present"
+            )
+        }
         self.availableBuckets = self.flexibleGenerator == nil
             ? Array(genModels.keys.sorted())
-            : buckets.filter { PipelineConstants.tFramesForBucket[$0].map { f0Models[$0] != nil } ?? false }.sorted()
+            : buckets.filter { sec in
+                decPreModels[sec] != nil
+                    && PipelineConstants.tFramesForBucket[sec].map { tFrames in f0Models[tFrames] != nil } == true
+            }.sorted()
 
         self.linearWeights = linearWeights
         self.linearBias = linearBias
@@ -371,6 +361,16 @@ public class KokoroPipeline: KokoroModelProvider {
     }
 
     // MARK: - Private Helpers
+
+    /// Loads a flexible (RangeDim) program on the GPU, or returns nil when the
+    /// package is absent or the OS predates flexible-shape GPU programs.
+    public static func loadFlexibleProgram(at url: URL) throws -> MLModel? {
+        guard #available(macOS 15.0, iOS 18.0, *),
+              FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let config = MLModelConfiguration()
+        config.computeUnits = .cpuAndGPU
+        return try MLModel(contentsOf: MLModel.compileModel(at: url), configuration: config)
+    }
 
     public static func discoverDurationChoices(
         modelsDirectory: URL,
@@ -521,11 +521,6 @@ public class KokoroPipeline: KokoroModelProvider {
     public func flexibleGeneratorModel() -> MLModel? {
         flexibleGenerator
     }
-
-    public func flexibleDecoderPreModel() -> MLModel? {
-        flexibleDecoderPre
-    }
-
 }
 
 // MARK: - Errors

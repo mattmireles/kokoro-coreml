@@ -42,8 +42,6 @@ class CoreMLExportConstants:
     # Shortest x_pre axis (80 Hz frames) a flexible generator program accepts:
     # 0.5 s. Shorter utterances are zero-padded to it by the pipeline.
     FLEXIBLE_MIN_XPRE_FRAMES = 40
-    # Shortest decoder-pre frame axis (40 Hz) a flexible program accepts: 0.5 s.
-    FLEXIBLE_MIN_DECODER_FRAMES = 20
     VOICE_STYLE_DIM = 128          # Style conditioning dimension
     VOICE_BASELINE_DIM = 128       # Baseline voice characteristics
     
@@ -156,10 +154,15 @@ class GeneratorFromHar(nn.Module):
         # built by the caller; see ``forward``.
         self.flexible = flexible
         if flexible:
+            # The per-resolution masks below (mask_x10, mask_x60) assume two upsamples.
+            if generator.num_upsamples != 2:
+                raise ValueError(f"a flexible GeneratorFromHar needs 2 upsamples, got {generator.num_upsamples}")
             # See AdaIN1d.matmul_stats: masked statistics as matrix products,
             # the form the runtime runs at the unmasked speed under a symbolic axis.
             # Matched by name: the export loads the kokoro package under a
             # suffixed module name, so the model's AdaIN1d is not this module's class.
+            # Mutates the shared generator in place: a process exports either
+            # flexible or fixed programs, never both (see export_synthesizers).
             for module in generator.modules():
                 if type(module).__name__ == "AdaIN1d" and hasattr(module, "matmul_stats"):
                     module.matmul_stats = True

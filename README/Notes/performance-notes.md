@@ -3446,15 +3446,17 @@ CPU** across the corrected duration range.
 Bakeoff plan Phase 7: `README/Plans/003-kokoro-bakeoff-plan.md`
 
 
-## Flexible-length synthesis: buckets replaced for the generator and the long decoder-pre (2026-09-16)
+## Flexible-length synthesis: buckets replaced for the generator (2026-09-16)
 
 ### Summary
 
-The generator runs as one `RangeDim` program for every length (40 to 2,400 x_pre frames) and decoder-pre as one for the buckets above the Neural Engine range, both masked, lengths rounded up to a 0.5 s granule; duration and f0ntrain keep their buckets (an LSTM over a symbolic axis is ~5x slower). The bucketed stages ship as one multifunction package each (242 MB for the set against 881). Decoder-pre runs on the Neural Engine up to 10 s and on the GPU above, duration and f0ntrain on the GPU. Cost is now linear in the audio length on both machines; the arms below follow the PR sequence.
+The generator runs as one masked `RangeDim` GPU program for every length (40 to 2,400 x_pre frames), lengths rounded up to a 0.5 s granule; duration, f0ntrain and decoder-pre keep their buckets (an LSTM over a symbolic axis is ~5x slower, and decoder-pre stays on the Neural Engine at every size). The bucketed stages ship as one multifunction package each (242 MB for the set against 881, measured with the unmerged flexible decoder-pre program in the set). Duration and f0ntrain run on the GPU. Cost is now linear in the audio length on both machines; the arms below follow the PR sequence.
+
+**Integration decision (2026-09-24, maintainer):** decoder-pre stays bucketed on the Neural Engine at every size. The flexible decoder-pre program, its export (`export_decoder_pre.py --time-axis range`), the 10 s routing cutoff, the `EnumeratedShapes` export option and the per-machine placement commit were not merged. Reasons: an M1's Neural Engine beats its GPU on decoder-pre at every bucket; one placement for every machine keeps a per-machine policy (and its cold-start measurement and cache) out of the runtime; the cost is about 30 ms at 30 s on an M3 Max (decoder-pre 47 ms on the ANE against 17 on the GPU), and the flexible generator, which carries the win, is unaffected. The M3 Max numbers below for 15 s and above were measured with decoder-pre on the GPU and are a few tens of milliseconds optimistic for the merged pipeline. The flexible generator needs macOS 15 / iOS 18; on an older OS the pipeline skips it and needs the bucketed generator packages. A hardened per-machine placement may return as its own PR.
 
 ### End-to-end wall time (best warm median over three interleaved passes, milliseconds)
 
-Four arms: original main (`fa57641`), post #6 (mask-aware buckets), post #7-#11, dynamic lengths + multifunction (this branch: Neural Engine for decoder-pre up to 10 s, duration and f0ntrain on the GPU). Seven frozen inputs; `over` inputs spill into the next bucket.
+Four arms: original main (`fa57641`), post #6 (mask-aware buckets), post #7-#11, dynamic lengths + multifunction (as measured by the contributor: Neural Engine for decoder-pre up to 10 s and the unmerged flexible GPU decoder-pre above, duration and f0ntrain on the GPU). Seven frozen inputs; `over` inputs spill into the next bucket.
 
 M3 Max (MacBook Pro, 2023), staged compute units:
 

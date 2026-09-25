@@ -112,9 +112,8 @@ class ModelCache: KokoroModelProvider {
     var f0nModels: [Int: MLModel] = [:]
     var decPreModels: [Int: MLModel] = [:]
     var genModels: [Int: MLModel] = [:]
-    // Flexible programs are one file each; loaded once, never evicted.
+    // The flexible generator is one file; loaded once, never evicted.
     private var flexibleGen: MLModel??
-    private var flexiblePre: MLModel??
     // Multifunction packages for the bucketed stages, opened (compiled) once.
     private var f0nMulti: MultifunctionPackage??
     private var preMulti: MultifunctionPackage??
@@ -134,17 +133,17 @@ class ModelCache: KokoroModelProvider {
         }
         self.durationChoices = KokoroPipeline.discoverDurationChoices(modelsDirectory: modelsDir)
         if stagedComputeUnits {
-            fputs("  Compute units: staged (duration/f0n/generator=cpuAndGPU, decoderPre=cpuAndNeuralEngine up to \(PipelineConstants.decoderPreNeuralEngineMaxBucketSeconds)s, cpuAndGPU above)\n", stderr)
+            fputs("  Compute units: staged (duration/f0n/generator=cpuAndGPU, decoderPre=cpuAndNeuralEngine)\n", stderr)
         } else {
             fputs("  Compute units: \(computeUnitLabel(computeUnits))\n", stderr)
         }
         fputs("  Duration choices: \(durationChoices.map { $0.cacheKey }.joined(separator: ", "))\n", stderr)
     }
 
-    /// decoder-pre placement follows the bucket under the staged policy (see
-    /// `PipelineConstants.decoderPreComputeUnits`); other policies use one unit.
-    private func decoderPreConfig(bucket: Int) -> MLModelConfiguration {
-        Self.makeConfig(stagedComputeUnits ? PipelineConstants.decoderPreComputeUnits(bucketSec: bucket) : computeUnits)
+    /// Decoder-pre packages run on the Neural Engine under the staged
+    /// policy (`PipelineConstants.decoderPreComputeUnits`); other policies use one unit.
+    private func decoderPreConfig() -> MLModelConfiguration {
+        Self.makeConfig(stagedComputeUnits ? PipelineConstants.decoderPreComputeUnits : computeUnits)
     }
 
     private static func makeConfig(_ computeUnits: MLComputeUnits) -> MLModelConfiguration {
@@ -185,37 +184,32 @@ class ModelCache: KokoroModelProvider {
 
     func flexibleGeneratorModel() -> MLModel? {
         if let loaded = flexibleGen { return loaded }
-        let model = loadFlexible(PipelineConstants.flexibleGeneratorPackage, label: "generator")
+        let model = loadFlexibleGenerator()
         flexibleGen = .some(model)
         return model
     }
 
-    func flexibleDecoderPreModel() -> MLModel? {
-        if let loaded = flexiblePre { return loaded }
-        let model = loadFlexible(PipelineConstants.flexibleDecoderPrePackage, label: "decoder_pre")
-        flexiblePre = .some(model)
-        return model
-    }
-
-    /// Flexible programs run on the GPU only (the ANE runtime rejects
-    /// flexible shapes); a compute-unit policy that excludes the GPU leaves
-    /// them unused so the bucket packages keep serving.
-    private func loadFlexible(_ package: String, label: String) -> MLModel? {
-        let pkgURL = modelsDir.appendingPathComponent(package)
+    /// The flexible generator runs on the GPU only (the ANE runtime rejects
+    /// flexible shapes); a compute-unit policy that excludes the GPU, or an OS
+    /// before macOS 15, leaves it unused so the bucket packages keep serving.
+    private func loadFlexibleGenerator() -> MLModel? {
+        let pkgURL = modelsDir.appendingPathComponent(PipelineConstants.flexibleGeneratorPackage)
         guard FileManager.default.fileExists(atPath: pkgURL.path) else { return nil }
         guard stagedComputeUnits || computeUnits == .cpuAndGPU || computeUnits == .all else {
-            fputs("  Flexible \(label) present but compute units exclude the GPU; using bucket packages\n", stderr)
+            fputs("  Flexible generator present but compute units exclude the GPU; using bucket packages\n", stderr)
             return nil
         }
         do {
-            fputs("  Compiling flexible \(label)...\n", stderr)
-            let compiled = try MLModel.compileModel(at: pkgURL)
-            let model = try MLModel(contentsOf: compiled, configuration: Self.makeConfig(.cpuAndGPU))
-            let range = flexibleTimeRange(of: model, input: label == "generator" ? "x_pre" : "asr")
-            fputs("  Loaded flexible \(label): frames \(range.map { "\($0.lowerBound)...\($0.upperBound)" } ?? "static")\n", stderr)
+            fputs("  Compiling flexible generator...\n", stderr)
+            guard let model = try KokoroPipeline.loadFlexibleProgram(at: pkgURL) else {
+                fputs("  Flexible generator needs macOS 15; using bucket packages\n", stderr)
+                return nil
+            }
+            let range = flexibleTimeRange(of: model, input: "x_pre")
+            fputs("  Loaded flexible generator: frames \(range.map { "\($0.lowerBound)...\($0.upperBound)" } ?? "static")\n", stderr)
             return model
         } catch {
-            fputs("  Flexible \(label) failed to load (\(error)); using bucket packages\n", stderr)
+            fputs("  Flexible generator failed to load (\(error)); using bucket packages\n", stderr)
             return nil
         }
     }
@@ -307,13 +301,13 @@ class ModelCache: KokoroModelProvider {
         if let cached = decPreModels[bucket] { return cached }
         if let multi = preMultifunction(), multi.functionNames.contains(PipelineConstants.decoderPreFunctionName(bucketSec: bucket)) {
             fputs("  Loading decoder_pre function bucket_\(bucket)s...\n", stderr)
-            let model = try multi.load(function: PipelineConstants.decoderPreFunctionName(bucketSec: bucket), computeUnits: decoderPreConfig(bucket: bucket).computeUnits)
+            let model = try multi.load(function: PipelineConstants.decoderPreFunctionName(bucketSec: bucket), computeUnits: decoderPreConfig().computeUnits)
             decPreModels[bucket] = model
             return model
         }
         let compiled = try compiledDecPreURL(bucket: bucket)
         fputs("  Loading decoder_pre \(bucket)s...\n", stderr)
-        let model = try MLModel(contentsOf: compiled, configuration: decoderPreConfig(bucket: bucket))
+        let model = try MLModel(contentsOf: compiled, configuration: decoderPreConfig())
         decPreModels[bucket] = model
         return model
     }

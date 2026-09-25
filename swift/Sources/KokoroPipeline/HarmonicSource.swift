@@ -100,14 +100,9 @@ private enum HarmonicSTFTBasis {
         var basis = [Float](repeating: 0, count: freqBins * nfft)
 
         for k in 0..<freqBins {
-            // The DC and Nyquist rows of the imaginary basis are exactly zero
-            // (sin(0) and sin(pi * n)); computed in Float they come out as
-            // +-1e-7 noise. stftTransform skips these rows and fills +0.0, so
-            // the phase there is 0 or +pi exactly as torch.stft reports it.
-            let imaginaryIsZero = imaginary && (k == 0 || k == freqBins - 1)
             for n in 0..<nfft {
                 let angle = twoPiOverN * Float(k) * Float(n)
-                let trig = imaginaryIsZero ? 0 : (imaginary ? -sin(angle) : cos(angle))
+                let trig = imaginary ? -sin(angle) : cos(angle)
                 basis[k * nfft + n] = window[n] * trig
             }
         }
@@ -344,7 +339,7 @@ public func sineGenFromF0Frames(
     // align_corners=false downsample point, but the draws are kept so a seed
     // still yields the same stream. Consumed in order before the fan-out.
     var rng: RandomNumberGenerator = seed.map { SeededRNG(seed: $0) as RandomNumberGenerator } ?? SystemRandomNumberGenerator()
-    for h in 0..<dim where h > 0 {
+    for _ in 1..<dim {
         _ = Double.random(in: 0..<1, using: &rng)
     }
 
@@ -537,8 +532,9 @@ public func stftTransform(_ signal: [Float]) -> (magnitude: [Float], phase: [Flo
                         // DC and Nyquist: the imaginary part is exactly zero.
                         // Fill +0.0 rather than dot-multiplying a zero filter,
                         // which yields -0.0 against negative samples and makes
-                        // atan2 report -pi where torch.stft reports +pi.
-                        imag = [Float](repeating: 0, count: nFrames)
+                        // atan2 report -pi where torch.stft reports +pi. The
+                        // imaginary basis rows for these bins are never read.
+                        vDSP_vclr(&imag, 1, vDSP_Length(nFrames))
                     } else {
                         imag.withUnsafeMutableBufferPointer { imagPtr in
                             vDSP_desamp(

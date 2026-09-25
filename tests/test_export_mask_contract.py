@@ -26,5 +26,6 @@ def test_every_exported_bucket_mask_is_required_by_source_contract() -> None:
             if isinstance(name, ast.Constant) and name.value == "mask":
                 mask_inputs.append((path, node.lineno, set(keywords)))
 
-    assert len(mask_inputs) == 4, mask_inputs
+    # Four fixed-bucket masks plus the flexible (RangeDim) generator's mask.
+    assert len(mask_inputs) == 5, mask_inputs
     assert all("default_value" not in keywords for _, _, keywords in mask_inputs), mask_inputs

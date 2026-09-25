@@ -10,7 +10,7 @@
 
 Apple Silicon isn't one processor. It's three — **CPU, GPU, and the Neural Engine (ANE)** — each built for different work. The ANE devours fixed-shape convolutions and dense matrix math at a fraction of the power draw of the GPU. It's the same silicon that runs Face ID, Live Text, and on-device Siri.
 
-But it has rules. No dynamic shapes. No data-dependent control flow. No `RangeDim` with multiple variable inputs. Most Core ML ports shove the whole model through and hope the runtime scheduler figures it out. It doesn't — you end up on CPU wondering why your "Neural Engine model" runs at 1x realtime.
+But it has rules. No dynamic shapes. No data-dependent control flow. No `RangeDim` with multiple variable inputs on the Neural Engine (the one flexible program, the generator, runs on the GPU). Most Core ML ports shove the whole model through and hope the runtime scheduler figures it out. It doesn't — you end up on CPU wondering why your "Neural Engine model" runs at 1x realtime.
 
 This repo dissects the Kokoro TTS pipeline and makes deliberate cuts:
 
@@ -197,7 +197,7 @@ The `swift/` directory contains a Swift Package (`KokoroPipeline`) with:
 - **`HarmonicSource.swift`** -- hn-nsf in Swift/Accelerate (Double-precision phase accumulator)
 - **`AlignmentBuilder.swift`** -- one-hot alignment matrix from phoneme durations
 - **`MLMultiArrayHelpers.swift`** -- matrix multiply (cblas_sgemm), zero-padding, stride-safe MLMultiArray ops
-- **`WaveformPostProcess.swift`** -- punctuation-span fade-to-silence after generator trim
+- **`MultifunctionPackages.swift`** -- loads the bucketed stages from one multifunction package each (macOS 15 / iOS 18)
 - **`BucketSelector.swift`** -- smallest bucket >= ceil(audio_seconds)
 
 ```swift

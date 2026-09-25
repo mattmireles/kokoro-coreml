@@ -95,6 +95,34 @@ final class MLMultiArrayBindingTests: XCTestCase {
         XCTAssertEqual(floatValues(from: arr, limit: 2), [1.25, -0.5])
     }
 
+    /// The raw binary16 decoder (PR #5, x86_64 has no `Float16`) must handle
+    /// subnormals, signed zero, the largest finite value, infinities and NaN.
+    func testFloatValuesDecodesFloat16EdgeCases() throws {
+        let bits: [UInt16] = [0x0001, 0x03ff, 0x8000, 0x7bff, 0x7c00, 0xfc00, 0x7e00]
+        let storage = UnsafeMutablePointer<UInt16>.allocate(capacity: bits.count)
+        for (idx, value) in bits.enumerated() {
+            storage[idx] = value
+        }
+        let arr = try MLMultiArray(
+            dataPointer: UnsafeMutableRawPointer(storage),
+            shape: [NSNumber(value: bits.count)],
+            dataType: .float16,
+            strides: [1],
+            deallocator: { pointer in
+                pointer.deallocate()
+            }
+        )
+
+        let values = floatValues(from: arr)
+        XCTAssertEqual(values[0], 0x1p-24)                  // smallest subnormal
+        XCTAssertEqual(values[1], 1023 * 0x1p-24)           // largest subnormal
+        XCTAssertEqual(values[2].bitPattern, (-0.0 as Float).bitPattern)
+        XCTAssertEqual(values[3], 65504)                    // largest finite
+        XCTAssertEqual(values[4], .infinity)
+        XCTAssertEqual(values[5], -.infinity)
+        XCTAssertTrue(values[6].isNaN)
+    }
+
     func testAlignTokenMajorToFramesRepeatsTokensWithoutAlignmentMatrix() throws {
         let source = try makeFloatArray(
             shape: [1, 3, 2],

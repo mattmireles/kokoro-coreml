@@ -29,19 +29,8 @@ final class FlexibleShapeTests: XCTestCase {
         XCTAssertEqual(floatValues(from: full).reduce(0, +), 101)
     }
 
-    func testGranuleIsHalfASecondOnBothAxes() {
-        XCTAssertEqual(PipelineConstants.flexibleDecoderGranuleFrames, 20)
+    func testGranuleIsHalfASecondOfXPreFrames() {
         XCTAssertEqual(PipelineConstants.flexibleXPreGranuleFrames, 40)
-    }
-
-    func testDecoderPreStaysOnTheNeuralEnginePackagesUpToTenSeconds() {
-        for sec in [3, 7, 10] {
-            XCTAssertFalse(usesFlexibleDecoderPre(bucketSec: sec, flexibleLoaded: true), "bucket \(sec)s")
-        }
-        for sec in [15, 30] {
-            XCTAssertTrue(usesFlexibleDecoderPre(bucketSec: sec, flexibleLoaded: true), "bucket \(sec)s")
-            XCTAssertFalse(usesFlexibleDecoderPre(bucketSec: sec, flexibleLoaded: false), "bucket \(sec)s without a program")
-        }
     }
 
     func testHarFramesPerXPreFrameMatchesTheGeneratorContract() {

@@ -211,7 +211,7 @@ kokoro_decoder_har_post_3s:
   out  waveform [1, 1, 72000]   -- 3s @ 24 kHz
 ```
 
-Everything is static and float16. No dynamic ops. No `RangeDim`. No `non_zero` kernels.
+Everything is static and float16 except the optional flexible generator (`kokoro_decoder_har_post_range`, `RangeDim`, GPU only, macOS 15 / iOS 18). No dynamic ops. No `non_zero` kernels.
 
 ## Requirements
 

@@ -30,18 +30,10 @@ cp "${REPO_ROOT}/scripts/external_bakeoff/ConfigFIOSRunner/Sources/Info.plist" "
 /usr/libexec/PlistBuddy -c "Add :CFBundleSupportedPlatforms array" "${APP_DIR}/Info.plist" 2>/dev/null || true
 /usr/libexec/PlistBuddy -c "Add :CFBundleSupportedPlatforms:0 string iPhoneOS" "${APP_DIR}/Info.plist" 2>/dev/null || true
 
+# Every KokoroPipeline source, so the list cannot drift from the package.
 swift_files=(
   "${REPO_ROOT}/scripts/external_bakeoff/ConfigFIOSRunner/Sources/ConfigFIOSRunnerApp.swift"
-  "${REPO_ROOT}/swift/Sources/KokoroPipeline/AlignmentBuilder.swift"
-  "${REPO_ROOT}/swift/Sources/KokoroPipeline/BucketSelector.swift"
-  "${REPO_ROOT}/swift/Sources/KokoroPipeline/HarmonicSource.swift"
-  "${REPO_ROOT}/swift/Sources/KokoroPipeline/KokoroPipeline.swift"
-  "${REPO_ROOT}/swift/Sources/KokoroPipeline/KokoroSynthesisExecutor.swift"
-  "${REPO_ROOT}/swift/Sources/KokoroPipeline/KokoroVocabulary.swift"
-  "${REPO_ROOT}/swift/Sources/KokoroPipeline/MLMultiArrayHelpers.swift"
-  "${REPO_ROOT}/swift/Sources/KokoroPipeline/PcmJoiner.swift"
-  "${REPO_ROOT}/swift/Sources/KokoroPipeline/TensorDebugDump.swift"
-  "${REPO_ROOT}/swift/Sources/KokoroPipeline/WaveformPostProcess.swift"
+  "${REPO_ROOT}"/swift/Sources/KokoroPipeline/*.swift
 )
 
 "${SWIFTC}" \

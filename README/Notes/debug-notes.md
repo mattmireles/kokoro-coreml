@@ -14,7 +14,9 @@ Institutional memory for Kokoro PyTorch → Core ML (`mlprogram`) export, synthe
 
 ### Summary
 
-Every synthesis stage was a fixed-shape Core ML graph per bucket (3, 7, 10, 15, 30 s); masking stopped the padding from contaminating statistics but every padded frame was still computed, so an utterance that spilled into the next bucket paid for that bucket (a 15.05 s sentence cost the same as a 30 s one). The generator and the long decoder-pre now run as flexible (`RangeDim`) programs on the real length rounded up to a 0.5 s granule, with the mask kept; the stages whose cost is an LSTM keep their buckets. Latency is linear in the audio length on an M3 Max and an M1, memory is bounded, and the decoder-pre placement is measured per machine.
+Every synthesis stage was a fixed-shape Core ML graph per bucket (3, 7, 10, 15, 30 s); masking stopped the padding from contaminating statistics but every padded frame was still computed, so an utterance that spilled into the next bucket paid for that bucket (a 15.05 s sentence cost the same as a 30 s one). The generator now runs as a flexible (`RangeDim`) GPU program on the real length rounded up to a 0.5 s granule, with the mask kept; duration, f0ntrain and decoder-pre keep their buckets. Latency is close to linear in the audio length on an M3 Max and an M1, and memory is bounded.
+
+**Integration decision (2026-09-24, maintainer):** decoder-pre stays bucketed on the Neural Engine at every size. The flexible decoder-pre program, its export (`export_decoder_pre.py --time-axis range`), the 10 s routing cutoff, the `EnumeratedShapes` export option and the per-machine placement commit were not merged. Reasons: an M1's Neural Engine beats its GPU on decoder-pre at every bucket; one placement for every machine keeps a per-machine policy (and its cold-start measurement and cache) out of the runtime; the cost is about 30 ms at 30 s on an M3 Max (decoder-pre 47 ms on the ANE against 17 on the GPU), and the flexible generator, which carries the win, is unaffected. The M3 Max numbers below for 15 s and above were measured with decoder-pre on the GPU and are a few tens of milliseconds optimistic for the merged pipeline. The flexible generator needs macOS 15 / iOS 18; on an older OS the pipeline skips it and needs the bucketed generator packages. A hardened per-machine placement may return as its own PR.
 
 ### Symptom
 
@@ -33,7 +35,7 @@ The generator dominates (257 of the 349 ms at over15) and its cost is the bucket
 
 A bucket is a static graph: the runtime computes every frame of every padded tensor whether the mask marks it valid or not. Only a flexible-shape program computes the frames that exist.
 
-Bucketing exists to give a stage a fighting chance on the Neural Engine, which needs fixed shapes. It was applied to every stage while every stage was meant for the Neural Engine. The generator and the long decoder-pre resisted it (the GPU wins them on every machine measured), and for a stage that lives on the GPU a bucket is pure overhead: the GPU accepts flexible shapes and computes only the frames that exist. This branch is that insight applied: buckets stay where the Neural Engine wins (duration, f0ntrain, the short decoder-pre), flexible programs take the rest.
+Bucketing exists to give a stage a fighting chance on the Neural Engine, which needs fixed shapes. It was applied to every stage while every stage was meant for the Neural Engine. The generator resisted it (the GPU wins it on every machine measured), and for a stage that lives on the GPU a bucket is pure overhead: the GPU accepts flexible shapes and computes only the frames that exist. This branch is that insight applied to the generator; duration, f0ntrain and decoder-pre keep their buckets (decoder-pre on the Neural Engine at every size, see the integration decision above).
 
 ### Related Guides
 
@@ -46,19 +48,17 @@ Bucketing exists to give a stage a fighting chance on the Neural Engine, which n
 
 - `kokoro/istftnet.py` - `AdaIN1d` broadcasts gamma/beta implicitly (an explicit `expand` to a symbolic axis traces to a `tile` the GPU runtime crashes on above about 100k frames), and its masked statistics can be matrix products with the mask vector (`matmul_stats`, flexible exports only): under a symbolic axis the runtime cannot fuse the mask multiply into the reduction, and the ratio-of-means form costs three extra passes per AdaIN (286 vs 253 ms at 30 s); `(x @ m) / sum m` is the masked sum in one kernel, the mask scaled by 1/1024 inside the graph so an fp16 sum over 144k frames stays in range. `AdainResBlk1d._residual` zeroes the padded frames of its transposed-conv pool before conv1: the pool writes its bias on the padding and conv1's last valid output read one frame into it, which capped x_pre parity at 29-37 dB; with the multiply it is 51-60 dB on every input (fixed packages included, so the #6 decoder-pre and f0ntrain packages are re-exported).
 - `export_synth/convert.py`, `export_synth/main.py`, `export_synth/wrappers.py` - `--time-axis range` exports the generator as one program with `RangeDim` axes (x_pre 40..2400 frames, har 60x+1) that takes the mask at every internal resolution (`mask`, `mask_x10`, `mask_x60`): aligning the mask inside the graph (nearest upsample + concat) costs 0.3 ms on its own but breaks the runtime's fusion of the whole program (93 ms instead of 29 at 3 s). Fixed packages keep the constant-index alignment.
-- `export_decoder_pre.py` - `--time-axis range` for decoder-pre (asr 20..1200 frames), with the mask.
-- `scripts/build_multifunction_packages.py` - the bucketed stages (duration t64-t512, f0ntrain t120-t1200, decoder-pre 3-30 s) merge into one multifunction package each, weights stored once: 664 MB -> 242 MB on disk for the set; disk only, each loaded function is resident on its own.
-- `swift/Sources/KokoroPipeline/KokoroSynthesisExecutor.swift`, `KokoroPipeline.swift`, `MLMultiArrayHelpers.swift` - the flexible generator serves every utterance and the flexible decoder-pre the buckets above the Neural Engine range; lengths round up to the 0.5 s granule (`flexibleTimeAxis`), the masks are built from each input's declared bounds (`flexibleMaskInputs`), the harmonic source runs on a background queue while decoder-pre predicts (`decoderPreHnsfOverlap`), and a bucket without a fixed model is served by the flexible program.
-- `swift/Sources/KokoroPipeline/DecoderPrePlacement.swift` - decoder-pre on the Neural Engine up to 10 s and on the GPU above (the rule measured on the M3 Max, overridable with `KOKORO_DECODER_PRE_ANE_MAX_SECONDS` and `--decoder-pre-ane-max`); the M1 prefers its Neural Engine throughout, which the next commit measures per machine.
+- `scripts/build_multifunction_packages.py` - the bucketed stages (duration t64-t512, f0ntrain t120-t1200, decoder-pre 3-30 s) merge into one multifunction package each, weights stored once: 664 MB -> 242 MB on disk for the set (measured with the unmerged flexible decoder-pre in the set); disk only, each loaded function is resident on its own.
+- `swift/Sources/KokoroPipeline/KokoroSynthesisExecutor.swift`, `KokoroPipeline.swift`, `MLMultiArrayHelpers.swift` - the flexible generator serves every utterance (loaded only on macOS 15 / iOS 18); lengths round up to the 0.5 s granule (`flexibleTimeAxis`), the masks are built from each input's declared bounds (`flexibleMaskInputs`), the harmonic source runs on a background queue while decoder-pre predicts (`decoderPreHnsfOverlap`), and a bucket without a fixed model is served by the flexible program.
+- `swift/Sources/KokoroPipeline/KokoroPipeline.swift` - every decoder-pre package runs on the Neural Engine (`PipelineConstants.decoderPreComputeUnits`, pinned by `DecoderPrePlacementTests`).
 - `swift/Sources/KokoroPipeline/MultifunctionPackages.swift`, `KokoroBenchmark/main.swift` - loading by function name, falling back to the separate packages when no multifunction package is present.
 
 ### Verification
 
 ```bash
 pytest -q tests/test_export_wrappers_shapes.py           # 27 passed: mask alignment, matmul statistics, masked pool, Core ML conversion of the flexible axes
-cd swift && swift test                                    # 58 passed: granule, mask inputs, placement rule, multifunction discovery
+cd swift && swift test                                    # granule, mask inputs, decoder-pre on the ANE, multifunction discovery
 python -m export_synth.main --mode decoder-har --buckets 30s --time-axis range
-python export_decoder_pre.py --buckets 30 --time-axis range
 python scripts/build_multifunction_packages.py --models-dir coreml
 ```
 
@@ -82,11 +82,43 @@ Parity of the flexible generator against PyTorch fp32 on the same tensors is 43.
 - `EnumeratedShapes` keeps the fixed-shape parity (45.7-46.2 dB) but pays about 140 ms on every call whose shape differs from the previous one, whatever the hints, plus ~725 ms per shape once per machine (disk-cached) and 10-17 MB per specialised shape: a no-go for a pipeline whose length changes every call.
 - f0ntrain and duration lose under a symbolic axis: an `lstm` over a symbolic length runs ~5x slower on the CPU whatever its form (51 vs 10.8 ms at 1,200 frames), and the duration planner pins the whole symbolic graph to the CPU behind the no-op `masked_fill` ops of the exact wrappers. Both keep their buckets and masks.
 - The masked path's residual against the native run (x_pre 29-37 dB on every input, whatever the fill) was the last valid output frame of each upsampling block: the transposed-conv pool (kernel 3, stride 2, output padding 1) writes its bias on the padded frames and conv1 (kernel 3) reads one of them for its last valid output; multiplying the pool output by the upsampled mask before conv1 lifts x_pre to 51-60 dB at every length (f0 and n unchanged). The fixed packages had the same one-frame residual since #6.
-- Every other stage's placement was swept on both machines: on the M3 Max the Neural Engine wins duration up to t256 by 1.5-4 ms and f0ntrain up to t280 by a tie's width; on the M1 it wins duration from t128 by 10-16 ms and f0ntrain up to t600 by 3-6 ms, and decoder-pre throughout. A measured per-machine placement of all three stages is the next commit.
+- Every other stage's placement was swept on both machines: on the M3 Max the Neural Engine wins duration up to t256 by 1.5-4 ms and f0ntrain up to t280 by a tie's width; on the M1 it wins duration from t128 by 10-16 ms and f0ntrain up to t600 by 3-6 ms, and decoder-pre throughout. A measured per-machine placement of all three stages was proposed as a follow-up commit and not merged (see the integration decision above).
 
 ### If This Recurs
 
 A flexible export that runs but is slow: dump its compute plan (`scripts/dump_device_compute_plan.py`) and count `matmul` against `reduce_mean` in the package; an all-CPU plan means a shape-dependent op (`select`, `shape`, `tile`) dragged the graph, a GPU plan with no `matmul` means the export loaded the model under a suffixed package name and the class match for `matmul_stats` did not fire. A process whose memory grows with every utterance is the per-shape cache: check that lengths are rounded (`flexibleTimeAxis`).
+
+---
+
+## Issue: Swift STFT reported −π at the Nyquist bin where PyTorch reports +π — Resolved
+
+**First spotted:** 2026-09-15
+**Resolved:** 2026-09-16
+**Status:** Resolved
+
+### Summary
+
+Every Core ML render since the Swift harmonic source existed carried +1 to +3 dB more energy above 6 kHz than the PyTorch reference, on every arm and input, while all lower bands matched within a few tenths of a dB. The cause was one phase channel of the generator's `har` input: at the Nyquist bin (12 kHz) the imaginary part of the STFT is mathematically zero, and the sign of the ±1e-7 noise the Float basis left there decided whether `atan2` reported +π or −π for a negative real part. `torch.stft` reports +π in every such frame; the Swift transform reported −π in 10,658 of the 66,720 valid frames of the frozen 15 s input, a 2π jump in a channel the network reads at face value. The transform now fills the DC and Nyquist imaginary parts with +0.0 and skips their dot products.
+
+### Symptom
+
+Raw renders against the PyTorch reference, bands relative to total energy (dB): 6–12 kHz +3.2 on upstream main and the duration-only commit for the 15 s utterance in the 30 s bucket, +2.0 after the mask-aware commits, +0.3 to +0.5 after the native `har` geometry; every other band within 0.6 dB.
+
+### Root Cause
+
+Feeding the generator a PyTorch-computed `har` from the same F0 removed the excess entirely (every band within 0.1 dB, level 1.000x); the Swift and PyTorch `har` magnitudes and the source waveform agreed bin by bin. Swapping only the phase channels moved the excess with them. The raw phase difference was 2π at the Nyquist bin in 10,658 valid frames and nowhere else; isolated single-frame flips in other bins sit at near-zero magnitude and do not matter. A first fix that only zeroed the imaginary basis rows made it worse (+2.0 dB at 9–12 kHz): a zero filter dot-multiplied with negative samples yields −0.0, and `atan2(−0.0, x < 0)` is −π in every frame.
+
+### Fix
+
+**Files:** `swift/Sources/KokoroPipeline/HarmonicSource.swift` (`HarmonicSTFTBasis.buildBasis`, `stftTransform`), `swift/Tests/KokoroPipelineTests/HarmonicSourceTests.swift`.
+
+The DC and Nyquist rows of the imaginary basis are exactly zero and `stftTransform` fills those bins' imaginary part with +0.0 instead of running the dot product, so `atan2` reports 0 or +π exactly as `torch.stft` does.
+
+### Verification
+
+Frozen 15 s, 15 s-in-30 s and 30 s inputs, Apple M3 Max, production compute policy: Nyquist-bin frames differing from PyTorch's STFT of the same source drop from 10,658 to 0; the render's raw level moves from 0.988x to 1.001x of the PyTorch reference and every band from 150 Hz to 12 kHz is within 0.1 dB of it.
+
+Regression test: `testSTFTEdgeBinsReportPositivePiForNegativeRealParts` (a negative constant and a negative Nyquist alternation must report +π, never −π, on their edge bins).
 
 ---
 

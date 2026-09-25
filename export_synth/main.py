@@ -38,11 +38,11 @@ def main() -> None:
         "--time-axis",
         type=str,
         default="fixed",
-        choices=["fixed", "enumerated", "range"],
+        choices=["fixed", "range"],
         help=(
             "decoder-har only. 'fixed' (default): one static shape per bucket with a required mask. "
-            "'enumerated': one program whose x_pre/har axes accept every 0.5 s length up to the bucket, no mask. "
-            "'range': one program with a RangeDim time axis up to the bucket, no mask. Both need macOS 15."
+            "'range': one GPU program with a RangeDim time axis up to the bucket, masked at each "
+            "internal resolution (mask, mask_x10, mask_x60). Needs macOS 15 / iOS 18."
         ),
     )
     args = parser.parse_args()
