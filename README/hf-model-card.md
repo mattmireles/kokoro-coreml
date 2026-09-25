@@ -83,7 +83,7 @@ So we cut the pipeline at the joints:
                   └──────────────┬─────────────────┘
                                  ▼
                   ┌────────────────────────────────┐
-                  │  F0 / NOISE  (kokoro_f0ntrain)  │ ◀── ANE
+                  │  F0 / NOISE  (kokoro_f0ntrain)  │ ◀── GPU
                   │  Pitch + aperiodicity contours  │     fixed-shape dense math
                   └──────────────┬─────────────────┘
                                  ▼
@@ -98,14 +98,14 @@ So we cut the pipeline at the joints:
                   └──────────────┬─────────────────┘
                                  ▼
                   ┌────────────────────────────────┐
-                  │  GENERATOR (kokoro_decoder_     │ ◀── ANE
-                  │  har_post) convs + iSTFT        │     dense parallel tensor math
+                  │  GENERATOR (kokoro_decoder_     │ ◀── GPU
+                  │  har_post) convs + iSTFT        │     runs at the real utterance length
                   └──────────────┬─────────────────┘
                                  ▼
                             24 kHz Audio
 ```
 
-Four models on the ANE, one DSP stage in Swift with double-precision phase accumulation. The generator has zero `nn.Linear` ops -- all 48 replaced with `Conv1d(kernel_size=1)` so the MIL graph stays on the ANE path.
+Decoder-pre runs on the ANE (250 of 250 ops in its compute plan at 3, 15 and 30 s); duration, pitch and the generator run on CPU+GPU, where they are fastest; one DSP stage runs in Swift with double-precision phase accumulation. The generator exceeds the ANE's tensor-size limits, so it runs on the GPU as one flexible-length program that computes only the frames the utterance needs.
 
 **Redesign the inference pipeline, not the model.** That's where the 2x over MLX comes from -- not by fighting the GPU, but by routing around it.
 
@@ -117,9 +117,10 @@ Five fixed-duration buckets: **3s, 7s, 10s, 15s, 30s**. Pick the smallest bucket
 |---|---|---|
 | `kokoro_duration_t128.mlpackage` | Phoneme durations + text/style encodings at the SDK's fixed padded token length | CPU/GPU |
 | `kokoro_duration.mlpackage` | Legacy single duration model (fallback) | CPU/GPU |
-| `kokoro_f0ntrain_t{120,280,400,600,1200}.mlpackage` | Pitch + noise prediction, one per bucket's frame count | ANE |
+| `kokoro_f0ntrain_t{120,280,400,600,1200}.mlpackage` | Pitch + noise prediction, one per bucket's frame count | GPU |
 | `kokoro_decoder_pre_{3,7,10,15,30}s.mlpackage` | Text features → decoder hidden state | ANE |
-| `kokoro_decoder_har_post_{3,7,10,15,30}s.mlpackage` | Generator: harmonic-excited convolutions + iSTFT → waveform | ANE |
+| `kokoro_decoder_har_post_range.mlpackage` | Generator, one flexible-length program for every utterance up to 30 s (macOS 15 / iOS 18; the SDK uses this one) | GPU |
+| `kokoro_decoder_har_post_{3,7,10,15,30}s.mlpackage` | Generator, one fixed-shape package per bucket (older OS fallback) | GPU |
 
 The alignment matrix and the hn-NSF harmonic source are not models -- they're a few hundred lines of Swift/vDSP in the GitHub repo's `KokoroPipeline`.
 
@@ -177,8 +178,8 @@ node scripts/validate_sdk_bundle.mjs /tmp/kokoro-sdk-starter
 Downloaded-resource apps can hydrate the top-level starter
 `HostedManifest.json` with `KokoroDownloadedModelStore`. Pass
 `expectedManifestSHA256` for the exact manifest bytes (current public starter
-digest: `71d2722880571d142878118e1acbae3cd03d8a6509ad7f66aeacbfee2a560a2a`,
-immutable revision: `9b6c8dbcf1209eedb554ca2fe98e947948061638`).
+digest: `2f61bf6fce9f7fafa58a5f08f5aada0035a81741552692eda36bd0c331be8b6c`,
+immutable revision: `5bb7d75dd3703edc369a230791f92d0beac45974`).
 Production apps must serve manifests over HTTPS. Bundled-resource apps can use
 `KokoroResourceProvider.directory`, `.appBundle`, or `.packageBundle`, and
 should supply a writable `compiledModelsDirectory` so compilation does not write
@@ -200,18 +201,19 @@ kokoro_duration_t128:
   out  t_en, d, s, ref_s_out                     encodings for downstream stages
 
 kokoro_f0ntrain_t120:
-  in   en   [1, 640, 120]   out  F0_pred [1, 240], N_pred [1, 240]
+  in   en [1, 640, 120]  s [1, 128]  mask [1, 1, 120]
+  out  F0_pred [1, 240], N_pred [1, 240]
 
 kokoro_decoder_pre_3s:
-  in   asr [1, 512, 120]  f0 [1, 1, 240]  n_input [1, 1, 240]  ref_s [1, 256]
+  in   asr [1, 512, 120]  f0 [1, 1, 240]  n_input [1, 1, 240]  ref_s [1, 256]  mask [1, 1, 120]
   out  x_pre [1, 512, 240]
 
 kokoro_decoder_har_post_3s:
-  in   x_pre [1, 512, 240]  ref_s [1, 256]  har [1, 22, 28801]
+  in   x_pre [1, 512, 240]  ref_s [1, 256]  har [1, 22, 14401]  mask [1, 1, 240]
   out  waveform [1, 1, 72000]   -- 3s @ 24 kHz
 ```
 
-Everything is static and float16 except the optional flexible generator (`kokoro_decoder_har_post_range`, `RangeDim`, GPU only, macOS 15 / iOS 18). No dynamic ops. No `non_zero` kernels.
+`mask` marks the valid frames of a padded bucket (1 = real, 0 = padding) and is required. Everything is static and float16 except the optional flexible generator (`kokoro_decoder_har_post_range`, `RangeDim`, GPU only, macOS 15 / iOS 18). No dynamic ops. No `non_zero` kernels.
 
 ## Requirements
 
