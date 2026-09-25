@@ -31,13 +31,14 @@ public struct MultifunctionPackage {
     public let functionNames: Set<String>
 
     /// Compiles the package at `url` and lists its functions; nil when no file is there.
-    /// Compilation is synchronous, like the rest of model loading.
-    public static func open(at url: URL) throws -> MultifunctionPackage? {
+    /// Compilation is synchronous, like the rest of model loading; `cache` keeps
+    /// the compiled bundle across launches (see `CompiledModelCache`).
+    public static func open(at url: URL, cache: URL? = nil) throws -> MultifunctionPackage? {
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         // Function selection needs the macOS 15 / iOS 18 runtime; an older OS
         // reports no functions and the loaders fall back to separate packages.
         guard #available(macOS 15.0, iOS 18.0, *) else { return nil }
-        let compiled = try MLModel.compileModel(at: url)
+        let compiled = try CompiledModelCache.compiledURL(for: url, cache: cache) { (try? MLModelAsset(url: $0)) != nil }
         let asset = try MLModelAsset(url: compiled)
         let semaphore = DispatchSemaphore(value: 0)
         var names: [String] = []
