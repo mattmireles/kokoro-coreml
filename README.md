@@ -198,6 +198,7 @@ The `swift/` directory contains a Swift Package (`KokoroPipeline`) with:
 - **`AlignmentBuilder.swift`** -- one-hot alignment matrix from phoneme durations
 - **`MLMultiArrayHelpers.swift`** -- matrix multiply (cblas_sgemm), zero-padding, stride-safe MLMultiArray ops
 - **`MultifunctionPackages.swift`** -- loads the bucketed stages from one multifunction package each (macOS 15 / iOS 18)
+- **`CompiledModelCache.swift`** -- optional on-disk cache of compiled models, so a relaunch skips the compile
 - **`BucketSelector.swift`** -- smallest bucket >= ceil(audio_seconds)
 
 ```swift
@@ -207,7 +208,8 @@ let pipeline = try KokoroPipeline(
     modelsDirectory: coremlURL,
     buckets: [3, 7, 10, 15, 30],
     linearWeights: hnsfWeights,
-    linearBias: hnsfBias
+    linearBias: hnsfBias,
+    compiledModelCache: cacheURL  // optional; nil recompiles on every launch
 )
 
 let result = try pipeline.synthesize(
@@ -221,6 +223,8 @@ let result = try pipeline.synthesize(
 // result.timings: per-stage breakdown
 // result.timings.total: end-to-end wall time
 ```
+
+`init` only finds the model packages. Each model compiles and opens the first time it's used. Call `prepareForBucket(bucketSec:tFrames:)` to do that ahead of time. Point `compiledModelCache` at a directory whose name comes from the model set's digest, so that updated models never reuse stale compiled bundles.
 
 ## Bakeoff configs
 
