@@ -215,7 +215,7 @@ def _prepare_exact_dump(
             out = np.ascontiguousarray(
                 tensors["waveform"].reshape(1, 1, -1)[..., : geometry.target_samples]
             )
-        elif name in {"waveform_raw_trimmed", "waveform"}:
+        elif name == "waveform":
             out = np.ascontiguousarray(arr.reshape(-1)[: geometry.target_samples])
         else:
             out = arr
