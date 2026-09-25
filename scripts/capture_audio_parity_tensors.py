@@ -24,6 +24,8 @@ sys.path.insert(0, str(_SCRIPT_DIR))
 sys.path.insert(0, str(_ROOT))
 
 from audio_parity_tensor_io import TensorDumpWriter, bucket_mask_from_tensors  # noqa: E402
+from export_decoder_pre import DecoderPreWrapper  # noqa: E402
+from export_f0ntrain import F0NtrainWrapper  # noqa: E402
 from export_synth.wrappers import DurationModel, GeneratorFromHar  # noqa: E402
 from kokoro import KModel  # noqa: E402
 from kokoro.conv_length import conv1d_output_length_from_module  # noqa: E402
@@ -65,6 +67,51 @@ def _pad_time(array: np.ndarray, target_time: int) -> np.ndarray:
     copy_time = min(array.shape[-1], target_time)
     out[..., :copy_time] = array[..., :copy_time]
     return out
+
+
+def _prefix_mask(valid_frames: int, total_frames: int) -> torch.Tensor:
+    """(1, 1, total) mask, 1.0 on the first ``valid_frames``: Swift's ``makeBucketMask``."""
+    mask = torch.zeros(1, 1, total_frames, dtype=torch.float32)
+    mask[..., : min(max(valid_frames, 0), total_frames)] = 1.0
+    return mask
+
+
+def masked_f0n_and_x_pre(
+    kmodel: KModel,
+    en_padded: np.ndarray,
+    s: np.ndarray,
+    asr_padded: np.ndarray,
+    ref_s: np.ndarray,
+    valid_frames: int,
+    full_f0_len: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Run F0Ntrain and decoder-pre as the runtime runs the mask-aware packages.
+
+    Both stages see ``valid_frames`` valid of their padded input axis, the
+    ``stageInputs`` contract in KokoroSynthesisExecutor.swift. Unmasked, the
+    padding leaks into every time-axis statistic (README/Notes/debug-notes.md,
+    "Bucket padding contaminated every time-axis statistic"), so the dump would
+    disagree with a correct runtime by stage fill rather than by export error.
+
+    Returns (f0, n, f0_padded, n_padded, x_pre).
+    """
+    en_t = torch.from_numpy(en_padded)
+    f0_t, n_t = F0NtrainWrapper(kmodel.predictor).eval()(
+        en_t, torch.from_numpy(s), _prefix_mask(valid_frames, en_t.shape[-1])
+    )
+    f0 = f0_t.detach().cpu().numpy().astype(np.float32)
+    n = n_t.detach().cpu().numpy().astype(np.float32)
+    f0_padded = _pad_time(f0, full_f0_len)
+    n_padded = _pad_time(n, full_f0_len)
+    x_pre_t = DecoderPreWrapper(kmodel.decoder).eval()(
+        torch.from_numpy(asr_padded),
+        torch.from_numpy(f0_padded).unsqueeze(1),
+        torch.from_numpy(n_padded).unsqueeze(1),
+        torch.from_numpy(ref_s),
+        _prefix_mask(valid_frames, asr_padded.shape[-1]),
+    )
+    x_pre = x_pre_t.detach().cpu().numpy().astype(np.float32)
+    return f0, n, f0_padded, n_padded, x_pre
 
 
 def _generator_shapes(models_dir: Path, bucket_sec: int, fallback_x_pre: int, fallback_har: int) -> tuple[int, int]:
@@ -129,9 +176,6 @@ def capture(args: argparse.Namespace) -> Path:
         t_frames = T_FRAMES_FOR_BUCKET[bucket_sec]
 
         en_padded = _pad_time(en, t_frames)
-        f0_t, n_t = kmodel.predictor.F0Ntrain(torch.from_numpy(en_padded), torch.from_numpy(s_np))
-        f0 = f0_t.detach().cpu().numpy().astype(np.float32)
-        n = n_t.detach().cpu().numpy().astype(np.float32)
 
         dec = kmodel.decoder
         gen = dec.generator
@@ -139,25 +183,10 @@ def capture(args: argparse.Namespace) -> Path:
         full_f0_len = int(round(float(bucket_sec * 24_000) / float(f0_samples_per_step)))
         decoder_frame_count = conv1d_output_length_from_module(full_f0_len, dec.F0_conv)
 
-        f0_padded = _pad_time(f0, full_f0_len)
-        n_padded = _pad_time(n, full_f0_len)
         asr_padded = _pad_time(asr, decoder_frame_count)
-
-        baseline_s = torch.from_numpy(ref_s_out[:, :128])
-        asr_t = torch.from_numpy(asr_padded)
-        f0_conv = dec.F0_conv(torch.from_numpy(f0_padded).unsqueeze(1))
-        n_conv = dec.N_conv(torch.from_numpy(n_padded).unsqueeze(1))
-        x = torch.cat([asr_t, f0_conv, n_conv], dim=1)
-        x = dec.encode(x, baseline_s)
-        asr_res = dec.asr_res(asr_t)
-        res = True
-        for block in dec.decode:
-            if res:
-                x = torch.cat([x, asr_res, f0_conv, n_conv], dim=1)
-            x = block(x, baseline_s)
-            if block.upsample_type != "none":
-                res = False
-        x_pre = x.detach().cpu().numpy().astype(np.float32)
+        f0, n, f0_padded, n_padded, x_pre = masked_f0n_and_x_pre(
+            kmodel, en_padded, s_np, asr_padded, ref_s_out, natural_frames, full_f0_len
+        )
 
         torch.manual_seed(args.seed)
         f0_up = gen.f0_upsamp(torch.from_numpy(f0_padded)[:, None]).transpose(1, 2)
