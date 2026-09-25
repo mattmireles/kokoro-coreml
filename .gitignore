@@ -187,6 +187,8 @@ examples/KokoroDemoApp/local-signing.yml
 # CoreML model packages — downloaded from HF Hub, not stored in git.
 # Run: python scripts/download_models.py
 /coreml/
+# KokoroG2P assets mirrored to HF g2p/ (see scripts/build_sdk_bundle.mjs)
+/g2p/
 coreml_fp32/
 KokoroVocoder.mlpackage/
 .cache/

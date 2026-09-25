@@ -169,6 +169,11 @@ assertArrayEqual(
   contract.fullBuckets
 );
 assertArrayEqual(
+  'build_sdk_bundle full duration sizes (multifunction functions)',
+  parseJsProfile(sources.buildBundle, 'full', 'durationTokenSizes'),
+  contract.durationTokenSizes
+);
+assertArrayEqual(
   'build_sdk_bundle duration sizes',
   parseJsConstArray(sources.buildBundle, 'sdkDurationTokenSizes'),
   contract.sdkDurationTokenSizes

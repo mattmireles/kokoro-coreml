@@ -161,6 +161,7 @@ def inspect_artifacts(
             "sdk/SDKReleaseManifest.json",
             "sdk/starter/KokoroRuntimeManifest.json",
             "sdk/full/KokoroRuntimeManifest.json",
+            "sdk/full/HostedManifest.json",
         }:
             sdk_metadata.add(path)
 
@@ -171,6 +172,7 @@ def inspect_artifacts(
     unexpected_sdk_hosted_manifests = sorted(
         path for path in sibling_paths
         if path.startswith("sdk/") and path.endswith("/HostedManifest.json")
+        and path != "sdk/full/HostedManifest.json"
     )
     if isinstance(resolved_revision, str) and "HostedManifest.json" in sibling_paths:
         hosted_manifest = fetch_repo_json(repo_id, resolved_revision, "HostedManifest.json")
@@ -194,6 +196,7 @@ def inspect_artifacts(
         "sdk/SDKReleaseManifest.json",
         "sdk/starter/KokoroRuntimeManifest.json",
         "sdk/full/KokoroRuntimeManifest.json",
+        "sdk/full/HostedManifest.json",
     }
 
     report = {

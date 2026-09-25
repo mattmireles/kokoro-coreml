@@ -490,7 +490,7 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
             "schema=\(manifest.schemaVersion)",
             "sdk=\(manifest.sdkCommit)",
             "repo=\(manifest.hfRepoID)",
-            "revision=\(manifest.hfRevision)",
+            "revision=\(manifest.hfArtifactRevision)",
             "profile=\(manifest.bundleProfile)",
             "download=\(manifest.hfDownloadManifestSHA256)",
             "vocab=\(manifest.runtimeAssets.vocab.sha256)",

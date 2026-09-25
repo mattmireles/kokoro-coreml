@@ -10,29 +10,56 @@ import { spawnSync } from 'node:child_process';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const defaultRepoId = 'mattmireles/kokoro-coreml';
-const defaultRevision = 'c02933e179932e51909ff3b29466a7debac7d0e6';
+// HF commit holding the model, voice, and G2P artifacts this checkout expects.
+// It is where sources are verified, NOT a revision consumers should pin: the
+// manifests are published in a later commit (see prepare_hf_sdk_metadata.py).
+const defaultRevision = 'fd1e4958fd3336e1d77dfb8f9949cc7d30996a1d';
 const runtimeAssetDir = path.join(repoRoot, 'swift-tts/Sources/KokoroTTS/Resources/KokoroRuntime');
 // KokoroSDKModelProvider selects one padded t128 graph. Keeping the historical
 // duration ladder in hosted bundles wasted roughly 300 MB per first install
 // and exposed seven separate lazy Core ML specialization paths.
 const sdkDurationTokenSizes = [128];
 const bundleMarkerName = '.kokoro-sdk-bundle';
+// One flexible (RangeDim, GPU) generator serves every bucket at the
+// utterance's real length; the SDK's macOS 15 / iOS 18 floor always has it.
+// Export it traced at 30 s so it covers every profile's largest bucket.
+const flexibleGeneratorPackage = 'kokoro_decoder_har_post_range.mlpackage';
+// Minimal asset set for the KokoroG2P Swift library
+// (`KokoroEnglishFrontend(assetsDirectory:)`), mirrored from the Apache-2.0
+// HF repo FluidInference/kokoro-82m-coreml into `g2p/` of our HF repo.
+const g2pAssetNames = ['us_lexicon_cache.json', 'g2p_vocab.json', 'G2PEncoder.mlmodelc', 'G2PDecoder.mlmodelc'];
 
 const profiles = {
+  // Public KokoroTTS SDK contract: one 15 s bucket, one padded t128 graph.
   starter: {
     voices: ['af_heart'],
     buckets: [15],
     durationTokenSizes: sdkDurationTokenSizes,
   },
+  // Product profile: three multifunction packages (one function per shape,
+  // weights stored once) plus the flexible generator serve every bucket and
+  // duration shape. Loaded by KokoroPipeline (MultifunctionPackages.swift);
+  // the KokoroTTS SDK provider only loads per-bucket starter/custom bundles.
   full: {
     voices: null,
     buckets: [3, 7, 10, 15, 30],
-    durationTokenSizes: sdkDurationTokenSizes,
+    durationTokenSizes: [32, 64, 128, 256, 320, 384, 512],
+    packages: [
+      'kokoro_duration_multifunction.mlpackage',
+      'kokoro_f0ntrain_multifunction.mlpackage',
+      'kokoro_decoder_pre_multifunction.mlpackage',
+      flexibleGeneratorPackage,
+    ],
+    g2p: true,
   },
 };
 
-/** Returns HEAD only when the repository can honestly claim exact provenance. */
-function cleanSDKCommit() {
+/**
+ * Returns HEAD only when the repository can honestly claim exact provenance.
+ * `--allow-dirty 1` records `<HEAD>-dirty` instead, so a bundle built from
+ * uncommitted sources never claims a commit it did not come from.
+ */
+function cleanSDKCommit(allowDirty) {
   const status = spawnSync(
     'git',
     ['status', '--porcelain', '--untracked-files=all'],
@@ -41,8 +68,9 @@ function cleanSDKCommit() {
   if (status.status !== 0) {
     throw new Error('failed to inspect SDK source provenance');
   }
-  if (status.stdout.trim()) {
-    throw new Error('refusing to build an SDK bundle from a dirty working tree');
+  const dirty = Boolean(status.stdout.trim());
+  if (dirty && !allowDirty) {
+    throw new Error('refusing to build an SDK bundle from a dirty working tree (pass --allow-dirty 1 to record <HEAD>-dirty)');
   }
   const revision = spawnSync(
     'git',
@@ -52,7 +80,7 @@ function cleanSDKCommit() {
   if (revision.status !== 0 || !revision.stdout.trim()) {
     throw new Error('failed to resolve SDK source commit');
   }
-  return revision.stdout.trim();
+  return dirty ? `${revision.stdout.trim()}-dirty` : revision.stdout.trim();
 }
 
 /** Parses command-line options into a map. */
@@ -155,6 +183,10 @@ async function loadDownloadManifest(args, repoId, revision) {
   }
   if ((manifest.revision || null) !== (revision || null)) {
     throw new Error(`download manifest revision mismatch: expected ${revision}, observed ${manifest.revision}`);
+  }
+  // A branch name moves; only a full commit SHA says which bytes were verified.
+  if (!/^[0-9a-f]{40}$/.test(revision || '')) {
+    throw new Error(`--revision must be a full 40-hex HF commit SHA, got ${revision}`);
   }
   return { path: resolved, manifest };
 }
@@ -291,6 +323,9 @@ async function fileDigest(root, relativePath) {
 
 /** Computes package names required by a bundle profile. */
 function requiredPackages(config) {
+  if (config.packages) {
+    return config.packages;
+  }
   const names = [];
   for (const size of config.durationTokenSizes) {
     names.push(`kokoro_duration_t${size}.mlpackage`);
@@ -299,10 +334,7 @@ function requiredPackages(config) {
     names.push(`kokoro_f0ntrain_t${bucket * 40}.mlpackage`);
     names.push(`kokoro_decoder_pre_${bucket}s.mlpackage`);
   }
-  // One flexible (RangeDim, GPU) generator serves every bucket at the
-  // utterance's real length; the SDK's macOS 15 / iOS 18 floor always has it.
-  // Export it traced at 30 s so it covers every profile's largest bucket.
-  names.push('kokoro_decoder_har_post_range.mlpackage');
+  names.push(flexibleGeneratorPackage);
   return names;
 }
 
@@ -346,7 +378,7 @@ async function buildBundle() {
   const config = resolveProfile(args);
   const repoId = args.get('repo-id') || defaultRepoId;
   const revision = args.get('revision') || defaultRevision;
-  const sdkCommit = cleanSDKCommit();
+  const sdkCommit = cleanSDKCommit(args.get('allow-dirty') === '1');
   const outputDir = path.resolve(repoRoot, args.get('output') || `outputs/sdk-bundles/${config.profile}`);
   await assertSafeOutputDirectory(outputDir);
   const packageNames = requiredPackages(config);
@@ -361,6 +393,13 @@ async function buildBundle() {
   for (const voice of voices) {
     if (!existsSync(path.join(repoRoot, 'kokoro.js/voices', `${voice}.bin`))) {
       missing.push(`kokoro.js/voices/${voice}.bin`);
+    }
+  }
+  if (config.g2p) {
+    for (const name of g2pAssetNames) {
+      if (!existsSync(path.join(repoRoot, 'g2p', name))) {
+        missing.push(`g2p/${name}`);
+      }
     }
   }
   hydrateIfRequested(args, config, missing);
@@ -410,6 +449,20 @@ async function buildBundle() {
     await verifySourceAgainstDownloadManifest(downloadManifest, path.join('kokoro.js/voices', `${voice}.bin`));
     await copyFile(src, path.join(outputDir, 'voices', `${voice}.bin`));
   }
+  if (config.g2p) {
+    for (const name of g2pAssetNames) {
+      const src = path.join(repoRoot, 'g2p', name);
+      await assertRealPathInside(path.join(repoRoot, 'g2p'), src);
+      await verifySourceAgainstDownloadManifest(downloadManifest, path.join('g2p', name));
+      const dest = path.join(outputDir, 'g2p', name);
+      await mkdir(path.dirname(dest), { recursive: true });
+      if ((await stat(src)).isDirectory()) {
+        await copyDirectory(src, dest);
+      } else {
+        await copyFile(src, dest);
+      }
+    }
+  }
   for (const name of ['kokoro-vocab.json', 'hnsf_weights.json']) {
     const src = path.join(runtimeAssetDir, name);
     await assertRealPathInside(runtimeAssetDir, src);
@@ -425,7 +478,9 @@ async function buildBundle() {
     generated_at: new Date().toISOString(),
     sdk_commit: sdkCommit,
     hf_repo_id: repoId,
-    hf_revision: revision,
+    // Where models, voices, and G2P assets were verified byte-identical. Not a
+    // hydratable pin: this manifest itself lands in a later HF commit.
+    hf_artifact_revision: revision,
     hf_provenance_verified: downloadManifest !== null,
     hf_download_manifest_sha256: downloadManifest ? await sha256File(downloadManifest.path) : null,
     bundle_profile: config.profile,
@@ -440,6 +495,12 @@ async function buildBundle() {
       hnsf_weights: await fileDigest(outputDir, 'runtime/hnsf_weights.json'),
     },
   };
+  if (config.g2p) {
+    manifest.g2p_assets = [];
+    for (const filePath of await listFiles(path.join(outputDir, 'g2p'))) {
+      manifest.g2p_assets.push(await fileDigest(outputDir, path.relative(outputDir, filePath)));
+    }
+  }
   await writeFile(path.join(outputDir, 'KokoroRuntimeManifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
 
   const hostedFiles = [];

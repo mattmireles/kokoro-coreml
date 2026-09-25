@@ -11,8 +11,9 @@ struct KokoroRuntimeManifest: Decodable, Sendable {
     /// Hugging Face repo ID used for model and voice artifacts.
     let hfRepoID: String
 
-    /// Hugging Face revision used for model and voice artifacts.
-    let hfRevision: String
+    /// Hugging Face revision where model and voice artifacts were verified.
+    /// Not a hydratable pin: the manifests land in a later HF commit.
+    let hfArtifactRevision: String
 
     /// Whether the bundle builder verified local model and voice files against
     /// a Hugging Face download manifest before packaging them.
@@ -50,7 +51,7 @@ struct KokoroRuntimeManifest: Decodable, Sendable {
         case schemaVersion = "schema_version"
         case sdkCommit = "sdk_commit"
         case hfRepoID = "hf_repo_id"
-        case hfRevision = "hf_revision"
+        case hfArtifactRevision = "hf_artifact_revision"
         case hfProvenanceVerified = "hf_provenance_verified"
         case hfDownloadManifestSHA256 = "hf_download_manifest_sha256"
         case minimumPlatforms = "minimum_platforms"

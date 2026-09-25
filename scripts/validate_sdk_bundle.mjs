@@ -121,6 +121,9 @@ async function validateBundle(bundleRoot) {
   }
   await verifyFile(bundleRoot, manifest.runtime_assets.vocab);
   await verifyFile(bundleRoot, manifest.runtime_assets.hnsf_weights);
+  for (const file of manifest.g2p_assets || []) {
+    await verifyFile(bundleRoot, file);
+  }
   for (const file of hosted.files) {
     await verifyFile(bundleRoot, file);
   }

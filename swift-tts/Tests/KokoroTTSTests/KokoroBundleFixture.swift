@@ -58,7 +58,7 @@ enum KokoroBundleFixture {
             "schema_version": schemaVersion,
             "sdk_commit": "test",
             "hf_repo_id": "test/repo",
-            "hf_revision": "testrev",
+            "hf_artifact_revision": "testrev",
             "hf_provenance_verified": true,
             "hf_download_manifest_sha256": String(repeating: "a", count: 64),
             "minimum_platforms": ["iOS": "18.0", "macOS": "15.0"],

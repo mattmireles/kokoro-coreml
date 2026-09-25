@@ -121,16 +121,59 @@ Five fixed-duration buckets: **3s, 7s, 10s, 15s, 30s**. Pick the smallest bucket
 | `kokoro_decoder_pre_{3,7,10,15,30}s.mlpackage` | Text features → decoder hidden state | ANE |
 | `kokoro_decoder_har_post_range.mlpackage` | Generator, one flexible-length program for every utterance up to 30 s (macOS 15 / iOS 18; the SDK uses this one) | GPU |
 | `kokoro_decoder_har_post_{3,7,10,15,30}s.mlpackage` | Generator, one fixed-shape package per bucket (older OS fallback) | GPU |
+| `kokoro_duration_multifunction.mlpackage` | Every duration token size (`t32`...`t512`) as one multifunction package, weights stored once (macOS 15 / iOS 18) | CPU/GPU |
+| `kokoro_f0ntrain_multifunction.mlpackage` | Every F0Ntrain frame count as one multifunction package | GPU |
+| `kokoro_decoder_pre_multifunction.mlpackage` | Every decoder-pre bucket (`bucket_3s`...`bucket_30s`) as one multifunction package | ANE |
+| `g2p/` | English grapheme-to-phoneme assets for the `KokoroG2P` Swift library (see below) | CPU |
+
+The three multifunction packages plus `kokoro_decoder_har_post_range` serve
+every bucket and duration shape in 178 MB instead of ~840 MB of per-bucket
+packages. Load a function with `MLModelConfiguration.functionName`; the GitHub
+repo's `KokoroPipeline` does this automatically when the packages are present.
 
 The alignment matrix and the hn-NSF harmonic source are not models -- they're a few hundred lines of Swift/vDSP in the GitHub repo's `KokoroPipeline`.
+
+## Hosted manifests and pinning
+
+Two hosted manifests list every file to download, with bytes and SHA-256. Every
+`path` is relative to this repo's root, so a file's URL is
+`https://huggingface.co/mattmireles/kokoro-coreml/resolve/<commit>/<path>`.
+
+| Manifest | Profile | Contents |
+|---|---|---|
+| `sdk/full/HostedManifest.json` | full (product) | 3 multifunction packages + flexible generator, 28 English voices, runtime assets, `g2p/` |
+| `HostedManifest.json` | starter | one 15 s bucket, t128 duration, `af_heart`; the `KokoroTTS` SDK contract |
+
+Current full manifest SHA-256:
+`9af2fd5a5f0cb41a78ff80355b6cba152bbcaed0508165d2d815b1d4c78ce150`.
+
+**Pin the commit that published the manifest** -- the commit that last changed
+`HostedManifest.json` / `sdk/full/HostedManifest.json` (and this card) in the
+Files history. Every listed file is byte-identical at that commit and the
+release pipeline verifies it there before announcing it. `hf_artifact_revision`
+inside `KokoroRuntimeManifest.json` is the older commit where the models were
+verified; it predates the manifests and is not a hydratable pin. Check any pin
+with `python scripts/prepare_hf_sdk_metadata.py --verify <commit>` from the
+GitHub repo.
+
+## G2P assets (`g2p/`)
+
+`us_lexicon_cache.json`, `g2p_vocab.json`, `G2PEncoder.mlmodelc/`, and
+`G2PDecoder.mlmodelc/` are the minimal asset set for the GitHub repo's
+`KokoroG2P` library (`KokoroEnglishFrontend(assetsDirectory:)`): a Misaki
+lexicon plus a BART G2P fallback for out-of-vocabulary words. They are copied
+byte-for-byte from
+[FluidInference/kokoro-82m-coreml](https://huggingface.co/FluidInference/kokoro-82m-coreml)
+at commit `c032f6d05d2a58179b817201a443fbbcef06f962`, which is released under
+Apache 2.0.
 
 ## Usage (Swift SDK)
 
 This section is the Swift SDK contract for the matching Git release commit. The
-repo publishes SDK bundle manifests and checksums at the top level for the
-starter profile and under `sdk/starter/` and `sdk/full/` for profile-specific
-metadata. If you are using an older HF snapshot, use the low-level
-`KokoroPipeline` snippets from that snapshot instead.
+`KokoroTTS` SDK loads the starter profile (top-level manifests, with
+per-profile metadata under `sdk/starter/`). The full profile is for
+`KokoroPipeline` + `KokoroG2P` apps. If you are using an older HF snapshot, use
+the low-level `KokoroPipeline` snippets from that snapshot instead.
 
 ```swift
 import KokoroTTS
@@ -160,7 +203,7 @@ Build a starter bundle:
 ```bash
 python3 scripts/download_models.py \
   --repo-id mattmireles/kokoro-coreml \
-  --revision <hf-revision> \
+  --revision <hf-artifact-revision> \
   --sdk-profile starter \
   --manifest-out /tmp/kokoro-download-manifest.json
 
@@ -169,7 +212,7 @@ node scripts/build_sdk_bundle.mjs \
   --compile-models 1 \
   --output /tmp/kokoro-sdk-starter \
   --repo-id mattmireles/kokoro-coreml \
-  --revision <hf-revision> \
+  --revision <hf-artifact-revision> \
   --download-manifest /tmp/kokoro-download-manifest.json
 
 node scripts/validate_sdk_bundle.mjs /tmp/kokoro-sdk-starter
@@ -178,8 +221,8 @@ node scripts/validate_sdk_bundle.mjs /tmp/kokoro-sdk-starter
 Downloaded-resource apps can hydrate the top-level starter
 `HostedManifest.json` with `KokoroDownloadedModelStore`. Pass
 `expectedManifestSHA256` for the exact manifest bytes (current public starter
-digest: `2f61bf6fce9f7fafa58a5f08f5aada0035a81741552692eda36bd0c331be8b6c`,
-immutable revision: `5bb7d75dd3703edc369a230791f92d0beac45974`).
+digest: `8d1f6dfa4904a9a1183fb9dcd5a93ed841b22f2315a5e4d7928ef75992dbd5cd`;
+pin the commit that published it, as above).
 Production apps must serve manifests over HTTPS. Bundled-resource apps can use
 `KokoroResourceProvider.directory`, `.appBundle`, or `.packageBundle`, and
 should supply a writable `compiledModelsDirectory` so compilation does not write
@@ -227,11 +270,14 @@ kokoro_decoder_har_post_3s:
 ## License
 
 Apache 2.0, inherited from [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M). Ship it. Sell it. Fork it.
+The `g2p/` assets are Apache 2.0 from
+[FluidInference/kokoro-82m-coreml](https://huggingface.co/FluidInference/kokoro-82m-coreml).
 
 ## Credits
 
 - **[@hexgrad](https://huggingface.co/hexgrad)** -- Kokoro-82M weights, training, and the Apache release
 - **[@yl4579](https://huggingface.co/yl4579)** -- StyleTTS 2 architecture
+- **[FluidInference](https://huggingface.co/FluidInference)** -- the English G2P lexicon and BART G2P Core ML models in `g2p/`
 - **Apple's coremltools team** -- for maintaining the PyTorch-to-Core ML path
 
 ---

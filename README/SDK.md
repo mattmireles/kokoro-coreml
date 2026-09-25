@@ -74,10 +74,10 @@ https://huggingface.co/mattmireles/kokoro-coreml/resolve/main/HostedManifest.jso
 Current public starter manifest SHA-256:
 
 ```text
-2f61bf6fce9f7fafa58a5f08f5aada0035a81741552692eda36bd0c331be8b6c
+8d1f6dfa4904a9a1183fb9dcd5a93ed841b22f2315a5e4d7928ef75992dbd5cd
 ```
 
-Immutable Hugging Face revision: `5bb7d75dd3703edc369a230791f92d0beac45974`.
+Immutable Hugging Face revision: `9183566f294ca3f31a63fd2767cf5848bfebfd50`.
 
 ## Build A Resource Bundle
 
@@ -86,7 +86,7 @@ Download the model snapshot and build a starter bundle:
 ```bash
 python3 scripts/download_models.py \
   --repo-id mattmireles/kokoro-coreml \
-  --revision <hf-revision> \
+  --revision <hf-artifact-revision> \
   --sdk-profile starter \
   --manifest-out /tmp/kokoro-download-manifest.json
 
@@ -95,17 +95,24 @@ node scripts/build_sdk_bundle.mjs \
   --compile-models 1 \
   --output /tmp/kokoro-sdk-starter \
   --repo-id mattmireles/kokoro-coreml \
-  --revision <hf-revision> \
+  --revision <hf-artifact-revision> \
   --download-manifest /tmp/kokoro-download-manifest.json
 
 node scripts/validate_sdk_bundle.mjs /tmp/kokoro-sdk-starter
 ```
 
-Use the latest Hugging Face revision for normal development, or pin the
-revision recorded in `sdk/SDKReleaseManifest.json` when reproducing a release.
+`<hf-artifact-revision>` is the HF commit holding the model artifacts
+(`hf_artifact_revision` in `sdk/SDKReleaseManifest.json`). It is where bundle
+sources are verified, not a pin for hosted manifests: those land in a later
+commit, and consumers pin that one (the commit printed by
+`prepare_hf_sdk_metadata.py --upload`).
 
-Use `--profile full` for every checked bucket and every supported English voice
-file. V1 raw-text synthesis rejects non-English voice prefixes even if a custom
+Use `--profile full` for the product bundle: three multifunction packages plus
+the flexible generator (every bucket `3,7,10,15,30` and every duration token
+size), every supported English voice, and the `KokoroG2P` assets under `g2p/`.
+`KokoroPipeline` loads it; the `KokoroTTS` model provider loads only per-bucket
+starter/custom bundles. On HF, `sdk/full/HostedManifest.json` lists it with
+repo-root-relative paths. V1 raw-text synthesis rejects non-English voice prefixes even if a custom
 bundle includes their embeddings. Use
 `--profile custom --voices af_heart,af_bella --buckets 15,30` for an
 app-specific bundle.
@@ -156,8 +163,8 @@ over HTTPS; local HTTP is only for explicit development fixtures.
 import KokoroTTS
 
 let resources = try await KokoroDownloadedModelStore(
-    manifestURL: URL(string: "https://huggingface.co/mattmireles/kokoro-coreml/resolve/5bb7d75dd3703edc369a230791f92d0beac45974/HostedManifest.json")!,
-    expectedManifestSHA256: "2f61bf6fce9f7fafa58a5f08f5aada0035a81741552692eda36bd0c331be8b6c",
+    manifestURL: URL(string: "https://huggingface.co/mattmireles/kokoro-coreml/resolve/9183566f294ca3f31a63fd2767cf5848bfebfd50/HostedManifest.json")!,
+    expectedManifestSHA256: "8d1f6dfa4904a9a1183fb9dcd5a93ed841b22f2315a5e4d7928ef75992dbd5cd",
     cacheDirectory: cacheURL
 ).hydrate()
 
@@ -255,7 +262,7 @@ Then generate and validate at least the starter bundle:
 ```bash
 python3 scripts/download_models.py \
   --repo-id mattmireles/kokoro-coreml \
-  --revision <hf-revision> \
+  --revision <hf-artifact-revision> \
   --sdk-profile starter \
   --manifest-out /tmp/kokoro-download-manifest.json
 
@@ -264,7 +271,7 @@ node scripts/build_sdk_bundle.mjs \
   --compile-models 1 \
   --output /tmp/kokoro-sdk-starter \
   --repo-id mattmireles/kokoro-coreml \
-  --revision <hf-revision> \
+  --revision <hf-artifact-revision> \
   --download-manifest /tmp/kokoro-download-manifest.json
 
 node scripts/validate_sdk_bundle.mjs /tmp/kokoro-sdk-starter
@@ -292,13 +299,21 @@ DYLD_FRAMEWORK_PATH=/tmp/kokoro-tts-smoke-dd/Build/Products/Debug/PackageFramewo
   "Hello world."
 ```
 
-Generate the full bundle before publishing a release that claims full bucket or
-multi-voice coverage:
+A release has three steps, each its own HF commit or none. First add any new
+model packages or G2P assets (one commit; it never overwrites an existing path,
+and its printed SHA is the `<hf-artifact-revision>`):
+
+```bash
+python3 scripts/upload_hf_artifacts.py coreml/<new>.mlpackage g2p
+```
+
+Then generate the full bundle (and the starter bundle above) from that
+revision:
 
 ```bash
 python3 scripts/download_models.py \
   --repo-id mattmireles/kokoro-coreml \
-  --revision <hf-revision> \
+  --revision <hf-artifact-revision> \
   --sdk-profile full \
   --manifest-out /tmp/kokoro-download-manifest-full.json
 
@@ -307,13 +322,20 @@ node scripts/build_sdk_bundle.mjs \
   --compile-models 1 \
   --output /tmp/kokoro-sdk-full \
   --repo-id mattmireles/kokoro-coreml \
-  --revision <hf-revision> \
+  --revision <hf-artifact-revision> \
   --download-manifest /tmp/kokoro-download-manifest-full.json
 
 node scripts/validate_sdk_bundle.mjs /tmp/kokoro-sdk-full
 ```
 
-Then publish and inspect the lightweight Hugging Face SDK metadata payload:
+Then publish the metadata payload. `--upload` checks that every artifact the
+manifests name is already correct at the parent commit, publishes manifests,
+model card, root voice/runtime copies, and stale-file deletions as ONE commit,
+then hydrate-checks `HostedManifest.json` and `sdk/full/HostedManifest.json` at
+the new commit and prints the SHA to pin. It exits non-zero on any mismatch.
+Re-check a pin later with `--verify <sha>`. Builds from a dirty tree need
+`--allow-dirty 1` on `build_sdk_bundle.mjs` and `--sdk-commit <HEAD>-dirty`
+here.
 
 ```bash
 python3 scripts/prepare_hf_sdk_metadata.py \

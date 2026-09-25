@@ -30,7 +30,7 @@ def write_profile_bundle(
         "schema_version": 1,
         "sdk_commit": sdk_commit,
         "hf_repo_id": repo_id,
-        "hf_revision": revision,
+        "hf_artifact_revision": revision,
         "minimum_platforms": {"iOS": "18.0", "macOS": "15.0"},
         "bundle_profile": profile,
         "buckets": [15],
@@ -111,7 +111,7 @@ def test_prepare_payload_copies_top_level_hosted_runtime_and_voice_files(tmp_pat
         "voices/af_heart.bin",
     ]
     write_profile_bundle(starter, "starter", "abc123", "mattmireles/kokoro-coreml", "rev-a", hosted_files)
-    write_profile_bundle(full, "full", "abc123", "mattmireles/kokoro-coreml", "rev-a")
+    write_profile_bundle(full, "full", "abc123", "mattmireles/kokoro-coreml", "rev-a", hosted_files + ["g2p/g2p_vocab.json"])
     model_card = tmp_path / "README.md"
     model_card.write_text("# card\n", encoding="utf-8")
 
@@ -125,6 +125,12 @@ def test_prepare_payload_copies_top_level_hosted_runtime_and_voice_files(tmp_pat
     })()
 
     helper.prepare_payload(args)
+
+    full_hosted = json.loads((args.output / "sdk" / "full" / "HostedManifest.json").read_text(encoding="utf-8"))
+    full_paths = {entry["path"] for entry in full_hosted["files"]}
+    assert "sdk/full/KokoroRuntimeManifest.json" in full_paths
+    assert "KokoroRuntimeManifest.json" not in full_paths
+    assert not (args.output / "g2p").exists()
 
     assert (args.output / "runtime" / "kokoro-vocab.json").is_file()
     assert (args.output / "runtime" / "hnsf_weights.json").is_file()

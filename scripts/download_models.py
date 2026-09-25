@@ -52,7 +52,6 @@ ENGLISH_VOICE_PATTERNS = [
     "kokoro.js/voices/bm_*.bin",
 ]
 STARTER_BUCKET_SECONDS = [15]
-FULL_BUCKET_SECONDS = [3, 7, 10, 15, 30]
 # The public SDK deliberately uses one padded duration shape. Shipping the
 # historical ladder added roughly 300 MB to first-run downloads even though
 # KokoroSDKModelProvider selects only t128, and each extra shape creates an
@@ -211,15 +210,24 @@ def _split_int_csv(raw: str | None) -> list[int]:
 # utterance length; the SDK's macOS 15 / iOS 18 floor always supports it.
 # Must match scripts/build_sdk_bundle.mjs requiredPackages().
 SDK_FLEXIBLE_GENERATOR = "kokoro_decoder_har_post_range.mlpackage"
+# The full (product) profile: three multifunction packages plus the flexible
+# generator serve every bucket and duration shape for KokoroPipeline, and the
+# KokoroG2P assets live under g2p/. Must match build_sdk_bundle.mjs profiles.full.
+FULL_PACKAGES = [
+    "coreml/kokoro_duration_multifunction.mlpackage",
+    "coreml/kokoro_f0ntrain_multifunction.mlpackage",
+    "coreml/kokoro_decoder_pre_multifunction.mlpackage",
+    f"coreml/{SDK_FLEXIBLE_GENERATOR}",
+]
+G2P_PATTERNS = ["g2p/**"]
 
 
 def _sdk_patterns(profile: str, voices: list[str], buckets: list[int]) -> list[str]:
     """Return HF allow patterns for an SDK download profile."""
 
     if profile == "full":
-        buckets = FULL_BUCKET_SECONDS
-        duration_sizes = SDK_DURATION_TOKEN_SIZES
-    elif profile == "starter":
+        return [f"{package}/**" for package in FULL_PACKAGES] + ENGLISH_VOICE_PATTERNS + G2P_PATTERNS
+    if profile == "starter":
         voices = voices or STARTER_VOICES
         buckets = buckets or STARTER_BUCKET_SECONDS
         duration_sizes = SDK_DURATION_TOKEN_SIZES
@@ -242,11 +250,8 @@ def _sdk_patterns(profile: str, voices: list[str], buckets: list[int]) -> list[s
             f"coreml/kokoro_decoder_pre_{bucket}s.mlpackage/**",
         ])
     patterns.append(f"coreml/{SDK_FLEXIBLE_GENERATOR}/**")
-    if profile == "full":
-        patterns.extend(ENGLISH_VOICE_PATTERNS)
-    else:
-        for voice in voices:
-            patterns.append(f"kokoro.js/voices/{voice}.bin")
+    for voice in voices:
+        patterns.append(f"kokoro.js/voices/{voice}.bin")
     return patterns
 
 
@@ -254,9 +259,8 @@ def _sdk_required_packages(profile: str, voices: list[str], buckets: list[int]) 
     """Return model package directories required by an SDK profile."""
 
     if profile == "full":
-        buckets = FULL_BUCKET_SECONDS
-        duration_sizes = SDK_DURATION_TOKEN_SIZES
-    elif profile == "starter":
+        return list(FULL_PACKAGES)
+    if profile == "starter":
         buckets = buckets or STARTER_BUCKET_SECONDS
         duration_sizes = SDK_DURATION_TOKEN_SIZES
     elif profile == "custom":

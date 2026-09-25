@@ -16,13 +16,12 @@ def load_download_models_module():
     return module
 
 
-def test_every_sdk_profile_downloads_only_duration_t128():
+def test_per_bucket_sdk_profiles_download_only_duration_t128():
     module = load_download_models_module()
 
     for profile, voices, buckets in (
         ("starter", [], []),
         ("custom", ["af_heart", "af_bella"], [15]),
-        ("full", [], []),
     ):
         packages = module._sdk_required_packages(profile, voices, buckets)
         duration_packages = [
@@ -49,3 +48,22 @@ def test_every_sdk_profile_downloads_the_one_flexible_generator():
         assert generators == [f"coreml/{module.SDK_FLEXIBLE_GENERATOR}"], profile
         patterns = module._sdk_patterns(profile, voices, buckets)
         assert f"coreml/{module.SDK_FLEXIBLE_GENERATOR}/**" in patterns, profile
+
+
+def test_full_profile_downloads_multifunction_packages_and_g2p():
+    """The product profile matches build_sdk_bundle.mjs profiles.full."""
+    module = load_download_models_module()
+    builder = (Path(__file__).resolve().parents[1] / "scripts" / "build_sdk_bundle.mjs").read_text()
+
+    packages = module._sdk_required_packages("full", [], [])
+    assert packages == [
+        "coreml/kokoro_duration_multifunction.mlpackage",
+        "coreml/kokoro_f0ntrain_multifunction.mlpackage",
+        "coreml/kokoro_decoder_pre_multifunction.mlpackage",
+        f"coreml/{module.SDK_FLEXIBLE_GENERATOR}",
+    ]
+    for package in packages[:3]:
+        assert f"'{package.removeprefix('coreml/')}'" in builder
+    patterns = module._sdk_patterns("full", [], [])
+    assert "g2p/**" in patterns
+    assert not any("_t128.mlpackage" in pattern for pattern in patterns)
