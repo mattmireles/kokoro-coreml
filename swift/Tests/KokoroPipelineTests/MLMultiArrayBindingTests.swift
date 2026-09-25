@@ -189,6 +189,19 @@ final class MLMultiArrayBindingTests: XCTestCase {
         )
     }
 
+    func testValidateDurationAgreementRejectsFivePercentDrift() throws {
+        // A 5% miss was the padded-LSTM drift the original 15% band let through.
+        XCTAssertThrowsError(
+            try validateDurationAgreement(inputKey: "15s", canonical: 13.9, observed: 13.2)
+        )
+    }
+
+    func testValidateDurationAgreementSkipsWhenToleranceIsNil() throws {
+        XCTAssertNoThrow(
+            try validateDurationAgreement(inputKey: "15s", canonical: 13.9, observed: 6.4, toleranceFraction: nil)
+        )
+    }
+
     func testPcmJoinerCrossfadesSyntheticDiscontinuity() {
         let first = Array(repeating: Float(1.0), count: 240)
         let second = Array(repeating: Float(-1.0), count: 240)
