@@ -48,6 +48,7 @@ def export_synthesizers(
     backend: str | None = None,
     mode: str = "full",
     rewrite_ups_conv_transpose: bool = False,
+    time_axis: str = "fixed",
 ):
     """Execute the complete synthesizer export pipeline with intelligent bucketing and CoreML optimization.
 
@@ -261,7 +262,10 @@ def export_synthesizers(
         if mode == "decoder":
             synthesizer_file = os.path.join(output_dir, f"kokoro_decoder_only_{name}.mlpackage")
         elif mode == "decoder-har":
-            synthesizer_file = os.path.join(output_dir, f"kokoro_decoder_har_post_{name}.mlpackage")
+            # A flexible program is one file for every length up to its trace
+            # bucket, so its name carries the axis kind, not a bucket.
+            stem = f"kokoro_decoder_har_post_{name}" if time_axis == "fixed" else f"kokoro_decoder_har_post_{time_axis}"
+            synthesizer_file = os.path.join(output_dir, f"{stem}.mlpackage")
         else:
             synthesizer_file = os.path.join(output_dir, f"kokoro_synthesizer_{name}.mlpackage")
 
@@ -363,7 +367,7 @@ def export_synthesizers(
                     # only. Generator.resblocks and noise_res use AdaINResBlock1 — a
                     # different class — so their AdaIN1d(Linear) instances are live in
                     # this trace by design: Generator style conditioning is preserved.
-                    gen_from_har = GeneratorFromHar(gen).eval()
+                    gen_from_har = GeneratorFromHar(gen, flexible=(time_axis != "fixed")).eval()
                     if rewrite_ups_conv_transpose:
                         rewritten = rewrite_generator_ups_conv_transpose(gen_from_har.generator)
                         print(
@@ -371,13 +375,25 @@ def export_synthesizers(
                             f"{rewritten} main ConvTranspose1d upsample layers "
                             "with zero-insert conv1d"
                         )
+                    # Flexible programs keep the mask: the pipeline rounds the
+                    # length up to a granule so the GPU runtime holds few
+                    # per-shape executables, and the padded tail must stay out
+                    # of the AdaIN statistics (2% of unmasked tail costs 20 dB).
+                    if time_axis != "fixed":
+                        # The flexible program takes the mask at every internal
+                        # resolution (10x, 60x + 1) as inputs.
+                        mask_x10 = torch.ones(1, 1, 10 * mask_rep.shape[-1], dtype=torch.float32)
+                        mask_x60 = torch.ones(1, 1, 60 * mask_rep.shape[-1] + 1, dtype=torch.float32)
+                        trace_args = (x_pre, ref_s_out, har_in, mask_rep, mask_x10, mask_x60)
+                    else:
+                        trace_args = (x_pre, ref_s_out, har_in, mask_rep)
                     traced_model = torch.jit.trace(
                         gen_from_har,
-                        (x_pre, ref_s_out, har_in, mask_rep),
+                        trace_args,
                         strict=False,
                         check_trace=False,
                     )
-                    traced_out = traced_model(x_pre, ref_s_out, har_in, mask_rep)
+                    traced_out = traced_model(*trace_args)
                     traced_samples = int(traced_out.shape[-1])
                     if traced_samples < bucket_samples:
                         raise ValueError(
@@ -427,6 +443,28 @@ def export_synthesizers(
             har_t = int(har_rep.shape[2])
             x_pre_shape = (1, dec_out_ch, 2 * frame_count if mode == "decoder-har" else frame_count)
             har_shape = (1, har_c, har_t)
+            if mode == "decoder-har" and time_axis != "fixed":
+                # x_pre is on the 80 Hz axis; har has 60 frames per x_pre frame plus one.
+                # Lengths from 3 s up to this bucket in 0.5 s steps (40 x_pre frames).
+                t_max = 2 * frame_count
+                t_min = min(CoreMLExportConstants.FLEXIBLE_MIN_XPRE_FRAMES, t_max)
+                if time_axis == "enumerated":
+                    t_list = list(range(t_min, t_max + 1, 40))
+                    if t_list[-1] != t_max:
+                        t_list.append(t_max)
+                    flex_x_pre = ct.EnumeratedShapes(shapes=[(1, dec_out_ch, t) for t in t_list], default=(1, dec_out_ch, t_max))
+                    flex_har = ct.EnumeratedShapes(shapes=[(1, har_c, 60 * t + 1) for t in t_list], default=(1, har_c, 60 * t_max + 1))
+                    flex_mask = ct.EnumeratedShapes(shapes=[(1, 1, t) for t in t_list], default=(1, 1, t_max))
+                    flex_mask_x10 = ct.EnumeratedShapes(shapes=[(1, 1, 10 * t) for t in t_list], default=(1, 1, 10 * t_max))
+                    flex_mask_x60 = ct.EnumeratedShapes(shapes=[(1, 1, 60 * t + 1) for t in t_list], default=(1, 1, 60 * t_max + 1))
+                    print(f"decoder-har {name}: enumerated time axis, {len(t_list)} shapes from {t_min} to {t_max} x_pre frames")
+                else:
+                    flex_x_pre = (1, dec_out_ch, ct.RangeDim(lower_bound=t_min, upper_bound=t_max, default=t_max))
+                    flex_har = (1, har_c, ct.RangeDim(lower_bound=60 * t_min + 1, upper_bound=60 * t_max + 1, default=60 * t_max + 1))
+                    flex_mask = (1, 1, ct.RangeDim(lower_bound=t_min, upper_bound=t_max, default=t_max))
+                    flex_mask_x10 = (1, 1, ct.RangeDim(lower_bound=10 * t_min, upper_bound=10 * t_max, default=10 * t_max))
+                    flex_mask_x60 = (1, 1, ct.RangeDim(lower_bound=60 * t_min + 1, upper_bound=60 * t_max + 1, default=60 * t_max + 1))
+                    print(f"decoder-har {name}: RangeDim time axis from {t_min} to {t_max} x_pre frames")
             mask_shape = (1, 1, 2 * frame_count) if mode == "decoder-har" else (1, 1, frame_count)
         elif mode == "full":
             d_channels = int(d.shape[1])
@@ -440,8 +478,13 @@ def export_synthesizers(
         print(f"[{time.ctime()}] Converting to Core ML...")
         # compute_precision is only valid for mlprogram backend
         cp_arg = None if convert_backend == "neuralnetwork" else chosen_precision
+        # Flexible programs are GPU/CPU programs: the ANE planner (E5RT) rejects
+        # FlexibleShapeInfo at load ("tensor_buffer has known strides"), so they
+        # are converted and validated on cpuAndGPU; the runtime hint experiment
+        # for the Neural Engine lives in the dynamic-length plan.
+        _flex_cu = ct.ComputeUnit.CPU_AND_GPU if (mode == "decoder-har" and time_axis != "fixed") else ct.ComputeUnit.ALL
         _cu = (
-            dict(compute_units=ct.ComputeUnit.ALL)
+            dict(compute_units=_flex_cu)
             if convert_backend == "mlprogram"
             else {}
         )
@@ -459,6 +502,24 @@ def export_synthesizers(
                         outputs=[ct.TensorType(name="waveform")],
                         convert_to=convert_backend,
                         minimum_deployment_target=target,
+                        compute_precision=cp_arg,
+                        **_cu,
+                    )
+                elif mode == "decoder-har" and time_axis != "fixed":
+                    # Two flexible inputs paired by index need iOS 18 / macOS 15.
+                    ml_synthesizer = ct.convert(
+                        traced_model,
+                        inputs=[
+                            ct.TensorType(name="x_pre", shape=flex_x_pre, dtype=np.float32),
+                            ct.TensorType(name="ref_s", shape=(1, CoreMLExportConstants.VOICE_EMBEDDING_DIM), dtype=np.float32),
+                            ct.TensorType(name="har", shape=flex_har, dtype=np.float32),
+                            ct.TensorType(name="mask", shape=flex_mask, dtype=np.float32),
+                            ct.TensorType(name="mask_x10", shape=flex_mask_x10, dtype=np.float32),
+                            ct.TensorType(name="mask_x60", shape=flex_mask_x60, dtype=np.float32),
+                        ],
+                        outputs=[ct.TensorType(name="waveform")],
+                        convert_to=convert_backend,
+                        minimum_deployment_target=ct.target.macOS15,
                         compute_precision=cp_arg,
                         **_cu,
                     )
@@ -604,12 +665,14 @@ def export_synthesizers(
                 x_pre = torch.clamp(torch.randn(x_pre_shape, dtype=torch.float32) * 0.02, -0.05, 0.05)
                 har_in = torch.clamp(torch.randn(har_shape, dtype=torch.float32) * 0.02, -0.05, 0.05)
                 mask_in = torch.ones(mask_shape, dtype=torch.float32)
-                torch_args = (x_pre, ref_s_out, har_in, mask_in)
+                extra_masks = () if time_axis == "fixed" else (torch.ones(1, 1, 10 * mask_shape[-1]), torch.ones(1, 1, 60 * mask_shape[-1] + 1))
+                torch_args = (x_pre, ref_s_out, har_in, mask_in, *extra_masks)
                 sp = {
                     "x_pre": x_pre.detach().cpu().numpy().astype(np.float32),
                     "ref_s": ref_s_out.detach().cpu().numpy().astype(np.float32),
                     "har": har_in.detach().cpu().numpy().astype(np.float32),
                     "mask": mask_in.detach().cpu().numpy().astype(np.float32),
+                    **({} if time_axis == "fixed" else {"mask_x10": extra_masks[0].numpy(), "mask_x60": extra_masks[1].numpy()}),
                 }
             elif mode == "full":
                 torch_args = (d, t_en, s, ref_s_out, pred_aln_trg)
@@ -654,7 +717,7 @@ def export_synthesizers(
         ml_synthesizer.save(synthesizer_file)
         print(f"✅ Saved Synthesizer Model ({name}) to: {synthesizer_file}")
 
-        loaded = ct.models.MLModel(synthesizer_file, compute_units=ct.ComputeUnit.ALL)
+        loaded = ct.models.MLModel(synthesizer_file, compute_units=_flex_cu)
         if mode == "decoder":
             smoke_pred = {
                 "asr": np.zeros(asr_shape, dtype=np.float32),
@@ -673,6 +736,7 @@ def export_synthesizers(
                 .numpy()
                 .astype(np.float32),
                 "mask": np.ones(mask_shape, dtype=np.float32),
+                **({} if time_axis == "fixed" else {"mask_x10": np.ones((1, 1, 10 * mask_shape[-1]), dtype=np.float32), "mask_x60": np.ones((1, 1, 60 * mask_shape[-1] + 1), dtype=np.float32)}),
             }
         elif mode == "full":
             smoke_pred = {

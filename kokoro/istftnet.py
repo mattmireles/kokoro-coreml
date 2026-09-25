@@ -125,6 +125,15 @@ class AdaIN1d(nn.Module):
         self.num_features = num_features
         self.eps = 1e-5
         self.fc = nn.Linear(style_dim, num_features * 2)
+        # Masked statistics as matrix products with the mask vector instead of
+        # mask-multiply-then-reduce. Set by the flexible (RangeDim) generator
+        # export: under a symbolic axis the runtime cannot fuse the multiply
+        # into the reduction, and the three extra passes per AdaIN cost 12% of
+        # the generator; a matmul is the masked sum in one kernel (30 s:
+        # 286 -> 255 ms, the unmasked figure). Fixed-shape packages keep the
+        # ratio-of-means form, which the runtime fuses for free and which the
+        # Neural Engine decoder-pre packages depend on.
+        self.matmul_stats = False
 
     def forward(self, x, s, m=None):
         # Apply adaptive instance normalization with style conditioning.
@@ -139,6 +148,15 @@ class AdaIN1d(nn.Module):
         if m is None:
             mean = x.mean(dim=2, keepdim=True)
             var = x.var(dim=2, unbiased=False, keepdim=True)
+        elif self.matmul_stats:
+            # (B, C, T) @ (B, T, 1) -> (B, C, 1). The mask is scaled by 1/1024
+            # first so an fp16 sum over 144k frames stays below 65504; the
+            # count carries the same scale, so the ratio is exact.
+            mt = (m * (1.0 / 1024.0)).transpose(1, 2)
+            count = mt.sum(dim=1, keepdim=True).clamp(min=1e-6)
+            mean = torch.matmul(x, mt) / count
+            diff = x - mean
+            var = torch.matmul(diff * diff, mt) / count
         else:
             # Ratios of means, not sums over a count: the fp16 export runs this
             # on generator axes up to 144k frames, where a sum of squares
@@ -158,10 +176,11 @@ class AdaIN1d(nn.Module):
         assert C == self.num_features, f"AdaIN1d channel mismatch: got {C}, expected {self.num_features}"
         h = self.fc(s).view(B, 2 * self.num_features, 1)
         gamma, beta = torch.chunk(h, chunks=2, dim=1)
-        # Expand across time to avoid implicit broadcasting pitfalls
-        gamma_exp = gamma.expand(B, C, T)
-        beta_exp = beta.expand(B, C, T)
-        out = (1.0 + gamma_exp) * x_norm + beta_exp
+        # Broadcast (B, C, 1) against (B, C, T) implicitly. An explicit
+        # expand(B, C, T) traces to shape/gather/tile ops whenever T is a
+        # symbolic (RangeDim) axis, and the GPU runtime crashes on that tile
+        # above ~100k frames; with a fixed T the two forms convert identically.
+        out = (1.0 + gamma) * x_norm + beta
         if m is None:
             return out
         # Zero the padded frames as well: the affine leaves beta there, the next
@@ -540,6 +559,15 @@ class AdainResBlk1d(nn.Module):
         x = self.norm1(x, s, m)
         x = self.actv(x)
         x = self.pool(x)
+        if m_up is not None:
+            # The transposed-conv pool writes its bias on the padded frames
+            # (its inputs there are the zeros norm1 left, its bias is not).
+            # conv1's last valid output reads one frame into that region, so
+            # without this the last two frames of every masked upsampling
+            # block differ from the native run (x_pre 34-37 dB instead of
+            # 43-56 dB). Zeroing the padded pool output restores the
+            # zero-padding the native run sees.
+            x = x * m_up
         x = self.conv1(self.dropout(x))
         x = self.norm2(x, s, m_up)
         x = self.actv(x)

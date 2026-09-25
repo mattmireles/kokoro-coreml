@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from kokoro.istftnet import AdaIN1d
 
 from coreml_export_duration import (
     CoreMLFriendlyDurationEncoder,
@@ -38,6 +39,11 @@ class CoreMLExportConstants:
 
     # Model architecture constants
     VOICE_EMBEDDING_DIM = 256      # Total voice embedding dimension
+    # Shortest x_pre axis (80 Hz frames) a flexible generator program accepts:
+    # 0.5 s. Shorter utterances are zero-padded to it by the pipeline.
+    FLEXIBLE_MIN_XPRE_FRAMES = 40
+    # Shortest decoder-pre frame axis (40 Hz) a flexible program accepts: 0.5 s.
+    FLEXIBLE_MIN_DECODER_FRAMES = 20
     VOICE_STYLE_DIM = 128          # Style conditioning dimension
     VOICE_BASELINE_DIM = 128       # Baseline voice characteristics
     
@@ -139,9 +145,24 @@ class GeneratorFromHar(nn.Module):
         - Runtime: ``kokoro.synthesis_backends.decoder_har_post_bucket_impl`` (PyTorch pre + Core ML).
     """
 
-    def __init__(self, generator):
+    def __init__(self, generator, flexible: bool = False):
         super().__init__()
         self.generator = generator
+        # A flexible (RangeDim) export cannot carry a constant index sized to
+        # the trace length, and aligning the mask inside the graph (nearest
+        # upsample + concat) broke the runtime's fusion: 93 ms instead of 29 at
+        # 3 s. A flexible program therefore takes the mask at every internal
+        # resolution as inputs (``mask_x10`` at 10x, ``mask_x60`` at 60x + 1),
+        # built by the caller; see ``forward``.
+        self.flexible = flexible
+        if flexible:
+            # See AdaIN1d.matmul_stats: masked statistics as matrix products,
+            # the form the runtime runs at the unmasked speed under a symbolic axis.
+            # Matched by name: the export loads the kokoro package under a
+            # suffixed module name, so the model's AdaIN1d is not this module's class.
+            for module in generator.modules():
+                if type(module).__name__ == "AdaIN1d" and hasattr(module, "matmul_stats"):
+                    module.matmul_stats = True
 
     @staticmethod
     def _align_mask_to(m: torch.Tensor | None, target_t: int) -> torch.Tensor | None:
@@ -171,15 +192,29 @@ class GeneratorFromHar(nn.Module):
         idx = np.minimum(np.arange(target_t) // (target_t // cur_t), cur_t - 1).astype(np.int32)
         return m.index_select(-1, torch.from_numpy(idx).to(m.device))
 
-    def forward(self, x_pre: torch.Tensor, ref_s: torch.Tensor, har: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self,
+        x_pre: torch.Tensor,
+        ref_s: torch.Tensor,
+        har: torch.Tensor,
+        mask: torch.Tensor | None = None,
+        mask_x10: torch.Tensor | None = None,
+        mask_x60: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """``mask_x10`` (B, 1, 10 T) and ``mask_x60`` (B, 1, 60 T + 1) are the
+        mask at the two upsampled axes; a flexible export requires them, a
+        fixed export derives them from ``mask`` (see ``_align_mask_to``)."""
         s = ref_s[:, : CoreMLExportConstants.VOICE_BASELINE_DIM]
         gen = self.generator
         x = x_pre
         cur_mask = mask
+        if self.flexible and mask is not None and (mask_x10 is None or mask_x60 is None):
+            raise ValueError("a flexible GeneratorFromHar takes mask, mask_x10 and mask_x60")
+        given = (mask_x10, mask_x60)
         for i in range(gen.num_upsamples):
             x = F.leaky_relu(x, negative_slope=0.1)
             x_source = gen.noise_convs[i](har)
-            m_source = self._align_mask_to(cur_mask, x_source.shape[-1])
+            m_source = given[i] if self.flexible else self._align_mask_to(cur_mask, x_source.shape[-1])
             x_source = gen.noise_res[i](x_source, s, m=m_source)
             x = gen.ups[i](x)
             if i == gen.num_upsamples - 1:
@@ -191,7 +226,7 @@ class GeneratorFromHar(nn.Module):
             elif ts > tx:
                 x_source = x_source[:, :, :tx]
             x = x + x_source
-            cur_mask = self._align_mask_to(cur_mask, x.shape[-1])
+            cur_mask = given[i] if self.flexible else self._align_mask_to(cur_mask, x.shape[-1])
             xs = None
             for j in range(gen.num_kernels):
                 if xs is None:

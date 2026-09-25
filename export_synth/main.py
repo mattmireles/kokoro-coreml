@@ -34,6 +34,17 @@ def main() -> None:
         action="store_true",
         help="For decoder-har exports, rewrite main generator ConvTranspose1d upsamples as zero-insert conv1d.",
     )
+    parser.add_argument(
+        "--time-axis",
+        type=str,
+        default="fixed",
+        choices=["fixed", "enumerated", "range"],
+        help=(
+            "decoder-har only. 'fixed' (default): one static shape per bucket with a required mask. "
+            "'enumerated': one program whose x_pre/har axes accept every 0.5 s length up to the bucket, no mask. "
+            "'range': one program with a RangeDim time axis up to the bucket, no mask. Both need macOS 15."
+        ),
+    )
     args = parser.parse_args()
 
     try:
@@ -46,6 +57,7 @@ def main() -> None:
             backend=args.backend,
             mode=args.mode,
             rewrite_ups_conv_transpose=args.rewrite_ups_conv_transpose,
+            time_axis=args.time_axis,
         )
         print("\n\n🎉 Synthesizer export complete. You're ready to ship.")
     except Exception as e:

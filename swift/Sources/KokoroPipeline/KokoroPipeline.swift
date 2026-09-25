@@ -56,6 +56,18 @@ public enum PipelineConstants {
 
     /// Default bucket seconds used by the bakeoff and runtime package set.
     public static let defaultBuckets: [Int] = [3, 7, 10, 15, 30]
+    /// Largest bucket whose decoder-pre package runs on the Neural Engine; larger
+    /// buckets run it on the GPU. Every decoder-pre op is ANE-eligible at every
+    /// bucket, but the ANE's cost per frame rises with the axis length (16 us at
+    /// 10 s, 25 at 15 s, 39 at 30 s on an M3 Max) while the GPU's falls (21, 20,
+    /// 14.5 us), so the two cross between the 10 s and 15 s buckets: 47 ms on the
+    /// ANE against 17 ms on the GPU at 30 s. Measured on an M3 Max; a device with
+    /// a weaker GPU may cross later.
+    public static let decoderPreNeuralEngineMaxBucketSeconds: Int = 10
+    /// Compute units for the decoder-pre package of `bucketSec`.
+    public static func decoderPreComputeUnits(bucketSec: Int) -> MLComputeUnits {
+        bucketSec <= decoderPreNeuralEngineMaxBucketSeconds ? .cpuAndNeuralEngine : .cpuAndGPU
+    }
 
     /// Duration model enumerated token sizes. Caller pads to nearest.
     public static let durationTokenSizes: [Int] = [32, 64, 128, 256, 320, 384, 512]
@@ -67,6 +79,28 @@ public enum PipelineConstants {
 
     /// Caller-side chunk token cap from `packages/contracts` (`MAX_TTS_CHUNK_TOKENS`).
     public static let maxCallerChunkTokens = 450
+
+    /// Flexible (RangeDim) generator program: one file for every length up to
+    /// its trace bucket, no `mask` input, GPU only. When present it replaces
+    /// the per-bucket generator packages; the bucket then only selects the
+    /// f0ntrain package and the decoder-pre placement.
+    public static let flexibleGeneratorPackage = "kokoro_decoder_har_post_range.mlpackage"
+    /// Flexible decoder-pre program, used above
+    /// `decoderPreNeuralEngineMaxBucketSeconds` where decoder-pre runs on the
+    /// GPU anyway; the ANE packages below it stay 2-3 ms faster per call.
+    public static let flexibleDecoderPrePackage = "kokoro_decoder_pre_range.mlpackage"
+
+    /// Lengths fed to a flexible program are rounded up to this granule
+    /// (0.5 s: 20 decoder frames at 40 Hz, 40 x_pre frames at 80 Hz). The GPU
+    /// runtime keeps a compiled executable per distinct input shape (about
+    /// 6 MB each for the generator, evicted only slowly), so unrounded lengths
+    /// grew a process past 1 GB over 100 utterances; at most 60 shapes keeps it
+    /// within 60 MB of the fixed packages. The padded tail is masked out of
+    /// the AdaIN statistics and trimmed from the audio; it costs at most 0.5 s
+    /// of generator compute (about 4 ms on an M3 Max).
+    public static let flexibleGranuleSeconds: Double = 0.5
+    public static var flexibleDecoderGranuleFrames: Int { Int(flexibleGranuleSeconds * f0FrameRate / 2) }
+    public static var flexibleXPreGranuleFrames: Int { Int(flexibleGranuleSeconds * f0FrameRate) }
 }
 
 // MARK: - Stage Timing
@@ -141,6 +175,8 @@ public struct DurationModelChoice {
     public let packageURL: URL
     public let requiresAttentionMask: Bool
     public let allowsPadding: Bool
+    /// Function inside a multifunction package; nil for a separate per-size package.
+    public let functionName: String?
 
     /// Public memberwise init so app integrators (e.g. ios-bench) can build
     /// choices for precompiled .mlmodelc bundles instead of discovering
@@ -150,13 +186,15 @@ public struct DurationModelChoice {
         tokenLength: Int,
         packageURL: URL,
         requiresAttentionMask: Bool,
-        allowsPadding: Bool
+        allowsPadding: Bool,
+        functionName: String? = nil
     ) {
         self.cacheKey = cacheKey
         self.tokenLength = tokenLength
         self.packageURL = packageURL
         self.requiresAttentionMask = requiresAttentionMask
         self.allowsPadding = allowsPadding
+        self.functionName = functionName
     }
 }
 
@@ -178,6 +216,8 @@ public class KokoroPipeline: KokoroModelProvider {
     private let f0ntrainModels: [Int: MLModel]  // keyed by T_frames
     private let decoderPreModels: [Int: MLModel] // keyed by bucket seconds
     private let generatorModels: [Int: MLModel]  // keyed by bucket seconds
+    private let flexibleGenerator: MLModel?
+    private let flexibleDecoderPre: MLModel?
 
     /// Learned weights from SourceModuleHnNSF.l_linear.
     private let linearWeights: [Float]
@@ -207,11 +247,21 @@ public class KokoroPipeline: KokoroModelProvider {
         // default; exact native packages are an opt-in benchmark path.
         let durationChoices = Self.discoverDurationChoices(modelsDirectory: modelsDirectory)
         var durModels: [String: MLModel] = [:]
+        var compiledDurationPackages: [URL: URL] = [:]  // a multifunction package compiles once
         for choice in durationChoices {
             let config = MLModelConfiguration()
             config.computeUnits = .cpuAndGPU
+            if let functionName = choice.functionName {
+                guard #available(macOS 15.0, iOS 18.0, *) else {
+                    throw PipelineError.modelNotLoaded("\(choice.cacheKey): function \(functionName) needs macOS 15 / iOS 18")
+                }
+                config.functionName = functionName
+            }
+            if compiledDurationPackages[choice.packageURL] == nil {
+                compiledDurationPackages[choice.packageURL] = try MLModel.compileModel(at: choice.packageURL)
+            }
             durModels[choice.cacheKey] = try MLModel(
-                contentsOf: MLModel.compileModel(at: choice.packageURL),
+                contentsOf: compiledDurationPackages[choice.packageURL]!,
                 configuration: config
             )
         }
@@ -221,10 +271,16 @@ public class KokoroPipeline: KokoroModelProvider {
         self.durationModels = durModels
         self.durationChoices = durationChoices
 
-        // F0Ntrain models (one per bucket's T_frames)
+        // F0Ntrain models (one per bucket's T_frames): a multifunction package
+        // serves the sizes it has, separate packages fill the rest.
+        let f0Multi = try MultifunctionPackage.open(at: modelsDirectory.appendingPathComponent(PipelineConstants.f0ntrainMultifunctionPackage))
         var f0Models: [Int: MLModel] = [:]
         for sec in buckets {
             if let t = PipelineConstants.tFramesForBucket[sec] {
+                if let f0Multi, f0Multi.functionNames.contains(PipelineConstants.f0ntrainFunctionName(tFrames: t)) {
+                    f0Models[t] = try f0Multi.load(function: PipelineConstants.f0ntrainFunctionName(tFrames: t), computeUnits: .cpuAndGPU)
+                    continue
+                }
                 let url = modelsDirectory.appendingPathComponent("kokoro_f0ntrain_t\(t).mlpackage")
                 if FileManager.default.fileExists(atPath: url.path) {
                     let config = MLModelConfiguration()
@@ -236,12 +292,18 @@ public class KokoroPipeline: KokoroModelProvider {
         self.f0ntrainModels = f0Models
 
         // DecoderPre models (Phase 4: CoreML, no longer bridge)
+        let preMulti = try MultifunctionPackage.open(at: modelsDirectory.appendingPathComponent(PipelineConstants.decoderPreMultifunctionPackage))
         var decPreModels: [Int: MLModel] = [:]
         for sec in buckets {
+            let units = PipelineConstants.decoderPreComputeUnits(bucketSec: sec)
+            if let preMulti, preMulti.functionNames.contains(PipelineConstants.decoderPreFunctionName(bucketSec: sec)) {
+                decPreModels[sec] = try preMulti.load(function: PipelineConstants.decoderPreFunctionName(bucketSec: sec), computeUnits: units)
+                continue
+            }
             let url = modelsDirectory.appendingPathComponent("kokoro_decoder_pre_\(sec)s.mlpackage")
             if FileManager.default.fileExists(atPath: url.path) {
                 let config = MLModelConfiguration()
-                config.computeUnits = .cpuAndNeuralEngine
+                config.computeUnits = units
                 decPreModels[sec] = try MLModel(contentsOf: MLModel.compileModel(at: url), configuration: config)
             }
         }
@@ -258,7 +320,22 @@ public class KokoroPipeline: KokoroModelProvider {
             }
         }
         self.generatorModels = genModels
-        self.availableBuckets = Array(genModels.keys.sorted())
+
+        // Flexible programs (optional). With a flexible generator the bucket
+        // list follows the f0ntrain packages, which stay bucketed.
+        let flexGenURL = modelsDirectory.appendingPathComponent(PipelineConstants.flexibleGeneratorPackage)
+        let flexPreURL = modelsDirectory.appendingPathComponent(PipelineConstants.flexibleDecoderPrePackage)
+        let gpu = MLModelConfiguration()
+        gpu.computeUnits = .cpuAndGPU
+        self.flexibleGenerator = FileManager.default.fileExists(atPath: flexGenURL.path)
+            ? try MLModel(contentsOf: MLModel.compileModel(at: flexGenURL), configuration: gpu)
+            : nil
+        self.flexibleDecoderPre = FileManager.default.fileExists(atPath: flexPreURL.path)
+            ? try MLModel(contentsOf: MLModel.compileModel(at: flexPreURL), configuration: gpu)
+            : nil
+        self.availableBuckets = self.flexibleGenerator == nil
+            ? Array(genModels.keys.sorted())
+            : buckets.filter { PipelineConstants.tFramesForBucket[$0].map { f0Models[$0] != nil } ?? false }.sorted()
 
         self.linearWeights = linearWeights
         self.linearBias = linearBias
@@ -333,8 +410,24 @@ public class KokoroPipeline: KokoroModelProvider {
             }
         }
 
+        // A multifunction duration package serves every token size it has a
+        // function for; separate packages fill the rest.
+        let multiURL = resolvedModelsDirectory.appendingPathComponent(PipelineConstants.durationMultifunctionPackage)
+        let multi = try? MultifunctionPackage.open(at: multiURL)
         for tokenLength in PipelineConstants.durationTokenSizes {
             guard accepts(tokenLength) else { continue }
+            let functionName = PipelineConstants.durationFunctionName(tokenLength: tokenLength)
+            if let multi, multi.functionNames.contains(functionName) {
+                choices.append(DurationModelChoice(
+                    cacheKey: "padded_t\(tokenLength)",
+                    tokenLength: tokenLength,
+                    packageURL: multiURL,
+                    requiresAttentionMask: true,
+                    allowsPadding: true,
+                    functionName: functionName
+                ))
+                continue
+            }
             let url = resolvedModelsDirectory.appendingPathComponent("kokoro_duration_t\(tokenLength).mlpackage")
             if fm.fileExists(atPath: url.path) {
                 choices.append(DurationModelChoice(
@@ -423,6 +516,14 @@ public class KokoroPipeline: KokoroModelProvider {
             throw PipelineError.modelNotLoaded("decoder_har_post_\(bucketSec)s")
         }
         return model
+    }
+
+    public func flexibleGeneratorModel() -> MLModel? {
+        flexibleGenerator
+    }
+
+    public func flexibleDecoderPreModel() -> MLModel? {
+        flexibleDecoderPre
     }
 
 }

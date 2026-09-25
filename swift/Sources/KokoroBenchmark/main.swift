@@ -96,7 +96,8 @@ class ModelCache: KokoroModelProvider {
     let modelsDir: URL
     let durationConfig: MLModelConfiguration
     let f0nConfig: MLModelConfiguration
-    let decoderPreConfig: MLModelConfiguration
+    let computeUnits: MLComputeUnits
+    let stagedComputeUnits: Bool
     let generatorConfig: MLModelConfiguration
     private let durationChoices: [DurationModelChoice]
 
@@ -111,27 +112,39 @@ class ModelCache: KokoroModelProvider {
     var f0nModels: [Int: MLModel] = [:]
     var decPreModels: [Int: MLModel] = [:]
     var genModels: [Int: MLModel] = [:]
+    // Flexible programs are one file each; loaded once, never evicted.
+    private var flexibleGen: MLModel??
+    private var flexiblePre: MLModel??
+    // Multifunction packages for the bucketed stages, opened (compiled) once.
+    private var f0nMulti: MultifunctionPackage??
+    private var preMulti: MultifunctionPackage??
 
     init(modelsDir: URL, computeUnits: MLComputeUnits = .all, stagedComputeUnits: Bool = false) {
         self.modelsDir = modelsDir
+        self.computeUnits = computeUnits
+        self.stagedComputeUnits = stagedComputeUnits
         if stagedComputeUnits {
             self.durationConfig = Self.makeConfig(.cpuAndGPU)
             self.f0nConfig = Self.makeConfig(.cpuAndGPU)
-            self.decoderPreConfig = Self.makeConfig(.cpuAndNeuralEngine)
             self.generatorConfig = Self.makeConfig(.cpuAndGPU)
         } else {
             self.durationConfig = Self.makeConfig(computeUnits)
             self.f0nConfig = Self.makeConfig(computeUnits)
-            self.decoderPreConfig = Self.makeConfig(computeUnits)
             self.generatorConfig = Self.makeConfig(computeUnits)
         }
         self.durationChoices = KokoroPipeline.discoverDurationChoices(modelsDirectory: modelsDir)
         if stagedComputeUnits {
-            fputs("  Compute units: staged (duration/f0n/generator=cpuAndGPU, decoderPre=cpuAndNeuralEngine)\n", stderr)
+            fputs("  Compute units: staged (duration/f0n/generator=cpuAndGPU, decoderPre=cpuAndNeuralEngine up to \(PipelineConstants.decoderPreNeuralEngineMaxBucketSeconds)s, cpuAndGPU above)\n", stderr)
         } else {
             fputs("  Compute units: \(computeUnitLabel(computeUnits))\n", stderr)
         }
         fputs("  Duration choices: \(durationChoices.map { $0.cacheKey }.joined(separator: ", "))\n", stderr)
+    }
+
+    /// decoder-pre placement follows the bucket under the staged policy (see
+    /// `PipelineConstants.decoderPreComputeUnits`); other policies use one unit.
+    private func decoderPreConfig(bucket: Int) -> MLModelConfiguration {
+        Self.makeConfig(stagedComputeUnits ? PipelineConstants.decoderPreComputeUnits(bucketSec: bucket) : computeUnits)
     }
 
     private static func makeConfig(_ computeUnits: MLComputeUnits) -> MLModelConfiguration {
@@ -170,12 +183,66 @@ class ModelCache: KokoroModelProvider {
         try generatorModel(bucket: bucketSec)
     }
 
+    func flexibleGeneratorModel() -> MLModel? {
+        if let loaded = flexibleGen { return loaded }
+        let model = loadFlexible(PipelineConstants.flexibleGeneratorPackage, label: "generator")
+        flexibleGen = .some(model)
+        return model
+    }
+
+    func flexibleDecoderPreModel() -> MLModel? {
+        if let loaded = flexiblePre { return loaded }
+        let model = loadFlexible(PipelineConstants.flexibleDecoderPrePackage, label: "decoder_pre")
+        flexiblePre = .some(model)
+        return model
+    }
+
+    /// Flexible programs run on the GPU only (the ANE runtime rejects
+    /// flexible shapes); a compute-unit policy that excludes the GPU leaves
+    /// them unused so the bucket packages keep serving.
+    private func loadFlexible(_ package: String, label: String) -> MLModel? {
+        let pkgURL = modelsDir.appendingPathComponent(package)
+        guard FileManager.default.fileExists(atPath: pkgURL.path) else { return nil }
+        guard stagedComputeUnits || computeUnits == .cpuAndGPU || computeUnits == .all else {
+            fputs("  Flexible \(label) present but compute units exclude the GPU; using bucket packages\n", stderr)
+            return nil
+        }
+        do {
+            fputs("  Compiling flexible \(label)...\n", stderr)
+            let compiled = try MLModel.compileModel(at: pkgURL)
+            let model = try MLModel(contentsOf: compiled, configuration: Self.makeConfig(.cpuAndGPU))
+            let range = flexibleTimeRange(of: model, input: label == "generator" ? "x_pre" : "asr")
+            fputs("  Loaded flexible \(label): frames \(range.map { "\($0.lowerBound)...\($0.upperBound)" } ?? "static")\n", stderr)
+            return model
+        } catch {
+            fputs("  Flexible \(label) failed to load (\(error)); using bucket packages\n", stderr)
+            return nil
+        }
+    }
+
     private func compiledDurationURL(choice: DurationModelChoice) throws -> URL {
-        if let url = compiledDuration[choice.cacheKey] { return url }
-        fputs("  Compiling duration \(choice.cacheKey)...\n", stderr)
+        // Keyed by package path: the functions of one multifunction package share a compile.
+        if let url = compiledDuration[choice.packageURL.path] { return url }
+        fputs("  Compiling duration \(choice.packageURL.lastPathComponent)...\n", stderr)
         let compiled = try MLModel.compileModel(at: choice.packageURL)
-        compiledDuration[choice.cacheKey] = compiled
+        compiledDuration[choice.packageURL.path] = compiled
         return compiled
+    }
+
+    private func f0nMultifunction() -> MultifunctionPackage? {
+        if let opened = f0nMulti { return opened }
+        let pkg = try? MultifunctionPackage.open(at: modelsDir.appendingPathComponent(PipelineConstants.f0ntrainMultifunctionPackage))
+        if let pkg { fputs("  Opened f0ntrain multifunction package: \(pkg.functionNames.sorted())\n", stderr) }
+        f0nMulti = .some(pkg)
+        return pkg
+    }
+
+    private func preMultifunction() -> MultifunctionPackage? {
+        if let opened = preMulti { return opened }
+        let pkg = try? MultifunctionPackage.open(at: modelsDir.appendingPathComponent(PipelineConstants.decoderPreMultifunctionPackage))
+        if let pkg { fputs("  Opened decoder_pre multifunction package: \(pkg.functionNames.sorted())\n", stderr) }
+        preMulti = .some(pkg)
+        return pkg
     }
 
     private func compiledF0nURL(tFrames: Int) throws -> URL {
@@ -211,13 +278,24 @@ class ModelCache: KokoroModelProvider {
         if let cached = durationModels[choice.cacheKey] { return cached }
         let compiled = try compiledDurationURL(choice: choice)
         fputs("  Loading duration \(choice.cacheKey)...\n", stderr)
-        let model = try MLModel(contentsOf: compiled, configuration: durationConfig)
+        let config = Self.makeConfig(durationConfig.computeUnits)
+        if let functionName = choice.functionName {
+            guard #available(macOS 15.0, *) else { throw PipelineError.modelNotLoaded("\(choice.cacheKey): function \(functionName) needs macOS 15") }
+            config.functionName = functionName
+        }
+        let model = try MLModel(contentsOf: compiled, configuration: config)
         durationModels[choice.cacheKey] = model
         return model
     }
 
     func f0nModel(tFrames: Int) throws -> MLModel {
         if let cached = f0nModels[tFrames] { return cached }
+        if let multi = f0nMultifunction(), multi.functionNames.contains(PipelineConstants.f0ntrainFunctionName(tFrames: tFrames)) {
+            fputs("  Loading f0ntrain function t\(tFrames)...\n", stderr)
+            let model = try multi.load(function: PipelineConstants.f0ntrainFunctionName(tFrames: tFrames), computeUnits: f0nConfig.computeUnits)
+            f0nModels[tFrames] = model
+            return model
+        }
         let compiled = try compiledF0nURL(tFrames: tFrames)
         fputs("  Loading f0ntrain tFrames=\(tFrames)...\n", stderr)
         let model = try MLModel(contentsOf: compiled, configuration: f0nConfig)
@@ -227,9 +305,15 @@ class ModelCache: KokoroModelProvider {
 
     func decoderPreModel(bucket: Int) throws -> MLModel {
         if let cached = decPreModels[bucket] { return cached }
+        if let multi = preMultifunction(), multi.functionNames.contains(PipelineConstants.decoderPreFunctionName(bucketSec: bucket)) {
+            fputs("  Loading decoder_pre function bucket_\(bucket)s...\n", stderr)
+            let model = try multi.load(function: PipelineConstants.decoderPreFunctionName(bucketSec: bucket), computeUnits: decoderPreConfig(bucket: bucket).computeUnits)
+            decPreModels[bucket] = model
+            return model
+        }
         let compiled = try compiledDecPreURL(bucket: bucket)
         fputs("  Loading decoder_pre \(bucket)s...\n", stderr)
-        let model = try MLModel(contentsOf: compiled, configuration: decoderPreConfig)
+        let model = try MLModel(contentsOf: compiled, configuration: decoderPreConfig(bucket: bucket))
         decPreModels[bucket] = model
         return model
     }
@@ -378,6 +462,7 @@ func runPipeline(
         "t_padding_s": round(timings.padding * 1e6) / 1e6,
         "t_decoder_pre_coreml_s": round(timings.decoderPre * 1e6) / 1e6,
         "t_hnsf_swift_s": round(timings.hnsfSwift * 1e6) / 1e6,
+        "t_decoder_pre_hnsf_overlap_s": round(timings.decoderPreHnsfOverlap * 1e6) / 1e6,
         "t_coreml_predict_s": round(timings.generatorCoreML * 1e6) / 1e6,
         "t_trim_s": round(timings.trim * 1e6) / 1e6,
         "t_prefix_extract_s": NSNull(),
