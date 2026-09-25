@@ -14,7 +14,7 @@ public protocol KokoroModelProvider {
     func generatorModel(bucketSec: Int) throws -> MLModel
     func prepareForBucket(bucketSec: Int, tFrames: Int) throws
     /// Flexible (RangeDim) generator program, or nil to use the bucket packages.
-    func flexibleGeneratorModel() -> MLModel?
+    func flexibleGeneratorModel() throws -> MLModel?
 }
 
 public extension KokoroModelProvider {
@@ -231,7 +231,7 @@ public func executeKokoroSynthesis(
     // generator below runs on the real length. Frame counts: `frames` at 40 Hz
     // (asr, decoder-pre input), `2 * frames` at 80 Hz (f0, n, x_pre).
     let t8 = CFAbsoluteTimeGetCurrent()
-    let flexibleGen = modelProvider.flexibleGeneratorModel()
+    let flexibleGen = try modelProvider.flexibleGeneratorModel()
     let bucketSamples = bucketSec * PipelineConstants.sampleRate
     let fullF0Len = Int(round(Double(bucketSamples) / Double(HarmonicConstants.upsampleScale)))
     let frameCount = decoderPreFrameCount(fullF0Len: fullF0Len)
@@ -576,7 +576,7 @@ private func warmModels(
     ], validFrames: probe.validFrames, totalFrames: warmFrameCount)
     _ = try decPreModel.prediction(from: warmDecIn)
 
-    let flexibleGen = modelProvider.flexibleGeneratorModel()
+    let flexibleGen = try modelProvider.flexibleGeneratorModel()
     let genModel = try flexibleGen ?? modelProvider.generatorModel(bucketSec: probe.bucketSec)
     let genShapes = inputShapes(from: genModel)
     var warmXPreTime: Int? = nil

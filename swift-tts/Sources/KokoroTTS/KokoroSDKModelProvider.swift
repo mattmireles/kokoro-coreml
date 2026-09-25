@@ -26,6 +26,12 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
     /// Compute-unit policy selected for this facade.
     private let computePolicy: KokoroComputePolicy
 
+    /// Whether the bundle ships the flexible (RangeDim) generator. When it
+    /// does, that one program serves every bucket at the utterance's real
+    /// length instead of the bucket's; older bundles ship one generator per
+    /// bucket and keep working.
+    private let usesFlexibleGenerator: Bool
+
     /// Sidecar suffix tying reusable `.mlmodelc` output to a source tree hash.
     private static let compiledSourceHashSuffix = ".kokoro-source-tree-sha256"
 
@@ -76,6 +82,7 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         self.durationChoices = [runtimeDuration]
         self.manifest = manifest
         self.computePolicy = computePolicy
+        self.usesFlexibleGenerator = Self.listsFlexibleGenerator(manifest)
         try Self.validateFileDigests(rootURL: root, manifest: manifest)
     }
 
@@ -110,6 +117,21 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
             url: modelsDirectory.appendingPathComponent("kokoro_decoder_pre_\(bucketSec)s.mlpackage"),
             units: computePolicy.decoderPre
         )
+    }
+
+    /// Loads the flexible generator when the bundle ships it, else nil.
+    func flexibleGeneratorModel() throws -> MLModel? {
+        guard usesFlexibleGenerator else { return nil }
+        return try model(
+            cacheKey: "generator.range",
+            url: modelsDirectory.appendingPathComponent(PipelineConstants.flexibleGeneratorPackage),
+            units: computePolicy.generator
+        )
+    }
+
+    /// Whether `manifest` lists the flexible generator package.
+    static func listsFlexibleGenerator(_ manifest: KokoroRuntimeManifest) -> Bool {
+        manifest.modelPackages.contains { $0.path == "coreml/\(PipelineConstants.flexibleGeneratorPackage)" }
     }
 
     /// Loads a generator/HAR-post model.
@@ -168,9 +190,19 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
                 units: computePolicy.decoderPre,
                 progress: progress
             )
+            if !usesFlexibleGenerator {
+                _ = try model(
+                    cacheKey: "generator.\(bucket)",
+                    url: modelsDirectory.appendingPathComponent("kokoro_decoder_har_post_\(bucket)s.mlpackage"),
+                    units: computePolicy.generator,
+                    progress: progress
+                )
+            }
+        }
+        if usesFlexibleGenerator {
             _ = try model(
-                cacheKey: "generator.\(bucket)",
-                url: modelsDirectory.appendingPathComponent("kokoro_decoder_har_post_\(bucket)s.mlpackage"),
+                cacheKey: "generator.range",
+                url: modelsDirectory.appendingPathComponent(PipelineConstants.flexibleGeneratorPackage),
                 units: computePolicy.generator,
                 progress: progress
             )
@@ -507,23 +539,24 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
                 throw KokoroError.missingModel(url.lastPathComponent)
             }
         }
+        let flexibleGenerator = listsFlexibleGenerator(manifest)
+        var required = flexibleGenerator ? [PipelineConstants.flexibleGeneratorPackage] : []
         for bucket in manifest.buckets {
             guard let tFrames = PipelineConstants.tFramesForBucket[bucket] else {
                 throw KokoroError.missingModel("bucket \(bucket)s")
             }
-            for name in [
-                "kokoro_f0ntrain_t\(tFrames).mlpackage",
-                "kokoro_decoder_pre_\(bucket)s.mlpackage",
-                "kokoro_decoder_har_post_\(bucket)s.mlpackage",
-            ] {
-                let path = "coreml/\(name)"
-                guard paths.contains(path) else {
-                    throw KokoroError.missingModel(name)
-                }
-                let url = modelsDirectory.appendingPathComponent(name, isDirectory: true)
-                guard FileManager.default.fileExists(atPath: url.path) else {
-                    throw KokoroError.missingModel(name)
-                }
+            required += ["kokoro_f0ntrain_t\(tFrames).mlpackage", "kokoro_decoder_pre_\(bucket)s.mlpackage"]
+            if !flexibleGenerator {
+                required.append("kokoro_decoder_har_post_\(bucket)s.mlpackage")
+            }
+        }
+        for name in required {
+            guard paths.contains("coreml/\(name)") else {
+                throw KokoroError.missingModel(name)
+            }
+            let url = modelsDirectory.appendingPathComponent(name, isDirectory: true)
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                throw KokoroError.missingModel(name)
             }
         }
     }

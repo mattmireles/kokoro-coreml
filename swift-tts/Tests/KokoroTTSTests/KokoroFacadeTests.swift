@@ -30,6 +30,31 @@ final class KokoroFacadeTests: XCTestCase {
         XCTAssertEqual(hnsf.linearWeights.count, 9)
     }
 
+    /// A bundle that ships the flexible generator needs no per-bucket generator
+    /// package: the one RangeDim program serves every bucket at the real length.
+    func testModelProviderAcceptsFlexibleGeneratorInPlaceOfBucketGenerators() throws {
+        let range = Data("har-post-range".utf8)
+        let entries = KokoroBundleFixture.requiredPackageEntries()
+            .filter { ($0["path"] as? String) != "coreml/kokoro_decoder_har_post_15s.mlpackage" }
+            + [KokoroBundleFixture.modelPackageEntry(path: "coreml/kokoro_decoder_har_post_range.mlpackage", data: range)]
+        let root = try makeBundleRoot(modelPackages: entries)
+        try KokoroBundleFixture.writeOneFilePackage(root: root, path: "coreml/kokoro_decoder_har_post_range.mlpackage", data: range)
+        try FileManager.default.removeItem(at: root.appendingPathComponent("coreml/kokoro_decoder_har_post_15s.mlpackage"))
+
+        let provider = try KokoroSDKModelProvider(resources: .directory(root))
+
+        XCTAssertTrue(KokoroSDKModelProvider.listsFlexibleGenerator(provider.manifest))
+        XCTAssertEqual(provider.availableBucketSeconds(), [15])
+    }
+
+    /// A bundle without the flexible generator keeps the per-bucket generators.
+    func testModelProviderWithoutFlexibleGeneratorUsesBucketGenerators() throws {
+        let provider = try KokoroSDKModelProvider(resources: .directory(try makeBundleRoot()))
+
+        XCTAssertFalse(KokoroSDKModelProvider.listsFlexibleGenerator(provider.manifest))
+        XCTAssertNil(try provider.flexibleGeneratorModel())
+    }
+
     /// Verifies missing voice files surface as public SDK errors.
     func testModelProviderRejectsMissingVoiceFile() throws {
         let root = try makeBundleRoot(removeVoiceFile: true)

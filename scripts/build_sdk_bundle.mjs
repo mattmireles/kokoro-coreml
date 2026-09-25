@@ -298,8 +298,11 @@ function requiredPackages(config) {
   for (const bucket of config.buckets) {
     names.push(`kokoro_f0ntrain_t${bucket * 40}.mlpackage`);
     names.push(`kokoro_decoder_pre_${bucket}s.mlpackage`);
-    names.push(`kokoro_decoder_har_post_${bucket}s.mlpackage`);
   }
+  // One flexible (RangeDim, GPU) generator serves every bucket at the
+  // utterance's real length; the SDK's macOS 15 / iOS 18 floor always has it.
+  // Export it traced at 30 s so it covers every profile's largest bucket.
+  names.push('kokoro_decoder_har_post_range.mlpackage');
   return names;
 }
 
