@@ -1,6 +1,6 @@
 # Kokoro 82M TTS - Surgically Optimized for Apple Silicon
 
-**15 seconds of speech in 691ms on an M1 Mac Mini. 2.8x faster than Metal. Using Apple Neural Engine.**
+**15 seconds of speech in 1.01s on an M1 Mac Mini. Faster, mask-correct Core ML inference on Apple Silicon.**
 
 [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) running natively on the Apple Neural Engine via CoreML. Five compiled models, one Swift pipeline, zero Python at inference time. Every Mac with Apple Silicon is a TTS server.
 
@@ -52,16 +52,30 @@ Swift+CoreML eliminates both: models run on the ANE with no fallback, orchestrat
 
 ## Performance
 
-An M1 Mac Mini with 16 GB of RAM — the cheapest Apple Silicon Mac you can buy — synthesizes 30 seconds of speech in 1.2 seconds. That's 22x realtime.
+An M1 Mac Mini with 16 GB of RAM — the cheapest Apple Silicon Mac you can buy — synthesizes 30 seconds of speech in 1.96 seconds. That's 14x realtime.
 
 | Audio | M1 Mini (16 GB) | M2 Air (24 GB) | M2 Ultra (64 GB) |
 | --- | --- | --- | --- |
-| 3s | 157 ms | 200 ms | **59 ms** |
-| 7s | 511 ms | 326 ms | **136 ms** |
-| 15s | 691 ms | 783 ms | **278 ms** |
-| 30s | **1,229 ms** | 1,829 ms | **422 ms** |
+| 3s | 236 ms | 200 ms | **59 ms** |
+| 7s | 494 ms | 326 ms | **136 ms** |
+| 15s | 1,007 ms | 783 ms | **278 ms** |
+| 30s | 1,958 ms | 1,829 ms | **422 ms** |
 
 13-70x realtime across the lineup. The M2 Ultra finishes 30s of audio in 422 ms (70x RT), but the M1 Mini is the number that matters — it proves the pipeline ships on hardware people already own.
+
+### Mask-aware bucketing on M1
+
+PR #6 fixes padding contamination in the duration, pitch/noise, decoder, and generator stages. On an Apple M1 Mac Mini (16 GB), the same staged policy and padded duration buckets are 19-28% faster after the fix. Each row is the median of five calls after three warmups; both arms used the same frozen fixtures.
+
+| Audio | Pre-PR | Mask-aware PR #6 | Improvement |
+| --- | ---: | ---: | ---: |
+| 3s | 293 ms | 236 ms | 1.24x |
+| 7s | 627 ms | 494 ms | 1.27x |
+| 10s | 989 ms | 712 ms | 1.39x |
+| 15s | 1,287 ms | 1,007 ms | 1.28x |
+| 30s | 2,646 ms | 1,958 ms | 1.35x |
+
+These M1 A/B results were collected on Irvine M1 (macOS 15.7.9) using source commits `fa57641` and `523abafa` plus their corresponding published packages. The host did not pass the strict quiet-host gate before collection, so treat this as engineering evidence rather than publication-grade benchmark data.
 
 ### vs alternatives
 
