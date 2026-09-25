@@ -23,7 +23,7 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 sys.path.insert(0, str(_ROOT))
 
-from audio_parity_tensor_io import TensorDumpWriter  # noqa: E402
+from audio_parity_tensor_io import TensorDumpWriter, bucket_mask_from_tensors  # noqa: E402
 from export_synth.wrappers import DurationModel, GeneratorFromHar  # noqa: E402
 from kokoro import KModel  # noqa: E402
 from kokoro.conv_length import conv1d_output_length_from_module  # noqa: E402
@@ -172,11 +172,15 @@ def capture(args: argparse.Namespace) -> Path:
         x_pre_padded = _pad_time(x_pre, x_pre_time)
         har_padded = _pad_time(har, har_time)
 
+        # The runtime feeds mask-aware packages this mask (PR #6); an
+        # unmasked reference differs from it by 6-8 dB.
+        gen_mask = bucket_mask_from_tensors({"pred_dur_valid": valid_pred_dur}, x_pre_time)
         gen_from_har = GeneratorFromHar(gen).eval()
         waveform_t = gen_from_har(
             torch.from_numpy(x_pre_padded),
             torch.from_numpy(ref_s_out),
             torch.from_numpy(har_padded),
+            torch.from_numpy(gen_mask),
         )
         waveform_full = waveform_t.detach().cpu().numpy().astype(np.float32)
         waveform_flat = waveform_full.reshape(-1)

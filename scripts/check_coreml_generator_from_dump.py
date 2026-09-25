@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Run ``GeneratorFromHar`` Core ML on tensors from an audio parity dump."""
+"""Run ``GeneratorFromHar`` Core ML on tensors from an audio parity dump.
+
+The PyTorch reference is recomputed from the exact inputs the package gets,
+mask included. A mask-aware package (required ``mask`` since PR #6) scored
+against the dump's own ``waveform`` would compare masked Core ML to an
+unmasked reference and report a false 6-8 dB failure
+(outputs/release-2026-09-24/export-report.md).
+"""
 
 from __future__ import annotations
 
@@ -43,6 +50,27 @@ def _metrics(reference: np.ndarray, candidate: np.ndarray) -> dict[str, Any]:
         "correlation": corr,
         "cosine_similarity": cosine,
     }
+
+
+def pytorch_reference(generator: Any, inputs: dict[str, np.ndarray]) -> np.ndarray:
+    """Run PyTorch ``GeneratorFromHar`` on the same inputs dict Core ML receives.
+
+    Passing the whole dict keeps the reference and the candidate on one mask:
+    a maskless legacy package gets no mask on either side.
+    """
+    import torch
+
+    with torch.no_grad():
+        waveform = generator(**{name: torch.from_numpy(value) for name, value in inputs.items()})
+    return waveform.detach().cpu().numpy().astype(np.float32)
+
+
+def _load_generator() -> Any:
+    from export_synth.wrappers import GeneratorFromHar
+    from kokoro import KModel
+
+    # disable_complex matches the export (export_synth/convert.py).
+    return GeneratorFromHar(KModel(disable_complex=True).eval().decoder.generator).eval()
 
 
 def _compute_unit(coremltools: Any, name: str) -> Any:
@@ -90,7 +118,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     import coremltools as ct
 
     manifest, tensors = load_tensor_dump(args.tensor_dump)
-    required = ["x_pre_padded", "ref_s", "har_padded", "waveform_full", "waveform"]
+    required = ["x_pre_padded", "ref_s", "har_padded", "waveform"]
     missing = [name for name in required if name not in tensors]
     if missing:
         raise SystemExit(f"tensor dump missing required tensors: {missing}")
@@ -103,6 +131,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     }
     model = ct.models.MLModel(str(args.package), compute_units=_compute_unit(ct, args.compute_units))
     inputs = mask_aware_inputs(model, inputs, tensors)
+    reference_full = pytorch_reference(_load_generator(), inputs)
     prediction, first_prediction_time_s = _timed_predict(model, inputs)
     warmup_times_s = []
     for _ in range(args.warmup):
@@ -117,6 +146,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     waveform_full = np.asarray(prediction[key], dtype=np.float32)
     trim_len = int(manifest.get("metadata", {}).get("trim_len") or tensors["waveform"].size)
     waveform = waveform_full.reshape(-1)[:trim_len]
+    reference = reference_full.reshape(-1)[:trim_len]
 
     report = {
         "tensor_dump": str(args.tensor_dump),
@@ -127,8 +157,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "warmup": _timing_summary(warmup_times_s),
         "warmed": _timing_summary(iteration_times_s),
         "reference_metadata": manifest.get("metadata", {}),
-        "waveform_full_metrics": _metrics(tensors["waveform_full"], waveform_full),
-        "waveform_trimmed_metrics": _metrics(tensors["waveform"], waveform),
+        "mask_inputs": sorted(name for name in inputs if name.startswith("mask")),
+        "waveform_full_metrics": _metrics(reference_full, waveform_full),
+        "waveform_trimmed_metrics": _metrics(reference, waveform),
     }
     report["passes"] = bool(
         report["waveform_trimmed_metrics"]["correlation"] is not None

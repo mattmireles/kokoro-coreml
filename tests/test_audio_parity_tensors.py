@@ -101,3 +101,30 @@ def test_compare_tensor_accepts_correlated_float_arrays() -> None:
     assert result["status"] == "pass"
     assert result["max_abs_error"] > 1e-4
     assert result["correlation"] > 0.999
+
+
+def test_generator_reference_uses_same_mask_as_coreml_candidate() -> None:
+    """The checker's PyTorch reference must see the mask the package gets.
+
+    Regression: the reference was the dump's unmasked waveform while the
+    package received a mask, a false 6-8 dB failure on every bucket.
+    """
+    checker = _load_script_module("check_coreml_generator_from_dump")
+    model = _FakeModel({"x_pre": (1, 512, 8), "ref_s": (1, 256), "har": (1, 22, 8), "mask": (1, 1, 8)})
+    tensors = {"pred_dur_valid": np.array([[1, 2]], dtype=np.int32)}
+    base = {
+        "x_pre": np.zeros((1, 512, 8), dtype=np.float32),
+        "ref_s": np.zeros((1, 256), dtype=np.float32),
+        "har": np.zeros((1, 22, 8), dtype=np.float32),
+    }
+    candidate_inputs = _io.mask_aware_inputs(model, base, tensors)
+    seen: dict[str, np.ndarray] = {}
+
+    def generator(**kwargs):
+        seen.update({name: value.numpy() for name, value in kwargs.items()})
+        return kwargs["x_pre"][:, :1, :]
+
+    checker.pytorch_reference(generator, candidate_inputs)
+
+    assert set(seen) == set(candidate_inputs)
+    np.testing.assert_array_equal(seen["mask"], candidate_inputs["mask"])
