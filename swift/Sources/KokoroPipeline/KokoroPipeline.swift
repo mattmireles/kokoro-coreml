@@ -317,19 +317,26 @@ public class KokoroPipeline: KokoroModelProvider {
         refS: [Float],
         speed: Float = 1.0
     ) throws -> SynthesisResult {
-        var tensorDump: TensorDumpWriter? = nil
-        return try executeKokoroSynthesis(
-            request: KokoroSynthesisRequest(
-                inputIds: inputIds,
-                attentionMask: attentionMask,
-                refS: refS,
-                speed: speed
-            ),
-            modelProvider: self,
-            linearWeights: linearWeights,
-            linearBias: linearBias,
-            tensorDump: &tensorDump
-        )
+        // Core ML hands back autoreleased Objective-C objects (feature
+        // providers, MLMultiArrays). Callers on Swift-concurrency or other
+        // pool-less threads never drain them, so without this pool every call
+        // leaks its intermediate tensors: a 40-sentence run grew a process
+        // from ~960 MB to ~1.4 GB on an M2 Ultra; with it, memory stays flat.
+        try autoreleasepool {
+            var tensorDump: TensorDumpWriter? = nil
+            return try executeKokoroSynthesis(
+                request: KokoroSynthesisRequest(
+                    inputIds: inputIds,
+                    attentionMask: attentionMask,
+                    refS: refS,
+                    speed: speed
+                ),
+                modelProvider: self,
+                linearWeights: linearWeights,
+                linearBias: linearBias,
+                tensorDump: &tensorDump
+            )
+        }
     }
 
     // MARK: - Private Helpers
