@@ -214,3 +214,7 @@ kokoro.js/voices/*.bin
 # Local scratch notes (not for version control)
 scratchpad.md
 tmp/
+
+# Root SwiftPM manifest build output
+/.build/
+/.swiftpm/
