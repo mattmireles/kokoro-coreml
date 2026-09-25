@@ -1,6 +1,6 @@
 ---
 title: Canonical Source Coverage
-last_synced: 2026-08-12
+last_synced: 2026-09-25
 coverage_index: true
 ---
 
@@ -71,6 +71,7 @@ This is a deterministic coverage index, not a current-belief page. It lists read
 - [README/Notes/fixed-cost-latency-fit.md](../Notes/fixed-cost-latency-fit.md)
 - [README/Notes/har-stft-phase-contract.md](../Notes/har-stft-phase-contract.md)
 - [README/Notes/hf-fixed-package-reupload-2026-07-14.md](../Notes/hf-fixed-package-reupload-2026-07-14.md)
+- [README/Notes/hf-release-2026-09-24.md](../Notes/hf-release-2026-09-24.md)
 - [README/Notes/iphone-debug-notes.md](../Notes/iphone-debug-notes.md)
 - [README/Notes/iphone-performance-notes.md](../Notes/iphone-performance-notes.md)
 - [README/Notes/iphone-release-build-mlx-comparison.md](../Notes/iphone-release-build-mlx-comparison.md)
