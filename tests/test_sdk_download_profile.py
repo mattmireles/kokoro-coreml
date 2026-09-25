@@ -30,3 +30,22 @@ def test_every_sdk_profile_downloads_only_duration_t128():
             if "/kokoro_duration_" in package
         ]
         assert duration_packages == ["coreml/kokoro_duration_t128.mlpackage"]
+
+
+def test_every_sdk_profile_downloads_the_one_flexible_generator():
+    """SDK bundles ship one RangeDim generator, not one generator per bucket,
+    and the download contract must match scripts/build_sdk_bundle.mjs."""
+    module = load_download_models_module()
+    builder = (Path(__file__).resolve().parents[1] / "scripts" / "build_sdk_bundle.mjs").read_text()
+    assert f"'{module.SDK_FLEXIBLE_GENERATOR}'" in builder
+
+    for profile, voices, buckets in (
+        ("starter", [], []),
+        ("custom", ["af_heart", "af_bella"], [15, 30]),
+        ("full", [], []),
+    ):
+        packages = module._sdk_required_packages(profile, voices, buckets)
+        generators = [package for package in packages if "/kokoro_decoder_har_post_" in package]
+        assert generators == [f"coreml/{module.SDK_FLEXIBLE_GENERATOR}"], profile
+        patterns = module._sdk_patterns(profile, voices, buckets)
+        assert f"coreml/{module.SDK_FLEXIBLE_GENERATOR}/**" in patterns, profile

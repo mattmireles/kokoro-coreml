@@ -264,3 +264,14 @@ def test_masked_upsampling_block_matches_the_native_run_on_every_valid_frame():
         m = torch.zeros(1, 1, 20); m[..., :13] = 1
         masked = block(padded, s, m, m.repeat_interleave(2, dim=2))
     assert torch.allclose(native, masked[..., : native.shape[-1]], atol=1e-5, rtol=1e-4)
+
+
+def test_identity_adain_accepts_the_mask_adainresblk1d_passes():
+    """Regression: legacy full/decoder exports broke when AdainResBlk1d began passing a mask (PR #6)."""
+    from export_synth.wrappers import IdentityAdaIN
+
+    x = torch.randn(1, 4, 10)
+    s = torch.randn(1, 128)
+    m = torch.ones(1, 1, 10)
+    assert torch.equal(IdentityAdaIN()(x, s, m), x)
+    assert torch.equal(IdentityAdaIN()(x, s), x)

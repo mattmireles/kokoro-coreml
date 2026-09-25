@@ -207,6 +207,12 @@ def _split_int_csv(raw: str | None) -> list[int]:
     return values
 
 
+# One flexible (RangeDim, GPU) generator serves every SDK bucket at the real
+# utterance length; the SDK's macOS 15 / iOS 18 floor always supports it.
+# Must match scripts/build_sdk_bundle.mjs requiredPackages().
+SDK_FLEXIBLE_GENERATOR = "kokoro_decoder_har_post_range.mlpackage"
+
+
 def _sdk_patterns(profile: str, voices: list[str], buckets: list[int]) -> list[str]:
     """Return HF allow patterns for an SDK download profile."""
 
@@ -234,8 +240,8 @@ def _sdk_patterns(profile: str, voices: list[str], buckets: list[int]) -> list[s
         patterns.extend([
             f"coreml/kokoro_f0ntrain_t{t_frames}.mlpackage/**",
             f"coreml/kokoro_decoder_pre_{bucket}s.mlpackage/**",
-            f"coreml/kokoro_decoder_har_post_{bucket}s.mlpackage/**",
         ])
+    patterns.append(f"coreml/{SDK_FLEXIBLE_GENERATOR}/**")
     if profile == "full":
         patterns.extend(ENGLISH_VOICE_PATTERNS)
     else:
@@ -265,8 +271,8 @@ def _sdk_required_packages(profile: str, voices: list[str], buckets: list[int]) 
         packages.extend([
             f"coreml/kokoro_f0ntrain_t{bucket * 40}.mlpackage",
             f"coreml/kokoro_decoder_pre_{bucket}s.mlpackage",
-            f"coreml/kokoro_decoder_har_post_{bucket}s.mlpackage",
         ])
+    packages.append(f"coreml/{SDK_FLEXIBLE_GENERATOR}")
     return packages
 
 

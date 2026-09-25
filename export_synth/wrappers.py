@@ -507,7 +507,8 @@ class IdentityAdaIN(nn.Module):
         """
         super().__init__()
 
-    def forward(self, x, s):
+    # AdainResBlk1d passes a validity mask since PR #6; an identity ignores it.
+    def forward(self, x, s, m=None):
         """Forward pass that returns input unchanged, bypassing style conditioning.
         
         Args:

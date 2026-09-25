@@ -22,17 +22,25 @@ final class MultifunctionPackagingTests: XCTestCase {
         XCTAssertNil(choices[0].functionName)
     }
 
-    /// Runs only where the built package exists (outputs/ is not tracked).
+    /// Runs only where the repo's gitignored coreml/ holds the built package
+    /// (`scripts/build_multifunction_packages.py --models-dir coreml`).
     func testDurationChoicesPreferTheMultifunctionPackage() throws {
-        let built = URL(fileURLWithPath: "/Users/willem/Documents/Repositories/kokoro-coreml-masked/outputs/dynamic-length/coreml/multifunction/kokoro_duration_multifunction.mlpackage")
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // KokoroPipelineTests
+            .deletingLastPathComponent()  // Tests
+            .deletingLastPathComponent()  // swift
+            .deletingLastPathComponent()  // repo root
+        let built = repoRoot.appendingPathComponent("coreml").appendingPathComponent(PipelineConstants.durationMultifunctionPackage)
         try XCTSkipUnless(FileManager.default.fileExists(atPath: built.path), "multifunction duration package not built")
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("choices-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(at: dir.appendingPathComponent(PipelineConstants.durationMultifunctionPackage), withDestinationURL: built)
         try FileManager.default.createDirectory(at: dir.appendingPathComponent("kokoro_duration_t64.mlpackage"), withIntermediateDirectories: true)
         let choices = KokoroPipeline.discoverDurationChoices(modelsDirectory: dir, useExactDurationModels: false)
-        XCTAssertEqual(choices.map { $0.cacheKey }, ["padded_t64", "padded_t128", "padded_t256", "padded_t512"])
-        XCTAssertEqual(choices.map { $0.functionName }, ["t64", "t128", "t256", "t512"])
+        // The shipped package packs every size of the Swift ladder (t32-t512).
+        let sizes = PipelineConstants.durationTokenSizes
+        XCTAssertEqual(choices.map { $0.cacheKey }, sizes.map { "padded_t\($0)" })
+        XCTAssertEqual(choices.map { $0.functionName }, sizes.map { "t\($0)" })
         XCTAssertTrue(choices.allSatisfy { $0.packageURL.lastPathComponent == PipelineConstants.durationMultifunctionPackage })
     }
 }
