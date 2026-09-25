@@ -124,6 +124,43 @@ End-to-end checks with `kokoro-sdk-smoke`:
   pushed; its Swift suite has 0 failures). Botnet's artifact list does not
   include the flexible generator, so the Mac workers keep the bucketed
   generators. Installing the artifacts on the fleet is a separate step.
-- The iPhone speedup from the flexible generator is not measured yet. Measure
-  time to first audio, the first-call stall per new length, and cold start on a
-  device before claiming it.
+
+## iPhone 12 Pro measurement (2026-09-24)
+
+Physical iPhone 12 Pro (iPhone13,3, 4 GB), iOS 27.0, Release build. Thermal
+state was nominal on every call, with 7 launches and a 10-minute cooldown
+between them; warm runs went in the order A, B, B, A. The harness was a
+minimal scratch app that calls the SDK's synthesis executor with the SDK
+compute policy. One binary holds both generators, and the arms differ only in
+which one loads:
+
+- A: `kokoro_decoder_har_post_15s` (bucketed, today's starter bundle before
+  this release).
+- B: `kokoro_decoder_har_post_range` (flexible).
+
+Warm end-to-end medians, 10 calls per arm:
+
+| audio | A | B | speedup | generator alone, A → B |
+| --- | ---: | ---: | ---: | --- |
+| 2.15 s | 1,799 ms | 418 ms | 4.31x | 1,645 → 288 ms |
+| 6.78 s | 1,823 ms | 966 ms | 1.89x | 1,652 → 799 ms |
+| 13.9 s | 1,850 ms | 1,825 ms | 1.01x (tie, ±6%) | 1,659 → 1,636 ms |
+
+- A costs about 1.8 s at every length because it always computes the full
+  15 s bucket. B scales with the real length.
+- First-call stall (B only):
+  - After a fresh install: +620–760 ms at each new short length, and +330 ms
+    at 13.9 s.
+  - After a relaunch: +290–400 ms.
+  - It is paid once per length per process, and B's first short call still
+    beats A's warm call.
+- Cold start is a wash: 11.1 s (A) against 10.5–10.7 s (B) after install, and
+  2.2 s against 2.2–2.5 s on relaunch.
+- Peak memory: 986–1,075 MB (A) against 609–634 MB (B).
+- Audio: finite, with equal RMS and sample counts across the arms.
+- Caveats:
+  - The two arms' waveforms correlate at 0.995; nobody has listened.
+  - The 13.9 s input needed the t256 duration model, while the real SDK
+    would split it at 128 tokens.
+  - The harness skips G2P, chunking and on-device compile.
+  - One phone, one session.
