@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 _ROOT = Path(__file__).resolve().parents[1]
 
@@ -128,3 +129,46 @@ def test_generator_reference_uses_same_mask_as_coreml_candidate() -> None:
 
     assert set(seen) == set(candidate_inputs)
     np.testing.assert_array_equal(seen["mask"], candidate_inputs["mask"])
+
+
+def test_capture_reference_stages_are_masked_like_the_runtime() -> None:
+    """The dump's F0/N and ``x_pre`` must not depend on bucket padding.
+
+    Regression: the capture ran F0Ntrain and decoder-pre unmasked while the
+    runtime masks both stages, so the Python dump carried padding-contaminated
+    statistics that a correct Swift/Core ML run could never match.
+    """
+    torch = pytest.importorskip("torch")
+    from kokoro import KModel
+
+    capture = _load_script_module("capture_audio_parity_tensors")
+    try:
+        kmodel = KModel(disable_complex=True).eval()
+    except Exception as exc:
+        pytest.skip(f"KModel load failed: {exc}")
+
+    valid = 24
+    rng = np.random.default_rng(0)
+    en = rng.standard_normal((1, 640, valid)).astype(np.float32)
+    asr = rng.standard_normal((1, 512, valid)).astype(np.float32)
+    s = rng.standard_normal((1, 128)).astype(np.float32)
+    ref_s = rng.standard_normal((1, 256)).astype(np.float32)
+
+    def run(t_frames: int):
+        with torch.no_grad():
+            return capture.masked_f0n_and_x_pre(
+                kmodel,
+                capture._pad_time(en, t_frames),
+                s,
+                capture._pad_time(asr, t_frames),
+                ref_s,
+                valid,
+                2 * t_frames,
+            )
+
+    f0_a, n_a, _, _, x_pre_a = run(32)
+    f0_b, n_b, _, _, x_pre_b = run(96)
+
+    np.testing.assert_allclose(f0_a[..., : 2 * valid], f0_b[..., : 2 * valid], atol=1e-3)
+    np.testing.assert_allclose(n_a[..., : 2 * valid], n_b[..., : 2 * valid], atol=1e-3)
+    np.testing.assert_allclose(x_pre_a[..., : 2 * valid], x_pre_b[..., : 2 * valid], atol=1e-3)
