@@ -6,6 +6,38 @@ Institutional memory for Kokoro PyTorch → Core ML (`mlprogram`) export, synthe
 
 ---
 
+## Issue: Swift STFT reported −π at the Nyquist bin where PyTorch reports +π — Resolved
+
+**First spotted:** 2026-09-15
+**Resolved:** 2026-09-16
+**Status:** Resolved
+
+### Summary
+
+Every Core ML render since the Swift harmonic source existed carried +1 to +3 dB more energy above 6 kHz than the PyTorch reference, on every arm and input, while all lower bands matched within a few tenths of a dB. The cause was one phase channel of the generator's `har` input: at the Nyquist bin (12 kHz) the imaginary part of the STFT is mathematically zero, and the sign of the ±1e-7 noise the Float basis left there decided whether `atan2` reported +π or −π for a negative real part. `torch.stft` reports +π in every such frame; the Swift transform reported −π in 10,658 of the 66,720 valid frames of the frozen 15 s input, a 2π jump in a channel the network reads at face value. The transform now fills the DC and Nyquist imaginary parts with +0.0 and skips their dot products.
+
+### Symptom
+
+Raw renders against the PyTorch reference, bands relative to total energy (dB): 6–12 kHz +3.2 on upstream main and the duration-only commit for the 15 s utterance in the 30 s bucket, +2.0 after the mask-aware commits, +0.3 to +0.5 after the native `har` geometry; every other band within 0.6 dB.
+
+### Root Cause
+
+Feeding the generator a PyTorch-computed `har` from the same F0 removed the excess entirely (every band within 0.1 dB, level 1.000x); the Swift and PyTorch `har` magnitudes and the source waveform agreed bin by bin. Swapping only the phase channels moved the excess with them. The raw phase difference was 2π at the Nyquist bin in 10,658 valid frames and nowhere else; isolated single-frame flips in other bins sit at near-zero magnitude and do not matter. A first fix that only zeroed the imaginary basis rows made it worse (+2.0 dB at 9–12 kHz): a zero filter dot-multiplied with negative samples yields −0.0, and `atan2(−0.0, x < 0)` is −π in every frame.
+
+### Fix
+
+**Files:** `swift/Sources/KokoroPipeline/HarmonicSource.swift` (`HarmonicSTFTBasis.buildBasis`, `stftTransform`), `swift/Tests/KokoroPipelineTests/HarmonicSourceTests.swift`.
+
+The DC and Nyquist rows of the imaginary basis are exactly zero and `stftTransform` fills those bins' imaginary part with +0.0 instead of running the dot product, so `atan2` reports 0 or +π exactly as `torch.stft` does.
+
+### Verification
+
+Frozen 15 s, 15 s-in-30 s and 30 s inputs, Apple M3 Max, production compute policy: Nyquist-bin frames differing from PyTorch's STFT of the same source drop from 10,658 to 0; the render's raw level moves from 0.988x to 1.001x of the PyTorch reference and every band from 150 Hz to 12 kHz is within 0.1 dB of it.
+
+Regression test: `testSTFTEdgeBinsReportPositivePiForNegativeRealParts` (a negative constant and a negative Nyquist alternation must report +π, never −π, on their edge bins).
+
+---
+
 ## Issue: Bucket padding contaminated every time-axis statistic and the f0ntrain BiLSTM — Resolved
 
 **First spotted:** 2026-09-14
