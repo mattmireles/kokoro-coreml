@@ -373,6 +373,8 @@ public actor KokoroTTS {
                 return KokoroError.missingModel(name)
             case .noBucketAvailable:
                 return KokoroError.missingModel("bucket")
+            case .modelContractMismatch(let message):
+                return KokoroError.coreMLPredictionFailed(message)
             }
         }
         return KokoroError.coreMLPredictionFailed(String(describing: error))
