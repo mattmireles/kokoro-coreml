@@ -5,7 +5,7 @@ usage() {
   printf '%s\n' \
     "Usage: run-second-opinion.sh <brief-path> [output-dir]" \
     "" \
-    "Run independent GPT-6 Sol (high) and Claude Opus 5.5 (high) opinions." \
+    "Run independent GPT-6 Astra (high) and Claude Opus 5.5 (high) opinions." \
     "Defaults to the repo's Ilya Sutskever persona. Override with" \
     "SECOND_OPINION_PERSONA_FILE=<path>." \
     "Writes both opinions, raw output, logs, and status to the output directory."
@@ -77,10 +77,10 @@ persona_copy="$output_dir/persona.md"
 agent_prompt="$output_dir/agent-prompt.txt"
 status_file="$output_dir/status.txt"
 
-codex_opinion="$output_dir/gpt-6-sol-opinion.md"
-codex_raw="$output_dir/gpt-6-sol.raw"
-codex_log="$output_dir/gpt-6-sol.log"
-codex_status="$output_dir/gpt-6-sol.status"
+codex_opinion="$output_dir/gpt-6-astra-opinion.md"
+codex_raw="$output_dir/gpt-6-astra.raw"
+codex_log="$output_dir/gpt-6-astra.log"
+codex_status="$output_dir/gpt-6-astra.status"
 
 claude_opinion="$output_dir/claude-opus-5-5-opinion.md"
 claude_raw="$output_dir/claude-opus-5-5.raw"
@@ -194,7 +194,7 @@ printf 'brief=%s\n' "$brief_abs" >"$status_file"
 printf 'persona=%s\n' "$persona_abs" >>"$status_file"
 printf 'output_dir=%s\n' "$output_dir" >>"$status_file"
 printf 'timeout_seconds=%s\n' "$timeout_seconds" >>"$status_file"
-printf 'gpt_model=gpt-6-sol\n' >>"$status_file"
+printf 'gpt_model=gpt-6-astra\n' >>"$status_file"
 printf 'gpt_reasoning_effort=high\n' >>"$status_file"
 printf 'claude_model=claude-opus-5-5\n' >>"$status_file"
 printf 'claude_effort=high\n' >>"$status_file"
@@ -278,7 +278,7 @@ run_codex() {
     -C "$repo_root" \
     -c 'service_tier="fast"' \
     -c 'model_reasoning_effort="high"' \
-    --model gpt-6-sol \
+    --model gpt-6-astra \
     --sandbox read-only \
     --ephemeral \
     --json \
@@ -289,17 +289,17 @@ run_codex() {
     printf 'ok\n' >"$codex_status"
   elif [[ $exit_code -eq 0 ]]; then
     printf 'empty-output\n' >"$codex_status"
-    printf 'GPT-6 Sol completed without a final message. See %s and %s\n' \
+    printf 'GPT-6 Astra completed without a final message. See %s and %s\n' \
       "$codex_raw" "$codex_log" >"$codex_opinion"
   elif [[ $exit_code -eq $timeout_exit_code ]]; then
     printf 'timed-out\n' >"$codex_status"
-    printf 'GPT-6 Sol timed out after %ss. See %s and %s\n' \
+    printf 'GPT-6 Astra timed out after %ss. See %s and %s\n' \
       "$timeout_seconds" "$codex_raw" "$codex_log" >"$codex_opinion"
   else
     local failure
     failure="$(classify_codex_failure)"
     printf '%s\n' "$failure" >"$codex_status"
-    printf 'GPT-6 Sol %s (exit %s). See %s and %s\n' \
+    printf 'GPT-6 Astra %s (exit %s). See %s and %s\n' \
       "$failure" "$exit_code" "$codex_raw" "$codex_log" >"$codex_opinion"
   fi
 }
@@ -395,6 +395,6 @@ cat <<EOF
 Second-opinion run finished.
 Output dir: $output_dir
 Status: $status_file
-GPT-6 Sol: $codex_opinion
+GPT-6 Astra: $codex_opinion
 Claude Opus 5.5: $claude_opinion
 EOF
