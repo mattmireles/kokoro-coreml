@@ -2,8 +2,8 @@
 name: second-opinion
 description: >-
   Gets two independent, read-only opinions on a concrete technical decision,
-  diagnosis, plan, or tradeoff from GPT-6 Sol at high reasoning and Claude
-  Opus 5.5 at high effort, then reconciles agreement and disagreement without
+  diagnosis, plan, or tradeoff from GPT-6 Astra at high reasoning and Claude
+  Opus 5.5 at medium effort, then reconciles agreement and disagreement without
   treating model consensus as proof. Use when the user asks for a second
   opinion, says dial-a-friend, wants outside advice, or explicitly asks what
   Opus and GPT think. Do not use for broad internet synthesis (create-guide),
@@ -16,8 +16,8 @@ description: >-
 
 Ask two strong models for **independent advice on one concrete matter**:
 
-- GPT-6 Sol with `high` reasoning
-- Claude Opus 5.5 with `high` effort
+- GPT-6 Astra with `high` reasoning
+- Claude Opus 5.5 with `medium` effort
 
 This is the dial-a-friend workflow. It answers “Given these facts, what would
 you do and why?” It does not create a durable internet-research artifact; use
@@ -126,9 +126,9 @@ scripts/run-second-opinion.sh <brief-path>
 
 The helper launches separate fresh CLI threads in parallel:
 
-- `codex exec --model gpt-6-sol` with
+- `codex exec --model gpt-6-astra` with
   `model_reasoning_effort="high"` and a read-only sandbox
-- `claude -p --model claude-opus-5-5 --effort high` in plan mode with
+- `claude -p --model claude-opus-5-5 --effort medium` in plan mode with
   `--tools "Read,Glob,Grep,Bash"` — Bash for read-only investigation only
 
 Both receive the same prompt. Neither sees the other opinion. Never seed one
@@ -166,7 +166,7 @@ substitute another model or lower effort.
 
 Read:
 
-- `gpt-6-sol-opinion.md`
+- `gpt-6-astra-opinion.md`
 - `claude-opus-5-5-opinion.md`
 - `status.txt`
 
