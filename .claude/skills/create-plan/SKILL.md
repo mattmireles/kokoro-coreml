@@ -13,6 +13,20 @@ build input, not optional reference material.
 Every numbered phase (`### Phase N:`) must include a **Skills:** line naming
 existing skills to read before that phase starts.
 
+Every numbered phase must also carry a **Difficulty:** line and a
+`| Sub-task | Model | Effort |` table. Effort is `low | medium | high | max`
+and moves independently of the model: a fully specified step can warrant high
+effort on the default model, and a genuinely novel build warrants a stronger
+model before the effort dial is touched. `Sonnet / Sol` (Claude Sonnet 5.5 /
+GPT-6.1 Sol) is the default;
+`Opus / Astra` (Claude Opus 5.5 / GPT-6 Astra) handles hard and mega-hard work.
+For truly easy, fully specified tasks use `Haiku / Luna` (Claude Haiku 5.5 /
+GPT-6 Luna). These are owner-defined equivalent pairs; Terra is not a model
+route. Justify every row above the default. A sub-task that decides *whether a gate
+passed*, rather than executing an already-specified step, moves up the model
+ladder rather than only up the effort dial. Split a phase into rows only where
+the rows actually differ. The validator enforces both fields on plans numbered 35 or later; earlier plans keep legacy behavior until deliberately migrated.
+
 The task checkboxes inside `## Implementation Phases` are the only progress
 tracker. Do not add a second progress checklist, execution diary, Debug Notes
 section, dated checkpoint stream, or evidence ledger. `**Status:**` states only
@@ -45,7 +59,7 @@ The validator rejects a missing, renamed, or reordered required heading,
 unfilled top-level placeholders, duplicate progress or execution-log sections,
 task checkboxes outside implementation phases, nonstandard checkbox states,
 duplicate implementation-phase sections, noncanonical lifecycle status, and
-any phase with missing, empty, or unknown **Skills:**. Tracked plans numbered
+any phase with missing, empty, or unknown **Skills:**. On plans numbered 35 or later it also rejects a phase whose **Difficulty:** line is missing or still the template placeholder, or that has no model/effort row naming a canonical model pair with a `low | medium | high | max` effort. Tracked plans numbered
 012 or earlier retain legacy progress validation until deliberately migrated.
 Use `--allow-placeholders` only to check a fresh scaffold before drafting.
 

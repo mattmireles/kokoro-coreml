@@ -89,11 +89,34 @@ High-level approach before diving into phases. Include a simple diagram if helpf
 > `phase-audit` apply to every phase; do not repeat them unless they are the
 > only skills that phase needs.
 
+> Each phase also states **Difficulty:** and assigns a model and effort per
+> sub-task. Effort is `low | medium | high | max` and moves independently of
+> the model: a fully specified step can warrant high effort on the default
+> model, and a genuinely novel build warrants a stronger model before the
+> effort dial is touched. Any sub-task that decides *whether a gate passed*,
+> rather than executing an already-specified step, moves up the model ladder
+> rather than only up the effort dial. Split a phase into rows only where the
+> rows actually differ; one row for the whole phase is normal. Justify every
+> row above the default, since the default is correct for most work.
+
+Model pairs name the Claude model and its Codex counterpart, either side
+acceptable: **Sonnet / Sol** (Claude Sonnet 5.5, GPT-6.1 Sol) is the default;
+**Opus / Astra** (Claude Opus 5.5, GPT-6 Astra) handles hard and mega-hard work.
+Use **Haiku / Luna** (Claude Haiku 5.5, GPT-6 Luna) for truly easy, fully
+specified tasks. These are owner-defined equivalent pairs; Terra is not a route.
+
 ### Phase 0: Prerequisites
 
 **Goal:** [What this phase accomplishes]
 
 **Skills:** [Skills to use in this phase, e.g. `phase-audit`]
+
+**Difficulty:** [Trivial | Moderate | Hard | Mega hard] - [what makes it that]
+
+| Sub-task | Model | Effort |
+| --- | --- | --- |
+| [Whole phase, or a sub-task that differs] | Sonnet / Sol | medium |
+
 
 **Tasks:**
 
@@ -110,6 +133,13 @@ High-level approach before diving into phases. Include a simple diagram if helpf
 
 **Skills:** [Skills to use in this phase]
 
+**Difficulty:** [Trivial | Moderate | Hard | Mega hard] - [what makes it that]
+
+| Sub-task | Model | Effort |
+| --- | --- | --- |
+| [Whole phase, or a sub-task that differs] | Sonnet / Sol | medium |
+
+
 **Tasks:**
 
 - [ ] Task with specific file: `path/to/file.ts`
@@ -125,6 +155,13 @@ High-level approach before diving into phases. Include a simple diagram if helpf
 
 **Skills:** [Skills to use in this phase]
 
+**Difficulty:** [Trivial | Moderate | Hard | Mega hard] - [what makes it that]
+
+| Sub-task | Model | Effort |
+| --- | --- | --- |
+| [Whole phase, or a sub-task that differs] | Sonnet / Sol | medium |
+
+
 **Tasks:**
 
 - [ ] Task with specific file: `path/to/file.ts`
@@ -139,6 +176,13 @@ High-level approach before diving into phases. Include a simple diagram if helpf
 **Goal:** Verify end-to-end behavior and remove temporary scaffolding.
 
 **Skills:** [Skills to use in this phase]
+
+**Difficulty:** [Trivial | Moderate | Hard | Mega hard] - [what makes it that]
+
+| Sub-task | Model | Effort |
+| --- | --- | --- |
+| [Whole phase, or a sub-task that differs] | Sonnet / Sol | medium |
+
 
 **Tasks:**
 
@@ -320,6 +364,13 @@ interface NewOrModifiedType {
 - [How to revert safely]
 
 ### Phase Dependencies
+
+**Difficulty:** [Trivial | Moderate | Hard | Mega hard] - [what makes it that]
+
+| Sub-task | Model | Effort |
+| --- | --- | --- |
+| [Whole phase, or a sub-task that differs] | Sonnet / Sol | medium |
+
 
 ```
 Phase 0 --> Phase 1 --> Phase 2

@@ -210,4 +210,60 @@ if [ "${2:-}" != "--allow-placeholders" ]; then
   done < "$skills_file"
 fi
 
+
+enforce_assignments=0
+assignment_plan_name=$(basename -- "$1")
+case "$assignment_plan_name" in
+  [0-9][0-9]-*.md|[0-9][0-9][0-9]-*.md|[0-9][0-9][a-z]-*.md|[0-9][0-9][0-9][a-z]-*.md)
+    assignment_plan_number=$(printf '%s\n' "$assignment_plan_name" | sed 's/[^0-9].*$//')
+    if [ "$assignment_plan_number" -ge 35 ]; then
+      enforce_assignments=1
+    fi
+    ;;
+esac
+
+if [ "$enforce_assignments" -eq 1 ]; then
+  awk -v allow_placeholders="${2:-}" '
+    function flush() {
+      if (phase == "") return
+      if (difficulty == 0) {
+        printf "missing or unfilled **Difficulty:** in %s\n", phase > "/dev/stderr"
+        missing = 1
+      }
+      if (assignment == 0) {
+        printf "missing model/effort table row in %s\n", phase > "/dev/stderr"
+        missing = 1
+      }
+    }
+    /^## Implementation Phases$/ { in_impl = 1; next }
+    in_impl && /^[[:space:]]*##[[:space:]]+/ {
+      flush()
+      in_impl = 0
+      phase = ""
+      next
+    }
+    in_impl && /^### Phase [0-9]+:/ {
+      flush()
+      phase = $0
+      difficulty = 0
+      assignment = 0
+      next
+    }
+    in_impl && /^\*\*Difficulty:\*\*[[:space:]]*[^[:space:]]/ {
+      if (allow_placeholders == "--allow-placeholders") difficulty = 1
+      else if ($0 !~ /\[Trivial \| Moderate \| Hard \| Mega hard\]/) difficulty = 1
+    }
+    in_impl && /^\|/ {
+      if ($0 ~ /\|[[:space:]]*(Haiku \/ Luna|Sonnet \/ Sol|Opus \/ Astra)[[:space:]]*\|[[:space:]]*(low|medium|high|max)[[:space:]]*\|/) {
+        if (allow_placeholders == "--allow-placeholders" \
+          || $0 !~ /\[Whole phase, or a sub-task that differs\]/) assignment = 1
+      }
+    }
+    END {
+      flush()
+      if (missing) exit 1
+    }
+  ' "$1"
+fi
+
 echo "template contract valid: $1"
