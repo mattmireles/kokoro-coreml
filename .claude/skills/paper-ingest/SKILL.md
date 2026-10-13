@@ -36,6 +36,10 @@ record belongs at `README/Papers/<slug>.md`.
 
 ## Faithful transcription
 
+Transcription and PDF text extraction run on **Haiku 5.5**
+(`claude-haiku-5-5`). Do that work in this session. Do not spawn another
+transcriber.
+
 Repair layout, not meaning: restore reading order, headings, hyphenation,
 lists, footnotes, citations, table cells, equation markup, captions, and one
 reference per entry. Keep the abstract, body, tables, equations, figure/table
