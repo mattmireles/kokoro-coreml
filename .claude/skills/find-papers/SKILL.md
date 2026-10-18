@@ -20,9 +20,9 @@ Read the relevant current belief in `README/Wiki/`, external research in
 `README/Guides/`, and local evidence in `README/Notes/` before launching
 research. Write a private brief at
 `README/Notes/<slug>-find-papers-brief.md` containing the decision, technical
-context, precise questions, source priorities, exclusions, and a maximum paper
-count (default 10; hard maximum 30). Do not include credentials, private audio,
-or unreleased benchmark outputs in the brief or prompt.
+context, precise questions, source priorities, and exclusions. Do not include
+credentials, private audio, or unreleased benchmark outputs in the brief or
+prompt.
 
 If `README/Papers/` exists, inventory it by title and identifier to avoid
 duplicates. If it does not exist, record that. Create the corpus when the first paper
@@ -40,7 +40,6 @@ pnpm run research:find-papers -- \
   --context-file /Users/mm/Documents/GitHub/kokoro-coreml/README/Notes/<slug>-find-papers-brief.md \
   --target-repo kokoro-coreml \
   --target-paper-directory README/Papers \
-  --max-papers <n> \
   --agent-mode max
 ```
 
