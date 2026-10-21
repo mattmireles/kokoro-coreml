@@ -1,95 +1,87 @@
 # Kokoro 82M TTS - Surgically Optimized for Apple Silicon
 
-**15 seconds of speech in 1.01s on an M1 Mac Mini. Faster, mask-correct Core ML inference on Apple Silicon.**
+**30 seconds of speech in 1.6 s on an M1 Mac Mini, and in 287 ms on an M2 Ultra. 1.8-2.4x faster than MLX on the same Macs.**
 
-[Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) running natively on the Apple Neural Engine via CoreML. Five compiled models, one Swift pipeline, zero Python at inference time. Every Mac with Apple Silicon is a TTS server.
+[Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) running natively on Apple Silicon via Core ML: four model families, one Swift pipeline, zero Python at inference time. Each stage runs on the part of the chip that suits it: the Neural Engine, the GPU, or the CPU.
 
 > **Pre-converted `.mlpackage` files:** [huggingface.co/mattmireles/kokoro-coreml](https://huggingface.co/mattmireles/kokoro-coreml)
 
-## Why the Neural Engine?
+## Why split the model?
 
-Apple Silicon isn't one processor. It's three — **CPU, GPU, and the Neural Engine (ANE)** — each built for different work. The ANE devours fixed-shape convolutions and dense matrix math at a fraction of the power draw of the GPU. It's the same silicon that runs Face ID, Live Text, and on-device Siri.
+Apple Silicon isn't one processor. It's three — **CPU, GPU, and the Neural Engine (ANE)** — each built for different work. The ANE runs fixed-shape dense math at a fraction of the GPU's power draw. The GPU handles large convolutions the ANE rejects. The CPU handles small, data-dependent logic.
 
-But it has rules. No dynamic shapes. No data-dependent control flow. No `RangeDim` with multiple variable inputs on the Neural Engine (the one flexible program, the generator, runs on the GPU). Most Core ML ports shove the whole model through and hope the runtime scheduler figures it out. It doesn't — you end up on CPU wondering why your "Neural Engine model" runs at 1x realtime.
+Each has rules. The ANE takes no dynamic shapes and no data-dependent control flow, and it rejects Kokoro's vocoder outright: the waveform tensors are too long for it. Most Core ML ports push the whole model through one policy and let the scheduler guess. It guesses badly.
 
-This repo dissects the Kokoro TTS pipeline and makes deliberate cuts:
+This repo cuts the Kokoro pipeline at those seams:
 
 ```
-                    ┌──────────────────────────────┐
-  "Hello world" ──▶ │  DURATION MODEL               │
-                    │  BERT + LSTMs                  │ ◀── CPU/GPU
-                    │  Sequential, variable-length   │     Best at: branching,
-                    └───────────┬──────────────────┘     variable sequences
-                                │
-                                ▼
-                    ┌──────────────────────────────┐
-                    │  ALIGNMENT  (Swift / CPU)      │
-                    │  Build matrix from durations   │ ◀── CPU
-                    │  ~50 lines of code             │     Best at: small, complex
-                    └───────────┬──────────────────┘     data-dependent logic
-                                │
-                                ▼
-                    ┌──────────────────────────────┐
-                    │  DECODER + VOCODER             │
-                    │  Dense convolutions + iSTFT    │ ◀── Neural Engine (ANE)
-                    │  Fixed shapes, pure math       │     Best at: dense parallel
-                    └───────────┬──────────────────┘     tensor operations
-                                │
-                                ▼
-                           24 kHz Audio
+  "Hello world"
+       │
+       ▼
+  DURATION MODEL (Core ML)          ◀── GPU, LSTMs on CPU
+       │
+       ▼
+  ALIGNMENT (Swift)                 ◀── CPU: small, data-dependent
+       │
+       ▼
+  F0 + NOISE (Core ML)              ◀── GPU
+       │
+       ▼
+  DECODER-PRE (Core ML)             ◀── Neural Engine
+    ∥ HARMONIC SOURCE (Swift DSP)   ◀── CPU, runs at the same time
+       │
+       ▼
+  GENERATOR / VOCODER (Core ML)     ◀── GPU
+       │
+       ▼
+  24 kHz audio
 ```
 
-**Redesign the inference pipeline, not the model.** Give the ANE clean static tensors. Let the CPU handle the messy parts. That's where the 2.8x over Metal comes from — not by fighting the GPU, but by routing around it.
+**Redesign the inference pipeline, not the model.** A whole-model Core ML export doesn't even convert correctly. Split at the right seams, each piece runs where it runs best.
 
 ## Why not just use PyTorch MPS?
 
-Even if you stay on the GPU, PyTorch MPS has two problems specific to this model:
+Even if you stay on the GPU, PyTorch MPS has three problems with this model:
 
-1. **`aten::angle` doesn't exist on MPS.** The vocoder hits unsupported ops, forcing per-op CPU fallbacks. Every fallback is a round-trip data transfer that kills throughput.
-2. **Python is the bottleneck.** Five `model.forward()` calls through the GIL and eager-mode dispatch. The interpreter overhead alone costs more than the M1 Mini's total inference time.
+1. **It doesn't finish long clips.** On every Mac we tested, PyTorch MPS fails 15 s and 30 s inputs with `Output channels > 65536 not supported at the MPS device`.
+2. **Unsupported ops fall back to the CPU.** `aten::angle` has no MPS kernel, so the vocoder round-trips data to the CPU.
+3. **Python adds overhead.** Five `forward()` calls through eager-mode dispatch pay interpreter costs this pipeline never pays.
 
-Swift+CoreML eliminates both: models run on the ANE with no fallback, orchestration is native Swift with no Python.
+Swift + Core ML removes all three: native orchestration, no op fallbacks, and every input length completes.
 
 ## Performance
 
-An M1 Mac Mini with 16 GB of RAM — the cheapest Apple Silicon Mac you can buy — synthesizes 30 seconds of speech in 1.96 seconds. That's 14x realtime.
+An M1 Mac Mini with 16 GB of RAM — the cheapest Apple Silicon Mac you can buy — synthesizes 30 seconds of speech in 1.64 seconds. That's 17x realtime.
 
-| Audio | M1 Mini (16 GB) | M2 Air (24 GB) | M2 Ultra (64 GB) |
-| --- | --- | --- | --- |
-| 3s | 236 ms | 200 ms | **59 ms** |
-| 7s | 494 ms | 326 ms | **136 ms** |
-| 15s | 1,007 ms | 783 ms | **278 ms** |
-| 30s | 1,958 ms | 1,829 ms | **422 ms** |
+Warm median end-to-end time, October 2026 (current `main`, published models, fixed-bucket generator on Macs):
 
-13-70x realtime across the lineup. The M2 Ultra finishes 30s of audio in 422 ms (70x RT), but the M1 Mini is the number that matters — it proves the pipeline ships on hardware people already own.
+| Audio | M1 Mini (16 GB) | M2 Air (24 GB) | M2 Ultra (64 GB) | iPhone 15 Pro Max | iPhone 12 Pro |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 3s | 205 ms | 123 ms | **45 ms** | 195 ms | 421 ms |
+| 7s | 410 ms | 274 ms | **80 ms** | 417 ms | 917 ms |
+| 10s | 590 ms | 397 ms | **112 ms** | 609 ms | 1,391 ms |
+| 15s | 835 ms | 589 ms | **148 ms** | 881 ms | 1,984 ms |
+| 30s | 1,636 ms | 1,176 ms | **287 ms** | 1,721 ms | 4,017 ms |
 
-### Mask-aware bucketing on M1
-
-PR #6 fixes padding contamination in the duration, pitch/noise, decoder, and generator stages. On an Apple M1 Mac Mini (16 GB), the same staged policy and padded duration buckets are 19-28% faster after the fix. Each row is the median of five calls after three warmups; both arms used the same frozen fixtures.
-
-| Audio | Pre-PR | Mask-aware PR #6 | Improvement |
-| --- | ---: | ---: | ---: |
-| 3s | 293 ms | 236 ms | 1.24x |
-| 7s | 627 ms | 494 ms | 1.27x |
-| 10s | 989 ms | 712 ms | 1.39x |
-| 15s | 1,287 ms | 1,007 ms | 1.28x |
-| 30s | 2,646 ms | 1,958 ms | 1.35x |
-
-These M1 A/B results were collected on Irvine M1 (macOS 15.7.9) using source commits `fa57641` and `523abafa` plus their corresponding published packages. The host did not pass the strict quiet-host gate before collection, so treat this as engineering evidence rather than publication-grade benchmark data.
+Every device runs faster than realtime: 7x on the 2020 iPhone 12 Pro, 17x on the M1 Mini, up to 96x on the M2 Ultra. Macs ran macOS 26.7.1 (M2 Ultra) and 27.0.1 (M2 Air, M1 Mini); iPhones ran iOS 27.0.1 with the flexible-length generator.
 
 ### vs alternatives
 
 | Baseline | Speedup |
 | --- | --- |
-| PyTorch MPS (GPU) | **1.8-3.4x** faster |
-| PyTorch CPU | **3.5-7.3x** faster |
-| Python+CoreML hybrid | **1.1-2.0x** faster |
+| MLX (mlx-audio 0.4.3) | **1.8-2.4x** faster |
+| MLX Swift on iPhone (kokoro-ios 1.0.8) | **2.0-3.2x** faster; MLX runs out of memory on 30 s clips on the 4 GB iPhone 12 Pro |
+| PyTorch MPS (GPU) | **2.7-6.5x** faster where MPS finishes (it fails 15 s and 30 s clips) |
+| PyTorch CPU | **3.2-6.8x** faster |
+| Python + Core ML hybrid | **1.3-2.9x** faster |
 
-Counterbalanced ordering, 5 iterations, warm median. Full data: [bakeoff-results.md](README/Notes/bakeoff-results.md).
+Same machines, same frozen inputs, warm medians. Protocol, raw-data paths and caveats: [paper-cs1-frozen-rerun-2026-10-20.md](README/Notes/paper-cs1-frozen-rerun-2026-10-20.md).
+
+> **macOS 27 note:** on macOS 27.0.1, Apple's MPSGraph can crash on the flexible-length generator, so the runtime uses the fixed-bucket generators on OS 27 (`KOKORO_FLEXIBLE_GENERATOR=1` overrides). Details: [debug-notes.md](README/Notes/debug-notes.md) "Flexible generator aborts on OS 27".
 
 ## Architecture
 
-Five CoreML models chained with native Swift DSP. Text goes in, 24 kHz audio comes out. Zero Python at inference time.
+Four Core ML model families chained with native Swift DSP. Text goes in, 24 kHz audio comes out. Zero Python at inference time.
 
 ## In-Repo Memory
 
@@ -108,7 +100,7 @@ Text → Phonemes → Duration (CoreML) → Alignment (Swift) → Matrix ops (Ac
   → F0Ntrain (CoreML) → DecoderPre (CoreML) + hn-nsf (Swift) → GeneratorFromHar (CoreML) → Audio
 ```
 
-Four models run on the ANE. One DSP stage (harmonic source) runs in Swift with double-precision phase accumulation. The generator has zero `nn.Linear` ops — all replaced with `Conv1d(kernel_size=1)` to keep it on the ANE path (48 → 0 linear ops in the MIL graph).
+Decoder-pre runs on the ANE; duration, F0 and the generator run on the GPU (the ANE compiler rejects the generator's waveform-length tensors). One DSP stage (harmonic source) runs in Swift with double-precision phase accumulation, concurrently with decoder-pre. The generator has zero `nn.Linear` ops — all replaced with `Conv1d(kernel_size=1)` (48 → 0 linear ops in the MIL graph).
 
 <details>
 <summary>Full pipeline diagram and model inventory</summary>
@@ -147,7 +139,7 @@ Trim (Swift) --> final audio
 | `kokoro_duration_t{N}` | T=32, 64, 128, 256, 320, 384, 512 | input_ids, attention_mask, ref_s, speed | pred_dur, d, t_en, s, ref_s_out | BERT + prosody prediction |
 | `kokoro_f0ntrain_t{N}` | T=120, 400, 560, 1200, 2400 | en, s, mask | F0_pred, N_pred | Pitch/noise from aligned features |
 | `kokoro_decoder_pre_{N}s` | 3s, 7s, 10s, 15s, 30s | asr, f0, n_input, ref_s, mask | x_pre | Decoder stack (Conv + AdaIN) |
-| `kokoro_decoder_har_post_{N}s` | 3s, 7s, 10s, 15s, 30s | x_pre, ref_s, har, mask | waveform | Generator (0 linear ops, all Conv1d for ANE) |
+| `kokoro_decoder_har_post_{N}s` | 3s, 7s, 10s, 15s, 30s | x_pre, ref_s, har, mask | waveform | Generator (0 linear ops, all Conv1d; runs on GPU) |
 
 The Duration model uses per-size exports because E5RT (Apple Neural Engine runtime) cannot handle `RangeDim` or `EnumeratedShapes` with multiple variable inputs. The caller pads tokens to the nearest enumeration.
 Newly exported padded-stage packages require the binary prefix `mask`; the runtime also recognizes legacy published packages that predate that input.

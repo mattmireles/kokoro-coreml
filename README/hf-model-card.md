@@ -17,51 +17,51 @@ tags:
 
 # Kokoro 82M TTS -- Surgically Optimized for Apple Silicon
 
-**30 seconds of speech in 379 ms on a Mac Studio. 2x faster than MLX on the same hardware. Running on the Apple Neural Engine.**
+**30 seconds of speech in 287 ms on a Mac Studio, and in 1.6 s on an M1 Mac Mini. 1.8-2.4x faster than MLX on the same hardware.**
 
-[Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) compiled to Core ML and cut into five models, each running on the processor that's best at its job. On-device, offline, no API keys, no cents-per-character. This repo is the pre-converted `.mlpackage` files; you load them with a Swift `MLModel(contentsOf:)` call.
+[Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) compiled to Core ML and cut into four model families, each running on the processor that suits it: the Neural Engine, the GPU, or the CPU. On-device, offline, no API keys, no cents-per-character. This repo holds the pre-converted `.mlpackage` files; you load them with a Swift `MLModel(contentsOf:)` call.
 
 > **Source, exporters, Swift runtime:** [github.com/mattmireles/kokoro-coreml](https://github.com/mattmireles/kokoro-coreml)
 
 ## The numbers
 
-Median warm wall time for one full synthesize call -- tokenize in, 24 kHz PCM out. Measured June 2026, counterbalanced harness in the GitHub repo.
+Median warm wall time for one full synthesize call -- token IDs in, 24 kHz PCM out. Measured October 2026 with these packages (revision `dadebca4`), fixed-bucket generator on Macs.
 
 | Audio | M2 Studio (64 GB) | M2 Air (24 GB) | M1 Mini (16 GB) |
 |---|---:|---:|---:|
-| 3s  | **51 ms** | 148 ms | 234 ms |
-| 10s | **126 ms** | 466 ms | 686 ms |
-| 30s | **379 ms** | 1,405 ms | 1,959 ms |
+| 3s  | **45 ms** | 123 ms | 205 ms |
+| 10s | **112 ms** | 397 ms | 590 ms |
+| 30s | **287 ms** | 1,176 ms | 1,636 ms |
 
-That's 12-79x realtime across the lineup. The M2 Studio synthesizes 30 seconds of audio in 379 ms, but the M1 Mini is the number that matters -- the cheapest Apple Silicon Mac you can buy turns text into speech 14x faster than you can listen to it.
+That's 14-96x realtime across the lineup. The M2 Studio synthesizes 30 seconds of audio in 287 ms, but the M1 Mini is the number that matters -- the cheapest Apple Silicon Mac you can buy turns text into speech 17x faster than you can listen to it.
 
 ## vs MLX
 
-Same machines, same utterances, same voice (`af_heart`), same timing boundary, median of warm calls. Comparator: [Blaizzy/mlx-audio](https://github.com/Blaizzy/mlx-audio) 0.4.3 at commit `862dfbe`, running `mlx-community/Kokoro-82M-bf16`.
+Same machines, same utterances, same voice (`af_heart`), same timing boundary, median of 10 warm calls. Comparator: [Blaizzy/mlx-audio](https://github.com/Blaizzy/mlx-audio) 0.4.3 at commit `862dfbe`, running `mlx-community/Kokoro-82M-bf16`.
 
 | Audio | M2 Studio | M2 Air | M1 Mini |
 |---|---|---|---|
-| 3s  | 51 ms vs *error* | 148 ms vs *error* | 234 ms vs *error* |
-| 7s  | 96 vs 224 ms -- **2.3x** | 331 vs 686 ms -- **2.1x** | 493 vs 824 ms -- **1.7x** |
-| 10s | 126 vs 289 ms -- **2.3x** | 466 vs 836 ms -- **1.8x** | 686 vs 1,124 ms -- **1.6x** |
-| 30s | 379 vs 763 ms -- **2.0x** | 1,405 vs 2,600 ms -- **1.9x** | 1,959 vs 3,078 ms -- **1.6x** |
+| 3s  | 45 ms vs *error* | 123 ms vs *error* | 205 ms vs *error* |
+| 7s  | 80 vs 184 ms -- **2.3x** | 274 vs 566 ms -- **2.1x** | 410 vs 797 ms -- **1.9x** |
+| 10s | 112 vs 243 ms -- **2.2x** | 397 vs 765 ms -- **1.9x** | 590 vs 1,100 ms -- **1.9x** |
+| 30s | 287 vs 685 ms -- **2.4x** | 1,176 vs 2,150 ms -- **1.8x** | 1,636 vs 3,004 ms -- **1.8x** |
 
-**Faster on every bucket, on every machine.** The gap is widest on the newest silicon -- the Neural Engine keeps scaling while a GPU-bound port doesn't. (The pinned MLX version fails 3-second clips with a broadcast-shape error; no time to report.)
+**Faster on every bucket, on every machine.** (The pinned MLX version fails 3-second clips with a broadcast-shape error; no time to report.)
 
 This is not a knock on MLX -- it's a fine framework. It's the surgery. A monolithic port runs wherever the scheduler drops it. A dissected pipeline runs each stage where it belongs.
 
 ## On iPhone
 
-Same `.mlpackage` files, deployed to phones (June 2026, iOS 26.5, median of 5 warm calls). Comparator: [mlalma/kokoro-ios](https://github.com/mlalma/kokoro-ios) 1.0.8, the MLX Swift port of Kokoro -- the Python mlx-audio above doesn't run on iOS. Its timing includes its Misaki G2P pass; ours starts from token IDs.
+Same `.mlpackage` files, deployed to phones (October 2026, iOS 27.0.1, Release builds, flexible-length generator, median of 10 warm calls, phone cooled before every run). Comparator: [mlalma/kokoro-ios](https://github.com/mlalma/kokoro-ios) 1.0.8, the MLX Swift port of Kokoro -- the Python mlx-audio above doesn't run on iOS. Its timing includes its Misaki G2P pass (about 1 ms); ours starts from token IDs.
 
 | Audio | iPhone 15 Pro Max | iPhone 12 Pro |
 |---|---|---|
-| 3s  | 702 vs 919 ms -- **1.3x** | 1,383 vs 1,624 ms -- **1.2x** |
-| 7s  | 1,492 vs 1,875 ms -- **1.3x** | 2,966 vs 2,405 ms -- 0.8x |
-| 15s | 3,272 vs 3,805 ms -- **1.2x** | 6,250 vs 5,022 ms -- 0.8x |
-| 30s | 6,374 vs 7,792 ms -- **1.2x** | 12,301 ms vs *OOM* |
+| 3s  | 195 vs 543 ms -- **2.8x** | 421 vs 926 ms -- **2.2x** |
+| 7s  | 417 vs 1,198 ms -- **2.9x** | 917 vs 2,050 ms -- **2.2x** |
+| 15s | 881 vs 2,802 ms -- **3.2x** | 1,984 vs 4,062 ms -- **2.0x** |
+| 30s | 1,721 vs 4,508 ms -- **2.6x** | 4,017 ms vs *OOM* |
 
-Faster on every bucket on the A17 Pro (4-4.5x realtime). On the 4 GB iPhone 12 Pro it's split: MLX takes the middle buckets, but the memory watchdog kills it on 30-second clips -- this pipeline synthesizes them in 12.3 s. One disclosure: the iPhone ANE compiler (A14 **and** A17 Pro) rejects the full-ANE plan that every M-series Mac runs (`ANECCompile() FAILED`), so iPhone rows use the staged policy -- decoder-pre on the ANE, the other stages on CPU+GPU.
+Faster on every bucket on both phones: 14-16x realtime on the A17 Pro, about 7x on the A14. On the 4 GB iPhone 12 Pro the memory watchdog kills MLX on 30-second clips; this pipeline synthesizes them in 4.0 s. (MLX's 15 s cell on the A17 Pro ran warm, so its ratio is an upper bound.) The shipped policy is staged on every device -- decoder-pre on the ANE, the other stages on CPU+GPU.
 
 Cold start takes a few seconds (Core ML compiles on first load); everything after is steady-state. Benchmarks drift with macOS and hardware -- rerun them on your target machine with the harness in the GitHub repo before you ship a claim of your own.
 
