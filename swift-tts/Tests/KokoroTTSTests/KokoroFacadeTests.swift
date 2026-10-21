@@ -41,9 +41,41 @@ final class KokoroFacadeTests: XCTestCase {
         try KokoroBundleFixture.writeOneFilePackage(root: root, path: "coreml/kokoro_decoder_har_post_range.mlpackage", data: range)
         try FileManager.default.removeItem(at: root.appendingPathComponent("coreml/kokoro_decoder_har_post_15s.mlpackage"))
 
-        let provider = try KokoroSDKModelProvider(resources: .directory(root))
+        let provider = try KokoroSDKModelProvider(resources: .directory(root), flexibleGeneratorAllowed: true)
 
         XCTAssertTrue(KokoroSDKModelProvider.listsFlexibleGenerator(provider.manifest))
+        XCTAssertEqual(provider.availableBucketSeconds(), [15])
+    }
+
+    /// Regression: on OS 27 (gate off; macOS aborts, iOS gated as a precaution) a bundle that ships both
+    /// generators serves from the bucket generator, never the flexible one
+    /// whose first predict aborts the process inside MPSGraph.
+    func testModelProviderUsesBucketGeneratorWhenFlexibleGeneratorGatedOff() throws {
+        let range = Data("har-post-range".utf8)
+        let entries = KokoroBundleFixture.requiredPackageEntries()
+            + [KokoroBundleFixture.modelPackageEntry(path: "coreml/kokoro_decoder_har_post_range.mlpackage", data: range)]
+        let root = try makeBundleRoot(modelPackages: entries)
+        try KokoroBundleFixture.writeOneFilePackage(root: root, path: "coreml/kokoro_decoder_har_post_range.mlpackage", data: range)
+
+        let provider = try KokoroSDKModelProvider(resources: .directory(root), flexibleGeneratorAllowed: false)
+
+        XCTAssertNil(try provider.flexibleGeneratorModel())
+    }
+
+    /// With the gate off, a flexible-only bundle (the 2026-09-24 starter)
+    /// keeps its flexible generator: it is the only generator it has.
+    func testModelProviderKeepsFlexibleGeneratorWhenBundleHasNoBucketGenerator() throws {
+        let range = Data("har-post-range".utf8)
+        let entries = KokoroBundleFixture.requiredPackageEntries()
+            .filter { ($0["path"] as? String) != "coreml/kokoro_decoder_har_post_15s.mlpackage" }
+            + [KokoroBundleFixture.modelPackageEntry(path: "coreml/kokoro_decoder_har_post_range.mlpackage", data: range)]
+        let root = try makeBundleRoot(modelPackages: entries)
+        try KokoroBundleFixture.writeOneFilePackage(root: root, path: "coreml/kokoro_decoder_har_post_range.mlpackage", data: range)
+        try FileManager.default.removeItem(at: root.appendingPathComponent("coreml/kokoro_decoder_har_post_15s.mlpackage"))
+
+        let provider = try KokoroSDKModelProvider(resources: .directory(root), flexibleGeneratorAllowed: false)
+
+        XCTAssertFalse(KokoroSDKModelProvider.listsBucketGenerators(provider.manifest))
         XCTAssertEqual(provider.availableBucketSeconds(), [15])
     }
 
