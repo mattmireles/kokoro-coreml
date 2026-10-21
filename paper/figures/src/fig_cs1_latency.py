@@ -6,8 +6,9 @@ One panel per machine (M2 Ultra / M2 Air / M1 Mini), grouped bars per bucket
 broadcast-shape error and are drawn as hatched "error" markers. Speedup (F vs MLX)
 is annotated over each completed pair.
 
-data: surgical-inference.md Section 5.3 "vs MLX" table. Numbers are milliseconds,
-warm medians, June 2026 external bakeoff. MLX = mlx-audio 0.4.3 @862dfbe,
+data: README/Notes/paper-cs1-frozen-rerun-2026-10-20.md. Numbers are milliseconds,
+warm medians (n=10), October 2026 run; Config F uses the fixed-bucket generator;
+M2 Ultra from the quiet overnight pass. MLX = mlx-audio 0.4.3 @862dfbe,
 mlx-community/Kokoro-82M-bf16. Config F = full Swift + Core ML surgical pipeline.
 
 Run: paper/.figvenv/bin/python paper/figures/src/fig_cs1_latency.py
@@ -30,15 +31,15 @@ plt.rcParams.update({
     "ytick.major.width": 0.6,
 })
 
-# --- Data (surgical-inference.md Section 5.3). ms, warm medians. -----------
+# --- Data (paper-cs1-frozen-rerun-2026-10-20.md). ms, warm medians. ----
 BUCKETS = ["3s", "7s", "10s", "15s", "30s"]
 # NaN marks the failed MLX 3s cells (broadcast-shape error).
 NAN = float("nan")
 DATA = {
     #                F (Surgical)                         MLX
-    "M2 Ultra": ([50.6,  96.1, 126.2, 185.6, 379.3],  [NAN, 223.9, 288.8, 376.3,  762.7]),
-    "M2 Air":   ([148.0, 330.7, 466.0, 693.6, 1404.8], [NAN, 685.6, 835.8, 1521.0, 2600.3]),
-    "M1 Mini":  ([233.6, 492.7, 685.5, 1014.9, 1959.4], [NAN, 824.0, 1124.3, 1589.5, 3077.9]),
+    "M2 Ultra": ([44.5, 80.0, 111.8, 147.6, 286.5],    [NAN, 183.8, 242.7, 329.7, 685.3]),
+    "M2 Air":   ([123.4, 273.6, 397.2, 589.1, 1175.5], [NAN, 566.0, 764.5, 1073.8, 2150.0]),
+    "M1 Mini":  ([205.3, 410.3, 589.8, 834.9, 1635.5], [NAN, 797.4, 1100.3, 1540.0, 3003.7]),
 }
 
 # Okabe-Ito colorblind-safe palette. Redundant encoding via hatch for grayscale.

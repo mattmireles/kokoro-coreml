@@ -22,15 +22,15 @@ SRC=../coreml
 DST=Resources/coreml
 mkdir -p "$DST"
 
-# Runtime buckets shipped in the bench app (10s omitted: no 10s bakeoff input).
-BUCKETS=(3 7 15 30)
+# Runtime buckets shipped in the bench app (the five frozen runtime buckets).
+BUCKETS=(3 7 10 15 30)
 # Padded duration sizes covering the 44/105/219/476-token bench inputs.
 PADDED=(64 128 256 512)
 # Exact-native-LSTM duration sizes, one per bench input's true token count
 # (--exact-duration path; 780-op graphs vs 17k-134k-op unrolled).
-EXACT=(44 105 219 476)
+EXACT=()  # HF dadebca4 ships no exact packages; the shipped default is padded.
 # F0Ntrain frame sizes per bucket (PipelineConstants.tFramesForBucket).
-F0N=(120 280 600 1200)
+F0N=(120 280 400 600 1200)
 
 missing=0
 copy() {
@@ -48,7 +48,9 @@ for b in "${BUCKETS[@]}"; do
   copy "kokoro_decoder_har_post_${b}s.mlpackage"
 done
 for t in "${PADDED[@]}"; do copy "kokoro_duration_t${t}.mlpackage"; done
-for t in "${EXACT[@]}"; do copy "kokoro_duration_exact_t${t}.mlpackage"; done
+for t in "${EXACT[@]+"${EXACT[@]}"}"; do copy "kokoro_duration_exact_t${t}.mlpackage"; done
+# Shipped-default flexible generator (KokoroPipeline flexibleGeneratorPackage).
+copy "kokoro_decoder_har_post_range.mlpackage"
 for t in "${F0N[@]}"; do copy "kokoro_f0ntrain_t${t}.mlpackage"; done
 
 if [ "$missing" -ne 0 ]; then

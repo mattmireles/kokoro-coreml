@@ -105,8 +105,8 @@ struct StagePolicy {
 /// buckets are evicted on bucket switch to keep the footprint small on a
 /// 4 GB phone.
 final class BundleModelCache: KokoroModelProvider {
-    /// Buckets bundled in this app (10s omitted — no 10s bakeoff input).
-    static let buckets = [3, 7, 15, 30]
+    /// Buckets bundled in this app (the five frozen runtime buckets).
+    static let buckets = [3, 7, 10, 15, 30]
     /// Padded duration token sizes bundled (cover 44/105/219/476-token inputs).
     static let durationSizes = [64, 128, 256, 512]
     /// Exact-native-LSTM duration sizes bundled, one per bench input's true
@@ -129,6 +129,10 @@ final class BundleModelCache: KokoroModelProvider {
     private var f0nModels: [Int: MLModel] = [:]
     private var decPreModels: [Int: MLModel] = [:]
     private var genModels: [Int: MLModel] = [:]
+    /// Shipped default: one flexible (RangeDim) generator on CPU+GPU, loaded
+    /// once (KokoroPipeline.loadFlexibleProgram semantics). `--bucket-generator 1`
+    /// restores the per-bucket generator packages.
+    private var flexibleGen: MLModel??
 
     init(policy: StagePolicy, useExactDuration: Bool) {
         self.policy = policy
@@ -204,6 +208,16 @@ final class BundleModelCache: KokoroModelProvider {
         return m
     }
 
+    func flexibleGeneratorModel() throws -> MLModel? {
+        if let loaded = flexibleGen { return loaded }
+        guard !BenchRunner.bucketGenerator else { flexibleGen = .some(nil); return nil }
+        lastVendedStage = "generator"
+        let c = MLModelConfiguration(); c.computeUnits = .cpuAndGPU
+        let m = try MLModel(contentsOf: Self.compiledURL("kokoro_decoder_har_post_range"), configuration: c)
+        flexibleGen = .some(m)
+        return m
+    }
+
     func prepareForBucket(bucketSec: Int, tFrames: Int) throws {
         f0nModels = f0nModels.filter { $0.key == tFrames }
         decPreModels = decPreModels.filter { $0.key == bucketSec }
@@ -221,6 +235,8 @@ private struct WarmSeries {
     /// Thermal state name per call (including warmups) — fanless phones
     /// throttle, and a `serious`/`critical` row must not be promoted.
     var thermalStates: [String] = []
+    /// First call after the discarded preflight calls (the frozen cold marker).
+    var coldTime: Double = 0
     var bucketSeconds: Int = 0
     var durationCacheKey: String = ""
 }
@@ -276,8 +292,9 @@ private func thermalStateName() -> String {
 final class BenchRunner: ObservableObject {
     @Published var status = "starting…"
 
-    static let warmups = 2
-    static let iterations = 5
+    /// Frozen protocol: 3 discarded preflight calls, 1 cold marker, 10 warm.
+    static let warmups = 3
+    static let iterations = 10
 
     /// Launch-argument access. Arms were split into separate processes after
     /// the iPhone 12 Pro (4 GB) jetsammed with both pipelines resident
@@ -288,10 +305,11 @@ final class BenchRunner: ObservableObject {
         return args[i + 1]
     }
     static let arms = (argValue("--arms") ?? "coreml,mlx").split(separator: ",").map(String.init)
-    static let keys = (argValue("--keys") ?? "3s,7s,15s,30s").split(separator: ",").map(String.init)
+    static let keys = (argValue("--keys") ?? "3s,7s,10s,15s,30s").split(separator: ",").map(String.init)
     static let outName = argValue("--out") ?? "results.json"
     static let mode = argValue("--mode") ?? "ladder"
     static let exactDuration = (argValue("--exact-duration") ?? "0") == "1"
+    static let bucketGenerator = (argValue("--bucket-generator") ?? "0") == "1"
 
     private var records: [[String: Any]] = []
 
@@ -320,6 +338,7 @@ final class BenchRunner: ObservableObject {
             "iterations": Self.iterations,
             "mode": Self.mode,
             "exact_duration": Self.exactDuration,
+            "generator": Self.bucketGenerator ? "bucket" : "flexible",
             "records": records,
         ]
         if let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys, .prettyPrinted]) {
@@ -416,12 +435,13 @@ final class BenchRunner: ObservableObject {
         key: String, policyName: String
     ) async throws -> WarmSeries {
         var series = WarmSeries()
-        for i in 0..<(Self.warmups + Self.iterations) {
+        for i in 0..<(Self.warmups + 1 + Self.iterations) {
             let result = try synthesizeOnce(input, weights: weights, cache: cache)
             series.thermalStates.append(thermalStateName())
             series.bucketSeconds = result.bucketSeconds
             series.durationCacheKey = result.durationModelCacheKey
-            if i >= Self.warmups {
+            if i == Self.warmups { series.coldTime = result.wallTimeSeconds }
+            if i > Self.warmups {
                 series.wallTimes.append(result.wallTimeSeconds)
                 series.stageRows.append(result.timings)
             }
@@ -461,6 +481,7 @@ final class BenchRunner: ObservableObject {
             "key": key,
             "compute_policy": policyName,
             "warm_times_s": series.wallTimes,
+            "cold_s": series.coldTime,
             "median_s": med,
             "stage_seconds": stages.arrays,
             "stage_medians_s": stages.medians,
@@ -645,9 +666,11 @@ final class BenchRunner: ObservableObject {
         for key in Self.keys {
             let input = try await MainActor.run { try self.loadInput(key) }
             var times: [Double] = []
+            var cold = 0.0
+            var thermal: [String] = []
             var audioSeconds = 0.0
             var failure: String? = nil
-            for i in 0..<(Self.warmups + Self.iterations) {
+            for i in 0..<(Self.warmups + 1 + Self.iterations) {
                 do {
                     let t0 = CFAbsoluteTimeGetCurrent()
                     let (audio, _) = try tts.generateAudio(
@@ -655,7 +678,9 @@ final class BenchRunner: ObservableObject {
                     )
                     let t1 = CFAbsoluteTimeGetCurrent()
                     audioSeconds = Double(audio.count) / 24000.0
-                    if i >= Self.warmups { times.append(t1 - t0) }
+                    thermal.append(thermalStateName())
+                    if i == Self.warmups { cold = t1 - t0 }
+                    if i > Self.warmups { times.append(t1 - t0) }
                     await log("mlx \(key) iter \(i): \(String(format: "%.3f", t1 - t0))s audio=\(String(format: "%.1f", audioSeconds))s")
                 } catch {
                     failure = String(describing: error)
@@ -668,6 +693,8 @@ final class BenchRunner: ObservableObject {
                 "arm": "mlx",
                 "key": key,
                 "warm_times_s": times,
+                "cold_s": cold,
+                "thermal_states": thermal,
                 "median_s": med,
                 "observed_audio_s": audioSeconds,
                 "rtf": audioSeconds > 0 && med > 0 ? med / audioSeconds : 0,

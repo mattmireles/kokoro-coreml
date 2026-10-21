@@ -47,7 +47,7 @@
 \begin{abstract}
 On-device generative inference usually means choosing one backend: CPU for compatibility, GPU for throughput, or an NPU when the compiler accepts the graph. Modern SoCs are heterogeneous computers --- CPU cores, GPU cores, and neural accelerators share memory but differ in execution strengths, admission constraints, and power behavior --- and single-backend deployment leaves most of the chip idle. We present \emph{Surgical Inference}, a deployment methodology that changes the unit of compilation from ``the model'' to a set of fixed-shape neural submodels and native stages: each stage is classified by computational motif, implemented in the simplest suitable form, and assigned to the SoC engine that measurement --- not intuition --- selects.
 
-We evaluate on two structurally opposite generative workloads. Kokoro-82M, a feed-forward text-to-speech pipeline decomposed into four Core ML model families and three native Swift stages, runs \textbf{1.6--2.3$\times$ faster than MLX}, \textbf{2.0--4.0$\times$ faster than PyTorch MPS}, and \textbf{2.5--7.3$\times$ faster than PyTorch CPU} across three Macs, ships unchanged to iPhone --- 30 s of audio in 3.7 s on an iPhone 15 Pro Max, beating the MLX Swift port on every bucket (1.25--1.44$\times$, Release builds, thermally controlled) --- and completes workloads that memory-exhaust the GPU frameworks. Magenta RealTime 2 (\code{mrt2\_small}, 230M parameters), a live-music model with a hard 40 ms/frame streaming deadline, runs faster than real time on the same phone --- a target its upstream GPU-only path does not attempt --- and yields three findings we have not seen documented: the ANE admission cliff for streaming transformers is \emph{in-graph state mutation}, not attention math; tensor layout determines FP16 \emph{numerical survival} per compute unit, not just placement; and per-call cost on weight-bandwidth-bound stages is weight bytes $\div$ DRAM bandwidth on every engine. Instruments traces and paired power profiles verify all-ANE placement with zero app-attributed GPU intervals and a 56\% cut in CPU instructions versus a GPU control.
+We evaluate on two structurally opposite generative workloads. Kokoro-82M, a feed-forward text-to-speech pipeline decomposed into four Core ML model families and three native Swift stages, runs \textbf{1.8--2.4$\times$ faster than MLX}, \textbf{2.7--6.5$\times$ faster than PyTorch MPS} where MPS completes, and \textbf{3.2--6.8$\times$ faster than PyTorch CPU} across three Macs, ships unchanged to iPhone --- 30 s of audio in 1.7 s on an iPhone 15 Pro Max, beating the MLX Swift port on every bucket (2.6--3.2$\times$, Release builds, thermally controlled) --- and completes workloads that memory-exhaust the GPU frameworks. Magenta RealTime 2 (\code{mrt2\_small}, 230M parameters), a live-music model with a hard 40 ms/frame streaming deadline, runs faster than real time on the same phone --- a target its upstream GPU-only path does not attempt --- and yields three findings we have not seen documented: the ANE admission cliff for streaming transformers is \emph{in-graph state mutation}, not attention math; tensor layout determines FP16 \emph{numerical survival} per compute unit, not just placement; and per-call cost on weight-bandwidth-bound stages is weight bytes $\div$ DRAM bandwidth on every engine. Instruments traces and paired power profiles verify all-ANE placement with zero app-attributed GPU intervals and a 56\% cut in CPU instructions versus a GPU control.
 
 Negative results are central: a monolithic Core ML export of the first workload does not exist as a valid artifact --- conversion fails at the data-dependent alignment, and the strongest partial monolith is numerically invalid --- the ANE rejected the first workload's largest dense stage on tensor geometry and every stateful variant of the second's transformer, and the decomposed pipelines win anyway. The active ingredients are decomposition, static per-stage compilation, deliberate placement, and validated host glue, not any single accelerator. Code, models, and benchmarks for the first case study are open source, as are the second's conversion exporters, validators, and validation receipts; the full artifact map is given in Appendix~\ref{app:artifacts}.
 \end{abstract}
@@ -72,7 +72,7 @@ We introduce \emph{Surgical Inference} and make four contributions:
 \begin{enumerate}[leftmargin=*]
 \item \textbf{A decomposition methodology} for multi-stage generative pipelines on heterogeneous SoCs: a three-motif classification --- Sequential-Dynamic, Data-Dependent Logic, Dense-Static --- a decomposition procedure, and a per-stage placement ablation whose results overrode intuition in both case studies, in opposite directions (\S\ref{sec:method}, \S\ref{sec:disc-ane}).
 
-\item \textbf{Two complete implementations with cross-device empirical validation.} A Kokoro-82M pipeline --- four Core ML model families, three native Swift stages, zero Python at inference time --- benchmarked on three Macs (M1 Mini, M2 Air, M2 Ultra) and two iPhones (A14, A17 Pro) against MLX, PyTorch MPS, PyTorch CPU, and two independent Core ML Kokoro ports (\S\ref{sec:cs1}--\ref{sec:cs1-eval}); and a Magenta RealTime 2 streaming pipeline holding a 25 Hz autoregressive deadline on a phone (\S\ref{sec:cs2}). Negative results are reported as results: a valid monolithic Core ML export of Kokoro-82M does not exist --- conversion fails at the data-dependent alignment and the strongest partial monolith is numerically invalid (\S\ref{sec:cs1-monolith}); the vocoder's categorical ANE rejection on tensor geometry (\code{ANECCompile() FAILED} on every device tested); \code{.all}'s silent fallback on macOS and hard failure on iOS; the GPU frameworks' OOM/jetsam failures on constrained memory; and the finding that naive native DSP ports regress until engineered (a 12$\times$ hn-nsf speedup from eliminating protocol-dispatched RNG, \S\ref{sec:dsp}).
+\item \textbf{Two complete implementations with cross-device empirical validation.} A Kokoro-82M pipeline --- four Core ML model families, three native Swift stages, zero Python at inference time --- benchmarked on three Macs (M1 Mini, M2 Air, M2 Ultra) and two iPhones (A14, A17 Pro) against MLX, PyTorch MPS, PyTorch CPU, and two independent Core ML Kokoro ports (\S\ref{sec:cs1}--\ref{sec:cs1-eval}); and a Magenta RealTime 2 streaming pipeline holding a 25 Hz autoregressive deadline on a phone (\S\ref{sec:cs2}). Negative results are reported as results: a valid monolithic Core ML export of Kokoro-82M does not exist --- conversion fails at the data-dependent alignment and the strongest partial monolith is numerically invalid (\S\ref{sec:cs1-monolith}); the vocoder's categorical ANE rejection on tensor geometry (\code{ANECCompile() FAILED} on every device tested); \code{.all}'s silent fallback on macOS and hard failure on iOS 26.5; the GPU frameworks' OOM/jetsam failures on constrained memory; and the finding that naive native DSP ports regress until engineered (a 12$\times$ hn-nsf speedup from eliminating protocol-dispatched RNG, \S\ref{sec:dsp}).
 
 \item \textbf{Three undocumented ANE admission findings} from the streaming case study: in-graph \emph{state mutation} --- not attention math --- is the compile-time cliff for streaming transformers, located by a falsification ladder and escaped by restructuring the transformer as a stateless step function (\S\ref{sec:cs2-state}); tensor layout governs FP16 \emph{numerical survival} per compute unit --- after a channels-first rewrite the ANE was the only engine producing finite codec output (\S\ref{sec:cs2-layout}); and on weight-bandwidth-bound stages per-call cost is weight bytes $\div$ DRAM bandwidth on every compute unit, an invariant that reshaped the sampling loop from twelve predictions per frame into one (\S\ref{sec:cs2-bandwidth}).
 
@@ -266,7 +266,7 @@ For texts longer than one bucket, a caller-side chunking layer splits input at a
 All Core ML models were exported via \code{coremltools} 8.3.0~\citep{coremltools,coremltools-pytorch} (PyTorch pinned at 2.5.0 for export) with \code{compute\_precision=FLOAT16}. Key export decisions:
 
 \begin{itemize}[leftmargin=*]
-\item \textbf{Duration model} is exported at enumerated token sizes (32, 64, 128, 256, 320, 384, 512) to accommodate inputs up to 30 seconds; the E5RT runtime does not handle RangeDim/EnumeratedShapes efficiently, forcing per-size packages. The runtime additionally supports \emph{exact-duration} packages (e.g. \code{kokoro\_duration\_exact\_t156}) generated for known token lengths, which avoid padded-graph compute; these are an environment-gated opt-in used by the benchmark adapters, while the library's production default remains the padded mask-aware packages. Padded duration graphs are expensive: in an early benchmark configuration, the padded duration stage alone cost 82--733 ms per call on M2 Ultra before the exact-duration path eliminated it.
+\item \textbf{Duration model} is exported at enumerated token sizes (32, 64, 128, 256, 320, 384, 512) to accommodate inputs up to 30 seconds; the E5RT runtime does not handle RangeDim/EnumeratedShapes efficiently, forcing per-size packages. The runtime additionally supports \emph{exact-duration} packages (e.g. \code{kokoro\_duration\_exact\_t156}) generated for known token lengths, which avoid padded-graph compute; these are an environment-gated opt-in, while the library's production default, and every benchmark in \S\ref{sec:cs1-eval}, uses the padded mask-aware packages. Padded duration graphs were once expensive: in an early benchmark configuration the padded duration stage alone cost 82--733 ms per call on M2 Ultra, because its bidirectional LSTM was unrolled into up to 134,397 ops. Replacing the unrolled LSTM with two stock \code{lstm} ops (989 ops at t512) brought the padded stage to 11--45 ms on M2 Ultra (\S\ref{sec:cs1-stages}).
 
 \item \textbf{F0Ntrain, DecoderPre, and GeneratorFromHar} are exported at five bucket sizes targeting 3 s, 7 s, 10 s, 15 s, and 30 s of audio (F0Ntrain at frame counts t120/t280/t400/t600/t1200). The bucket is selected at runtime as the smallest that fits the predicted duration.
 
@@ -316,7 +316,7 @@ M2 Ultra Mac Studio & 24-core (16P+8E) & 76-core & 32-core & 64 GB & 800 GB/s \\
 \end{tabular}
 \end{table}
 
-\textbf{Software.} Swift 6.x; PyTorch 2.5--2.6; coremltools 8.x. The June 2026 external bakeoff (\S\ref{sec:cs1-headline}, \S\ref{sec:cs1-mlx}, \S\ref{sec:cs1-coreml-ports}) ran on macOS 26.5 (Studio) and 15.7.7 (Air, Mini); the April 2026 PyTorch ledger (\S\ref{sec:cs1-pytorch}) ran on the then-current stable releases. All benchmarks run with the machine plugged in and other applications closed.
+\textbf{Software.} Swift 6.x; PyTorch 2.5.0; coremltools 8.3.0. Every Mac result in \S\ref{sec:cs1-headline}--\S\ref{sec:cs1-scaling} comes from one October 2026 run on repository commit \code{d32ef0d3} with the published model set at Hugging Face revision \code{dadebca4}. The M2 Ultra ran macOS 26.7.1 (25G241); the M2 Air and M1 Mini ran macOS 27.0.1 (26A434). All benchmarks run with the machine plugged in and background services paused.
 
 \textbf{Inputs.} Five frozen text inputs targeting the five runtime buckets, all using the same voice preset (\code{af\_heart}), speed = 1.0:
 
@@ -342,7 +342,7 @@ Key & Audio duration & Bucket \\
 \textbf{Configurations.}
 
 \begin{itemize}[leftmargin=*]
-\item \textbf{F. Surgical (this work).} The full Swift + Core ML pipeline, staged compute policy, exact-duration model discovery enabled (the benchmark adapter's default; the library's production default uses the padded duration packages, \S\ref{sec:cs1-export}).
+\item \textbf{F. Surgical (this work).} The full Swift + Core ML pipeline as the library ships it: staged compute policy and the padded, masked duration packages (\S\ref{sec:cs1-export}). The generator is the five fixed-bucket packages on every Mac. The library's flexible-length generator aborts the process on macOS 27.0.1 inside Apple's MPSGraph runtime, so the runtime disables it on OS 27; on the M2 Ultra (macOS 26.7.1) we also report it as a separate row.
 \item \textbf{MLX.} Blaizzy/mlx-audio~\citep{mlx-audio} 0.4.3 at commit \code{862dfbe}, running \code{mlx-community/Kokoro-82M-bf16}. The default MLX deployment path for Kokoro.
 \item \textbf{A. Python HAR-post hybrid.} The prior production pipeline: Python/PyTorch prefix + Core ML vocoder. State of the art for Kokoro-specific Core ML optimization prior to this work.
 \item \textbf{D. PyTorch MPS.} End-to-end PyTorch with \code{device=mps} and \code{PYTORCH\_ENABLE\_MPS\_FALLBACK=1}. The default Apple Silicon GPU deployment path.
@@ -351,27 +351,27 @@ Key & Audio duration & Bucket \\
 
 Configuration letters are stable identifiers inherited from the repository's benchmark harness so that published tables remain traceable to archived result files. Configs B and C --- a naive decoder-only Core ML artifact under \code{.all} and \code{.cpuAndGPU}, from an earlier April 2026 bakeoff generation with a different input set --- are superseded by the decomposed pipeline and omitted here.
 
-The PyTorch comparison (A/D/E vs F) was collected in a counterbalanced April 2026 run (5 warm iterations, config and input order independently shuffled per repetition, \code{torch.mps.synchronize()} before stopping the MPS timer). The MLX and cross-implementation comparison was collected in a June 2026 external bakeoff (one cold call discarded, five warm calls, median reported; cells whose warm samples showed visible spread were re-collected at N=10 and the N=10 median reported). Tables report medians; the raw per-iteration timings for every cell are archived as JSON result files in the repository (Appendix~\ref{app:artifacts}). Configuration F gained several optimizations between the two runs (vDSP hn-nsf vectorization, a direct HAR-padding fast path, exact-duration models, frame-source phase); the April PyTorch speedups are therefore \emph{conservative} with respect to the current pipeline (\S\ref{sec:cs1-pytorch}).
+All configurations were collected in one run per machine, in a fixed arm order (F, MLX, the external ports, then A/D/E). Configuration F discards three preflight calls, records one cold call, and reports the median of ten warm calls; MLX and the external ports report the median of ten warm calls after one cold call; the PyTorch arms run five counterbalanced iterations (config and input order shuffled per repetition, \code{torch.mps.synchronize()} before stopping the MPS timer). Tables report medians; the raw per-iteration timings for every cell are archived in the repository (Appendix~\ref{app:artifacts}).
 
-A July 2026 N=10 verification run on the same M2 Ultra Studio machine reproduced four of the five June medians (\S\ref{sec:cs1-headline}) within 5\%, with relative IQR 1.1--5.6\% across buckets --- tight for a warm-median benchmark, and the one bucket with the widest spread (10 s, 5.6\%) showed a visibly bimodal split in raw times consistent with host contention rather than a stable second mode. The 30 s bucket's fresh median (340 ms) was 10.3\% faster than the June value (379 ms); we attribute this tentatively to Config F pipeline improvements accumulated since the June freeze rather than measurement noise, since contention would be expected to slow rather than speed up warm inference, but we flag it as unconfirmed: the verification run's quiet-host gate could not clear within its 30-minute bound (a concurrent benchmark job held load average above the threshold throughout), so the run proceeded under disclosed contention rather than the clean conditions \S\ref{sec:cs1-headline}'s numbers were collected under. We report both figures rather than reconciling them; the June table remains this paper's benchmarked reference point, and the verification run and its raw data are archived in the repository (Appendix~\ref{app:artifacts}).
+Before each arm the harness waited up to 20 minutes for the one-minute load average to fall to 1.5. The M2 Ultra was re-run overnight and cleared the gate for every arm. The M1 Mini cleared it for every arm except Configuration F (load 2.3). The M2 Air did not clear it (load 2.2--2.9), so its rows are mild upper bounds.
 
 \subsection{Headline Results: Current Pipeline}\label{sec:cs1-headline}
 
-Warm median end-to-end wall time, Configuration F, June 2026 external bakeoff (Table~\ref{tab:cs1-headline}):
+Warm median end-to-end wall time, Configuration F, October 2026 (Table~\ref{tab:cs1-headline}):
 
 \begin{table}[h]
 \centering
-\caption{Warm median end-to-end wall time, Configuration F (Surgical), June 2026 external bakeoff.}
+\caption{Warm median end-to-end wall time (IQR), Configuration F (Surgical), fixed-bucket generator, $n=10$, October 2026. The last column is the M2 Ultra with the flexible-length generator.}
 \label{tab:cs1-headline}
-\begin{tabular}{llrrr}
+\begin{tabular}{llrrrr}
 \toprule
-Input & Audio & M2 Ultra Studio & M2 Air & M1 Mini \\
+Input & Audio & M2 Ultra Studio & M2 Air & M1 Mini & M2 Ultra, flexible \\
 \midrule
-3s  & 2.80 s  & \textbf{50.6 ms}  & 148.0 ms  & 233.6 ms  \\
-7s  & 6.75 s  & \textbf{96.1 ms}  & 330.7 ms  & 492.7 ms  \\
-10s & 9.60 s  & \textbf{126.2 ms} & 466.0 ms  & 685.5 ms  \\
-15s & 13.90 s & \textbf{185.6 ms} & 693.6 ms  & 1014.9 ms \\
-30s & 27.38 s & \textbf{379.3 ms} & 1404.8 ms & 1959.4 ms \\
+3s  & 2.80 s  & \textbf{44.5} (0.6) ms  & 123.4 (0.8) ms  & 205.3 (1.9) ms  & 44.7 ms \\
+7s  & 6.75 s  & \textbf{80.0} (0.9) ms  & 273.6 (3.3) ms  & 410.3 (2.4) ms  & 79.6 ms \\
+10s & 9.60 s  & \textbf{111.8} (1.2) ms & 397.2 (0.7) ms  & 589.8 (2.4) ms  & 109.9 ms \\
+15s & 13.90 s & \textbf{147.6} (1.5) ms & 589.1 (7.2) ms & 834.9 (9.8) ms  & 141.1 ms \\
+30s & 27.38 s & \textbf{286.5} (3.3) ms & 1175.5 (9.4) ms & 1635.5 (10.2) ms & 271.8 ms \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -386,16 +386,16 @@ Real-time factor (audio duration $\div$ wall time) is given in Table~\ref{tab:cs
 \toprule
 Input & M2 Ultra & M2 Air & M1 Mini \\
 \midrule
-3s  & 55$\times$ RT & 19$\times$ RT & 12$\times$ RT \\
-7s  & 70$\times$ RT & 20$\times$ RT & 14$\times$ RT \\
-10s & 76$\times$ RT & 21$\times$ RT & 14$\times$ RT \\
-15s & 75$\times$ RT & 20$\times$ RT & 14$\times$ RT \\
-30s & \textbf{72$\times$ RT} & 19$\times$ RT & \textbf{14$\times$ RT} \\
+3s  & 63$\times$ RT & 23$\times$ RT & 14$\times$ RT \\
+7s  & 84$\times$ RT & 25$\times$ RT & 16$\times$ RT \\
+10s & 86$\times$ RT & 24$\times$ RT & 16$\times$ RT \\
+15s & 94$\times$ RT & 24$\times$ RT & 17$\times$ RT \\
+30s & \textbf{96$\times$ RT} & 23$\times$ RT & \textbf{17$\times$ RT} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The M2 Ultra synthesizes 30 seconds of audio in 379 milliseconds. The M1 Mini --- the cheapest Apple Silicon Mac sold --- completes the same workload in 1.96 seconds, 14$\times$ faster than real-time. Every machine at every duration operates far above real-time, sufficient for streaming TTS with headroom for concurrent workloads. These rows use the exact-duration duration-model path (\S\ref{sec:cs1-export}); a deployment shipping the library's padded-package default pays more at the duration stage than these tables show.
+The M2 Ultra synthesizes 30 seconds of audio in 287 milliseconds, and in 272 ms with the flexible generator. The M1 Mini --- the cheapest Apple Silicon Mac sold --- completes the same workload in 1.64 seconds, 17$\times$ faster than real-time. Every machine at every duration operates far above real-time, sufficient for streaming TTS with headroom for concurrent workloads. These rows are the library's shipped default path, padded duration packages included. Against our June 2026 bakeoff, which used the faster exact-duration packages, the three Macs are 1.13--1.32$\times$ faster at every bucket; the OS also changed between the two runs, so we do not attribute the whole gain to the pipeline.
 
 \subsection{vs MLX}\label{sec:cs1-mlx}
 
@@ -404,78 +404,78 @@ Same machines, same frozen inputs, same voice, same timing boundary, median of w
 \begin{figure}[H]
 \centering
 \IfFileExists{figures/fig-cs1-latency.pdf}{\includegraphics[width=\linewidth]{fig-cs1-latency}}{\pendingfig{fig-cs1-latency}}
-\caption{Kokoro-82M end-to-end latency, the Surgical pipeline (Config F) vs.\ MLX, warm medians across three Macs and five input buckets (log axis; \S\ref{sec:cs1-mlx}). The Surgical pipeline is faster on every completed cell, by 1.6--2.3$\times$ (annotated), with the gap widest on the newest silicon. The pinned MLX build fails every 3 s input with a broadcast-shape error, so no 3 s comparison exists.}
+\caption{Kokoro-82M end-to-end latency, the Surgical pipeline (Config F) vs.\ MLX, warm medians across three Macs and five input buckets (log axis; \S\ref{sec:cs1-mlx}). The Surgical pipeline is faster on every completed cell, by 1.8--2.4$\times$ (annotated). The pinned MLX build fails every 3 s input with a broadcast-shape error, so no 3 s comparison exists.}
 \label{fig:cs1-latency}
 \end{figure}
 
 \begin{table}[h]
 \centering
 \small
-\caption{Warm median wall time, Configuration F vs MLX; MLX 3 s inputs fail with a broadcast-shape error.}
+\caption{Warm median wall time, Configuration F vs MLX, October 2026; MLX 3 s inputs fail with a broadcast-shape error.}
 \label{tab:cs1-mlx}
 \begin{tabular}{llll}
 \toprule
 Input & M2 Ultra (F vs MLX) & M2 Air & M1 Mini \\
 \midrule
-3s  & 50.6 ms vs \emph{error} & 148.0 ms vs \emph{error} & 233.6 ms vs \emph{error} \\
-7s  & 96.1 vs 223.9 ms --- \textbf{2.3$\times$} & 330.7 vs 685.6 ms --- \textbf{2.1$\times$} & 492.7 vs 824.0 ms --- \textbf{1.7$\times$} \\
-10s & 126.2 vs 288.8 ms --- \textbf{2.3$\times$} & 466.0 vs 835.8 ms --- \textbf{1.8$\times$} & 685.5 vs 1124.3 ms --- \textbf{1.6$\times$} \\
-15s & 185.6 vs 376.3 ms --- \textbf{2.0$\times$} & 693.6 vs 1521.0 ms --- \textbf{2.2$\times$} & 1014.9 vs 1589.5 ms --- \textbf{1.6$\times$} \\
-30s & 379.3 vs 762.7 ms --- \textbf{2.0$\times$} & 1404.8 vs 2600.3 ms --- \textbf{1.9$\times$} & 1959.4 vs 3077.9 ms --- \textbf{1.6$\times$} \\
+3s  & 44.5 ms vs \emph{error} & 123.4 ms vs \emph{error} & 205.3 ms vs \emph{error} \\
+7s  & 80.0 vs 183.8 ms --- \textbf{2.3$\times$} & 273.6 vs 566.0 ms --- \textbf{2.1$\times$} & 410.3 vs 797.4 ms --- \textbf{1.9$\times$} \\
+10s & 111.8 vs 242.7 ms --- \textbf{2.2$\times$} & 397.2 vs 764.5 ms --- \textbf{1.9$\times$} & 589.8 vs 1100.3 ms --- \textbf{1.9$\times$} \\
+15s & 147.6 vs 329.7 ms --- \textbf{2.2$\times$} & 589.1 vs 1073.8 ms --- \textbf{1.8$\times$} & 834.9 vs 1540.0 ms --- \textbf{1.8$\times$} \\
+30s & 286.5 vs 685.3 ms --- \textbf{2.4$\times$} & 1175.5 vs 2150.0 ms --- \textbf{1.8$\times$} & 1635.5 vs 3003.7 ms --- \textbf{1.8$\times$} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The Surgical pipeline is faster on every bucket on every machine, by \textbf{1.6--2.3$\times$}, with the gap widest on the newest silicon. The pinned MLX version fails all 3-second inputs with a broadcast-shape error, so no 3 s comparison is reportable.
+The Surgical pipeline is faster on every bucket on every machine, by \textbf{1.8--2.4$\times$}, with the gap widest on the M2 Ultra (2.2--2.4$\times$) and nearly flat on the M2 Air (1.8--2.1$\times$) and M1 Mini (1.8--1.9$\times$). The pinned MLX version fails all 3-second inputs with a broadcast-shape error, so no 3 s comparison is reportable.
 
-\subsection{vs PyTorch (April 2026 Ledger)}\label{sec:cs1-pytorch}
+\subsection{vs PyTorch}\label{sec:cs1-pytorch}
 
-Warm median wall time, milliseconds, counterbalanced A/D/E/F run (Tables~\ref{tab:cs1-pt-ultra}--\ref{tab:cs1-pt-mini}). The Config F build in this ledger predates the June optimizations; its absolute times are higher than \S\ref{sec:cs1-headline} (e.g. 476 ms vs 379 ms for 30 s on M2 Ultra), so the speedups below are lower bounds for the current pipeline. The April canonical input set had four lengths; the 10 s bucket entered the frozen input set with the June bakeoff, so this ledger has no 10 s row.
+Warm median wall time, milliseconds, counterbalanced A/D/E run with Configuration F from the same session (Tables~\ref{tab:cs1-pt-ultra}--\ref{tab:cs1-pt-mini}). The harness's PyTorch input set has four lengths, so these tables have no 10 s row. ``err'' marks cells where PyTorch MPS raised \code{Output channels > 65536 not supported at the MPS device} (torch 2.5.0) on every iteration.
 
 \begin{table}[h]
 \centering
-\caption{April 2026 counterbalanced PyTorch ledger, M2 Ultra (64 GB).}
+\caption{PyTorch comparison, M2 Ultra (64 GB), October 2026.}
 \label{tab:cs1-pt-ultra}
-\begin{tabular}{lrrrrrr}
+\begin{tabular}{lrrrrrrr}
 \toprule
-Input & A (Python HAR) & D (MPS) & E (CPU) & F (Surgical) & F vs D & F vs E \\
+Input & A (Python HAR) & D (MPS) & E (CPU) & F (Surgical) & F vs A & F vs D & F vs E \\
 \midrule
-3s  & 333 ms & 225 ms  & 409 ms  & \textbf{57 ms}  & 4.0$\times$ & 7.2$\times$ \\
-7s  & 329 ms & 412 ms  & 811 ms  & \textbf{124 ms} & 3.3$\times$ & 6.5$\times$ \\
-15s & 486 ms & 673 ms  & 1467 ms & \textbf{239 ms} & 2.8$\times$ & 6.1$\times$ \\
-30s & 870 ms & 1602 ms & 2714 ms & \textbf{476 ms} & 3.4$\times$ & 5.7$\times$ \\
+3s  & 124 ms & 193 ms & 259 ms  & \textbf{45 ms}  & 2.8$\times$ & 4.3$\times$ & 5.8$\times$ \\
+7s  & 222 ms & 376 ms & 530 ms  & \textbf{80 ms}  & 2.8$\times$ & 4.7$\times$ & 6.6$\times$ \\
+15s & 387 ms & err    & 1010 ms & \textbf{148 ms} & 2.6$\times$ & ---    & 6.8$\times$ \\
+30s & 631 ms & err    & 1921 ms & \textbf{287 ms} & 2.2$\times$ & ---    & 6.7$\times$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{table}[h]
 \centering
-\caption{April 2026 counterbalanced PyTorch ledger, M2 MacBook Air (24 GB).}
+\caption{PyTorch comparison, M2 MacBook Air (24 GB), October 2026. D completed 2 of 5 iterations at 3 s and 7 s.}
 \label{tab:cs1-pt-air}
-\begin{tabular}{lrrrrrr}
+\begin{tabular}{lrrrrrrr}
 \toprule
-Input & A (Python HAR) & D (MPS) & E (CPU) & F (Surgical) & F vs D & F vs E \\
+Input & A (Python HAR) & D (MPS) & E (CPU) & F (Surgical) & F vs A & F vs D & F vs E \\
 \midrule
-3s  & 461 ms  & 739 ms & 723 ms  & \textbf{185 ms}  & 4.0$\times$ & 3.9$\times$ \\
-7s  & 771 ms  & 907 ms & 1839 ms & \textbf{396 ms}  & 2.3$\times$ & 4.6$\times$ \\
-15s & 1896 ms & \emph{OOM}  & 3737 ms & \textbf{1326 ms} & ---    & 2.8$\times$ \\
-30s & 3918 ms & \emph{OOM}  & 7567 ms & \textbf{3021 ms} & ---    & 2.5$\times$ \\
+3s  & 236 ms  & 367 ms  & 615 ms  & \textbf{123 ms}  & 1.9$\times$ & 3.0$\times$ & 5.0$\times$ \\
+7s  & 616 ms  & 1765 ms & 1460 ms & \textbf{274 ms}  & 2.3$\times$ & 6.5$\times$ & 5.3$\times$ \\
+15s & 945 ms  & err     & 3023 ms & \textbf{589 ms}  & 1.6$\times$ & ---    & 5.1$\times$ \\
+30s & 3381 ms & err     & 6114 ms & \textbf{1176 ms} & 2.9$\times$ & ---    & 5.2$\times$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{table}[h]
 \centering
-\caption{April 2026 counterbalanced PyTorch ledger, M1 Mac Mini (16 GB).}
+\caption{PyTorch comparison, M1 Mac Mini (16 GB), October 2026.}
 \label{tab:cs1-pt-mini}
-\begin{tabular}{lrrrrrr}
+\begin{tabular}{lrrrrrrr}
 \toprule
-Input & A (Python HAR) & D (MPS) & E (CPU) & F (Surgical) & F vs D & F vs E \\
+Input & A (Python HAR) & D (MPS) & E (CPU) & F (Surgical) & F vs A & F vs D & F vs E \\
 \midrule
-3s  & 238 ms  & 492 ms  & 894 ms  & \textbf{157 ms}  & 3.1$\times$ & 5.7$\times$ \\
-7s  & 577 ms  & 1038 ms & 2233 ms & \textbf{511 ms}  & 2.0$\times$ & 4.4$\times$ \\
-15s & 837 ms  & 1958 ms & 4458 ms & \textbf{692 ms}  & 2.8$\times$ & 6.4$\times$ \\
-30s & 1637 ms & 4167 ms & 8934 ms & \textbf{1229 ms} & 3.4$\times$ & 7.3$\times$ \\
+3s  & 281 ms  & 553 ms  & 654 ms  & \textbf{205 ms}  & 1.4$\times$ & 2.7$\times$ & 3.2$\times$ \\
+7s  & 543 ms  & 1815 ms & 1632 ms & \textbf{410 ms}  & 1.3$\times$ & 4.4$\times$ & 4.0$\times$ \\
+15s & 1058 ms & err     & 3235 ms & \textbf{835 ms}  & 1.3$\times$ & ---    & 3.9$\times$ \\
+30s & 2066 ms & err     & 6487 ms & \textbf{1636 ms} & 1.3$\times$ & ---    & 4.0$\times$ \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -483,105 +483,108 @@ Input & A (Python HAR) & D (MPS) & E (CPU) & F (Surgical) & F vs D & F vs E \\
 Config F wins every cell where the competitor completes. Three observations:
 
 \begin{enumerate}[leftmargin=*]
-\item \textbf{vs MPS: 2.0--4.0$\times$ where MPS finishes at all.} PyTorch MPS exhausts memory on the 15 s and 30 s inputs on the 24 GB Air, even running solo --- the MPS allocation pool plus model state crosses the machine's limit on longer buckets. The ``just use the GPU'' default is not merely slower; on consumer memory configurations it does not complete the workload.
+\item \textbf{vs MPS: 2.7--6.5$\times$ where MPS finishes at all.} PyTorch MPS no longer completes the 15 s and 30 s inputs on any of the three machines: an op exceeds the MPS backend's 65,536 output-channel limit, and \code{PYTORCH\_ENABLE\_MPS\_FALLBACK=1} (set for every run) does not route it to the CPU. (In our April 2026 run on older OS releases it ran out of memory on the 24 GB Air.) The ``just use the GPU'' default is not merely slower; it does not complete the longer workloads. The 6.5$\times$ Air cell rests on two completed iterations.
 
-\item \textbf{vs CPU: 2.5--7.3$\times$}, with the largest gains on the M1 Mini's long inputs --- exactly where an interactive application is most likely to be unusable on the CPU path.
+\item \textbf{vs CPU: 3.2--6.8$\times$}, largest on the M2 Ultra and roughly flat across lengths on each machine.
 
-\item \textbf{vs the Python+Core ML hybrid (A): 1.1--5.9$\times$.} The narrower margin on some cells reflects that Config A already runs the vocoder through Core ML; Config F's advantage there comes from replacing the Python prefix with Core ML + Swift and from eliminating host-side materialization costs. The June optimizations (not in this ledger) widened this margin further.
+\item \textbf{vs the Python+Core ML hybrid (A): 1.3--2.9$\times$.} The narrowest margin is on the M1 Mini, where Config A's Core ML vocoder dominates both pipelines' wall time; Config F's advantage comes from replacing the Python prefix with Core ML + Swift and from eliminating host-side materialization costs.
 \end{enumerate}
-
-The M2 Air Config F rows in this ledger include a since-resolved $\approx$2$\times$ regression in the vocoder stage relative to both earlier and later runs on that machine (compare 3021 ms here with 1405 ms in \S\ref{sec:cs1-headline} for the same 30 s input); we report the ledger as collected.
 
 \subsection{vs Other Core ML Ports}\label{sec:cs1-coreml-ports}
 
-The June bakeoff also benchmarked two independent Core ML Kokoro implementations on the same machines and inputs. Both comparisons require boundary caveats, which we state because they change the interpretation:
+The same run also benchmarked two independent Core ML Kokoro implementations on the same machines and inputs. Both comparisons require boundary caveats, which we state because they change the interpretation:
 
 \begin{itemize}[leftmargin=*]
-\item \textbf{laishere/kokoro-coreml} (pinned \code{484907d}) runs a seven-package Core ML chain. Its public benchmark boundary \emph{excludes} G2P and feed preparation, timing only the Core ML chain --- narrower than our token-IDs-to-PCM boundary. Against it, the Surgical pipeline is 2.3--5.0$\times$ faster on every M2 Ultra bucket and wins the 30 s bucket on all three machines, but laishere's chain-only numbers remain 1.1--1.3$\times$ faster on the M1 Mini's short and medium buckets (and roughly tied, within $\pm$5\%, on the M2 Air below 30 s). We treat this as the most credible remaining performance frontier on low-end hardware, not as a closed question.
+\item \textbf{laishere/kokoro-coreml} (pinned \code{484907d}) runs a seven-package Core ML chain. Its public benchmark boundary \emph{excludes} G2P and feed preparation, timing only the Core ML chain --- narrower than our token-IDs-to-PCM boundary. On the M2 Ultra its chain-only times are 88 / 163 / 211 / 295 / 532 ms across the five buckets, and the Surgical pipeline is 1.9--2.0$\times$ faster on every bucket. On macOS 27.0.1 its converter aborts with the same MPSGraph assertion that disables our flexible generator (\S\ref{sec:cs1-setup}), so it has no M2 Air or M1 Mini rows. In our June 2026 run on macOS 15.7.7, its chain-only numbers were 1.1--1.3$\times$ faster than ours on the M1 Mini's short and medium buckets; that comparison cannot currently be repeated.
 
-\item \textbf{soniqo/speech-swift} (pinned \code{0d09a2e}) emits a fixed $\approx$5.0 s audio artifact for every long-bucket input, so its long-bucket timings are not full-duration synthesis and are not comparable. On the only fully comparable cell (3 s), the Surgical pipeline is 1.4$\times$ faster on M2 Ultra and 5.7--7.4$\times$ faster on the Air and Mini.
+\item \textbf{soniqo/speech-swift} (pinned \code{0d09a2e}) still emits a fixed $\approx$5.0 s audio artifact for every input of 7 s or longer, so its long-bucket timings are not full-duration synthesis and are not comparable. On the only comparable cell (3 s), the Surgical pipeline is 1.6$\times$ faster on the M2 Ultra (measured in a loaded session, against Configuration F from the same session; the overnight soniqo run failed), 2.0$\times$ on the M2 Air, and 1.8$\times$ on the M1 Mini.
 \end{itemize}
 
 \subsection{On iPhone}\label{sec:cs1-iphone}
 
-The same \code{.mlpackage} files deploy to iOS unchanged. Release-build warm medians (2 warmups discarded, 5 warm calls, median; iOS 26.5; staged compute policy) are given in Table~\ref{tab:iphone}:
+The same \code{.mlpackage} files deploy to iOS unchanged. On iOS the library ships the flexible-length generator, which runs correctly on iOS 27.0.1, together with the padded duration packages and the staged compute policy. Release-build results on iOS 27.0.1, October 2026, are given in Table~\ref{tab:iphone}. Each cell is one app launch running one arm on one bucket: 3 preflight calls discarded, 1 cold call, and the median of 10 warm calls. The phone cooled for at least 10 minutes before every launch, and arm order alternated by bucket.
 
 \begin{table}[h]
 \centering
-\caption{iPhone release-build warm medians, staged compute policy, iOS 26.5.}
+\small
+\caption{iPhone Release-build warm medians, iOS 27.0.1, October 2026: Configuration F (staged policy, flexible generator) vs the MLX Swift port (kokoro-ios 1.0.8). $^\dagger$MLX 15 s on the A17 Pro started at thermal state \emph{fair} and ended \emph{serious}, so its time is an upper bound. $^\ddagger$Killed by the iOS memory watchdog (jetsam).}
 \label{tab:iphone}
-\begin{tabular}{lrr}
+\begin{tabular}{lrrrrrr}
 \toprule
-Input & iPhone 15 Pro Max (A17 Pro) & iPhone 12 Pro (A14) \\
+ & \multicolumn{3}{c}{iPhone 15 Pro Max (A17 Pro)} & \multicolumn{3}{c}{iPhone 12 Pro (A14)} \\
+Input & F & MLX & F vs MLX & F & MLX & F vs MLX \\
 \midrule
-3s  & 426 ms (6.6$\times$ RT)  & 864 ms (3.2$\times$ RT)  \\
-7s  & 865 ms (7.8$\times$ RT)  & 1625 ms (4.1$\times$ RT) \\
-15s & 1860 ms (7.5$\times$ RT) & 3727 ms (3.7$\times$ RT) \\
-30s & 3742 ms (7.3$\times$ RT) & 8551 ms (3.2$\times$ RT) \\
+3s  & \textbf{195 ms}  & 543 ms             & 2.8$\times$ & \textbf{421 ms}  & 926 ms            & 2.2$\times$ \\
+7s  & \textbf{417 ms}  & 1198 ms            & 2.9$\times$ & \textbf{917 ms}  & 2050 ms           & 2.2$\times$ \\
+10s & \textbf{609 ms}  & 1634 ms            & 2.7$\times$ & \textbf{1391 ms} & 2809 ms           & 2.0$\times$ \\
+15s & \textbf{881 ms}  & 2802 ms$^\dagger$  & 3.2$\times$ & \textbf{1984 ms} & 4062 ms           & 2.0$\times$ \\
+30s & \textbf{1721 ms} & 4508 ms            & 2.6$\times$ & \textbf{4017 ms} & OOM$^\ddagger$    & ---         \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Against the MLX Swift Kokoro port (mlalma/kokoro-ios~\citep{kokoro-ios} 1.0.8 --- the Python mlx-audio above does not run on iOS), a Release-build, thermally controlled arm-vs-arm comparison on the A17 Pro (July 2026; each arm run alone after an identical $\approx$14-minute cooldown; 2 warmups discarded, 5 warm calls, medians) shows the Surgical pipeline winning every bucket, by \textbf{1.25--1.44$\times$}. Two methodological findings from this rerun are worth recording. First, an earlier Debug-build comparison had assumed the Debug tax was symmetric across arms; it is not --- the MLX arm gained 1.4--1.6$\times$ from Release compilation while the Core ML arm's wall time barely moved, so Debug-build ratios are not trustworthy even directionally, and the comparison had to be re-collected. Second, on a fanless phone the run \emph{order} is a thermal treatment: back-to-back arm sweeps penalize whichever arm runs second enough to flip the long buckets (a heat-soaked Core ML arm loses 15 s and 30 s at 0.98$\times$ and 0.84$\times$), which is why the headline protocol thermally matches the arms. The rerun's absolute times sit $\approx$5--9\% above the June table on both arms, consistent with day-to-day variance; the ratios are within-run and unaffected. The kokoro-ios API takes raw text, so its timings include a G2P pass ours excludes; measured in isolation, that pass costs 0.17--1.05 ms per input ($\le$0.03\% of MLX wall time) --- a disclosed asymmetry bounded at $\approx$1 ms, far below every observed margin.
+The Surgical pipeline beats the MLX Swift Kokoro port (mlalma/kokoro-ios~\citep{kokoro-ios} 1.0.8 --- the Python mlx-audio above does not run on iOS) on every bucket on both phones: by \textbf{2.6--3.2$\times$} on the A17 Pro and \textbf{2.0--2.2$\times$} on the A14. The A17 Pro synthesizes 30 s of audio in 1.72 s (15.9$\times$ real time) and the A14 in 4.02 s (6.8$\times$). Both phones run Configuration F about twice as fast as our July 2026 measurement on iOS 26.5 (A17 Pro 30 s: 3742 ms then, 1721 ms now), which used the fixed-bucket generator; the MLX arm moved far less, so the margin widened from 1.25--1.44$\times$ to 2.6--3.2$\times$. OS and pipeline changed together, so we do not attribute the gain to either alone.
 
-On the 4 GB iPhone 12 Pro (June data, Debug builds on both arms) the result is split: the Surgical pipeline wins 3 s, MLX wins the middle buckets ($\approx$1.2$\times$), and MLX cannot complete the 30 s input at all --- the iOS memory watchdog (jetsam) kills it, reproduced twice, while the Surgical pipeline synthesizes 30 s in 8.6 s on the same phone. Given the Debug-tax asymmetry above, the A14 latency ratios should be treated as indicative only --- if anything, Release builds would widen MLX's middle-bucket advantage there. The memory result is build-independent.
+Two methodological findings from the July rerun still govern the protocol. First, Debug builds are not usable for cross-framework ratios: the MLX arm gained 1.4--1.6$\times$ from Release compilation while the Core ML arm barely moved. Second, on a fanless phone the run \emph{order} is a thermal treatment, so each arm runs alone after a cooldown and the October run records thermal state on every call. The kokoro-ios API takes raw text, so its timings include a G2P pass ours excludes; measured in isolation, that pass costs 0.17--1.05 ms per input --- a disclosed asymmetry far below every observed margin.
 
-Two iPhone-specific findings: the \code{.all} compute policy hard-fails on both phones (Core ML error $-$9 at the duration stage), so iOS \emph{requires} the explicit staged policy that the Mac pipeline also ships; and bounded memory is a first-class constraint on phones --- fixed-bucket Core ML synthesis ran inside the 4 GB jetsam budget where the GPU framework did not.
+On the 4 GB iPhone 12 Pro, MLX still cannot complete the 30 s input: the iOS memory watchdog kills it while loading weights, while the Surgical pipeline synthesizes the same input in 4.0 s. Bounded memory is a first-class constraint on phones --- fixed-bucket and flexible Core ML synthesis both ran inside the 4 GB jetsam budget where the GPU framework did not.
+
+The \code{.all} compute policy, which hard-failed on both phones on iOS 26.5 (Core ML error $-$9 at the duration stage), now runs the 3 s input on both phones on iOS 27.0.1 (200 ms on the A17 Pro, 412 ms on the A14). The library still ships the explicit staged policy, which the benchmarks above use.
 
 \subsection{Stage-Level Breakdown}\label{sec:cs1-stages}
 
-Per-stage warm medians on M2 Ultra (April ledger, Config F) are given in Table~\ref{tab:cs1-stages}:
+Per-stage times for Configuration F, from the last warm call of each input in the October 2026 run, are given in Table~\ref{tab:cs1-stages}. ``Generator'' is the Core ML total minus the three other model calls. hn-nsf runs on a CPU thread concurrently with DecoderPre, so its time overlaps DecoderPre's.
 
 \begin{table}[h]
 \centering
-\caption{Per-stage warm medians on M2 Ultra (April ledger, Configuration F).}
+\caption{Per-stage times, Configuration F with the fixed-bucket generator, last warm call per input, October 2026 (ms).}
 \label{tab:cs1-stages}
-\begin{tabular}{lrrrrrrr}
+\begin{tabular}{llrrrrrr}
 \toprule
-Input & Duration & F0Ntrain & DecoderPre & Alignment & hn-nsf & Trim & Core ML total \\
+Machine & Input & Duration & F0Ntrain & DecoderPre & hn-nsf & Generator & Wall \\
 \midrule
-3s  & 10.0 ms & 4.4 ms  & 2.8 ms  & 0.1 ms & 9.3 ms  & 0.2 ms & 28.5 ms  \\
-7s  & 14.3 ms & 18.9 ms & 8.3 ms  & 0.3 ms & 23.1 ms & 0.4 ms & 56.6 ms  \\
-15s & 28.8 ms & 38.5 ms & 9.7 ms  & 0.7 ms & 46.9 ms & 0.7 ms & 111.6 ms \\
-30s & 52.1 ms & 76.8 ms & 16.6 ms & 1.4 ms & 99.6 ms & 1.6 ms & 224.7 ms \\
+M2 Ultra & 3s  & 11.4 & 5.5  & 4.5  & 4.3  & 2.2    & 45.5 \\
+M2 Ultra & 30s & 44.9 & 19.4 & 51.9 & 40.0 & 52.1   & 288.7 \\
+M2 Air   & 3s  & 12.8 & 4.7  & 4.0  & 5.4  & 79.4   & 124.3 \\
+M2 Air   & 30s & 70.3 & 27.3 & 32.7 & 48.7 & 888.5  & 1168.4 \\
+M1 Mini  & 3s  & 40.0 & 10.5 & 5.2  & 9.2  & 86.9   & 204.0 \\
+M1 Mini  & 30s & 174.3 & 51.0 & 45.7 & 48.3 & 1083.0 & 1639.1 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-``Core ML total'' sums all four model predict calls; the GeneratorFromHar residual is therefore $\approx$11 ms at 3 s and $\approx$79 ms at 30 s. Three observations:
+Three observations:
 
 \begin{enumerate}[leftmargin=*]
-\item \textbf{The pipeline is well-balanced.} No single stage dominates. The three largest line items at 30 s --- hn-nsf (99.6 ms), generator ($\approx$79 ms), and F0Ntrain (76.8 ms) --- are within 30\% of each other.
+\item \textbf{On the M2 Ultra the pipeline is balanced; on base chips the generator dominates.} No stage on the M2 Ultra exceeds 53 ms at 30 s. On the M2 Air and M1 Mini the fixed-bucket GPU generator is 64--76\% of wall time, consistent with their 10- and 8-core GPUs against the Ultra's 76. The next optimization target on consumer hardware is the generator, not the stages around it.
 
-\item \textbf{The largest single stage runs on the CPU.} hn-nsf cannot be effectively placed on Core ML (export attempts yielded correlation $\approx$ 0.00 due to SineGen's cumulative phase sensitivity), so the methodology routes it to optimized Swift DSP --- which, after the \S\ref{sec:dsp} optimization pass, costs less than the Core ML stages it sits between.
+\item \textbf{The largest CPU stage costs less than the Core ML stages it sits between.} hn-nsf cannot be effectively placed on Core ML (export attempts yielded correlation $\approx$ 0.00 due to SineGen's cumulative phase sensitivity), so the methodology routes it to optimized Swift DSP. After the \S\ref{sec:dsp} optimization pass and concurrent harmonic generation, it costs 40--49 ms at 30 s and runs alongside DecoderPre.
 
-\item \textbf{The gap between summed stages and end-to-end wall time is host-side work} --- bucket padding, tensor materialization, dispatch --- which is why the methodology treats full-wall-clock as the primary metric (\S\ref{sec:host-cost}). The June optimizations (direct HAR-padding fast path, exact-duration models) attacked exactly this residual.
+\item \textbf{The gap between summed stages and end-to-end wall time is host-side work} --- bucket padding, tensor materialization, dispatch --- which is why the methodology treats full-wall-clock as the primary metric (\S\ref{sec:host-cost}).
 \end{enumerate}
-
-This table predates two current-pipeline changes --- the frame-source phase fast path in hn-nsf and the DecoderPre/hn-nsf concurrency (\S\ref{sec:cs1-procedure}, \S\ref{sec:cs1-swift}) --- so it overstates the serialized hn-nsf cost relative to the shipped code; the \S\ref{sec:cs1-headline} totals include both.
 
 \subsection{Cross-Machine Scaling}\label{sec:cs1-scaling}
 
-Config F wall time relative to M2 Ultra (June bakeoff) is given in Table~\ref{tab:cs1-scaling}:
+Config F wall time relative to M2 Ultra is given in Table~\ref{tab:cs1-scaling}:
 
 \begin{table}[h]
 \centering
-\caption{Configuration F wall time relative to M2 Ultra (June bakeoff).}
+\caption{Configuration F wall time relative to M2 Ultra, October 2026.}
 \label{tab:cs1-scaling}
 \begin{tabular}{lrrr}
 \toprule
 Input & M2 Ultra & M2 Air & M1 Mini \\
 \midrule
-3s  & 1.0$\times$ & 2.9$\times$ & 4.6$\times$ \\
+3s  & 1.0$\times$ & 2.8$\times$ & 4.6$\times$ \\
 7s  & 1.0$\times$ & 3.4$\times$ & 5.1$\times$ \\
-10s & 1.0$\times$ & 3.7$\times$ & 5.4$\times$ \\
-15s & 1.0$\times$ & 3.7$\times$ & 5.5$\times$ \\
-30s & 1.0$\times$ & 3.7$\times$ & 5.2$\times$ \\
+10s & 1.0$\times$ & 3.6$\times$ & 5.3$\times$ \\
+15s & 1.0$\times$ & 4.0$\times$ & 5.7$\times$ \\
+30s & 1.0$\times$ & 4.1$\times$ & 5.7$\times$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Scaling is smooth and roughly duration-independent above the smallest bucket: the Air sits at $\approx$3.5$\times$ the Ultra's wall time and the Mini at $\approx$5.2$\times$, with no collapse on long inputs and per-bucket RTF nearly flat on each machine (\S\ref{sec:cs1-headline}). The load-bearing finding is that the Surgical pipeline remains comfortably real-time on the lowest-specification machine for inputs up to 30 seconds.
+The gap widens with input length: at 3 s fixed per-call costs dominate on every machine, while at 30 s the generator's GPU work dominates on the base chips (\S\ref{sec:cs1-stages}). Per-bucket RTF is still nearly flat on each machine (\S\ref{sec:cs1-headline}). The load-bearing finding is that the Surgical pipeline remains comfortably real-time on the lowest-specification machine for inputs up to 30 seconds.
 
 \subsection{Control: A Valid Monolithic Core ML Export Does Not Exist}\label{sec:cs1-monolith}
 
@@ -777,7 +780,7 @@ An earlier draft of this work assumed the Dense-Static stages would run on the A
 \begin{itemize}[leftmargin=*]
 \item \textbf{The vocoder categorically exceeds ANE tensor limits.} GeneratorFromHar's harmonic input has a last-axis extent of 28,801--288,001 elements across the buckets and its waveform output 72,000--720,000 --- far beyond the $\approx$16,384 per-axis limit documented by the community and confirmed by our own compiler errors (\code{Tensor width goes beyond limit supported (16390 $>$ 16384)}).
 
-\item \textbf{Forcing it fails loudly on every machine; \code{.all} fails silently.} Loading the generator with \code{.cpuAndNeuralEngine} fails ANE compilation (\code{MILCompilerForANE ... ANECCompile() FAILED}) on every Mac tested, and the fallback execution runs $\approx$54$\times$ slower than CPU+GPU ($\approx$1517 ms vs $\approx$28 ms on M2 Ultra, 3 s bucket --- an isolated single-model \code{predict()} benchmark used for this placement ablation, distinct from the $\approx$11 ms figure in \S\ref{sec:cs1-stages}, which is the generator's marginal share of full end-to-end wall time obtained by subtracting the other three models' costs from the observed pipeline total, not a second measurement of the same call). Under \code{.all}, macOS silently reroutes the rejected subgraph --- the model ``works'' and the developer learns nothing. iOS is stricter: \code{.all} hard-fails at predict time on both test iPhones.
+\item \textbf{Forcing it fails loudly on every machine; \code{.all} fails silently.} Loading the generator with \code{.cpuAndNeuralEngine} fails ANE compilation (\code{MILCompilerForANE ... ANECCompile() FAILED}) on every Mac tested, and the fallback execution runs $\approx$54$\times$ slower than CPU+GPU ($\approx$1517 ms vs $\approx$28 ms on M2 Ultra, 3 s bucket --- an isolated single-model \code{predict()} benchmark used for this placement ablation, distinct from the $\approx$2 ms figure in \S\ref{sec:cs1-stages}, which is the generator's marginal share of full end-to-end wall time obtained by subtracting the other three models' costs from the observed pipeline total, not a second measurement of the same call). Under \code{.all}, macOS silently reroutes the rejected subgraph --- the model ``works'' and the developer learns nothing. iOS was stricter: on iOS 26.5, \code{.all} hard-failed at predict time on both test iPhones (on iOS 27.0.1 it runs; \S\ref{sec:cs1-iphone}).
 
 \item \textbf{The shipped policy is therefore explicit and staged}: DecoderPre on \code{.cpuAndNeuralEngine}; Duration, F0Ntrain, and GeneratorFromHar on \code{.cpuAndGPU}. The same policy runs on Mac and iPhone, which makes the cross-device numbers policy-matched.
 
@@ -803,7 +806,7 @@ Surgical Inference required substantial engineering: per-bucket Core ML exports 
 \begin{itemize}[leftmargin=*]
 \item \textbf{The workload is compute-bound and parallelizable.} Dense convolutional vocoders, image denoisers, and speech encoders fit. Memory-bandwidth-bound autoregressive transformers do not.
 \item \textbf{The pipeline has distinct stages.} A single undifferentiated block offers fewer decomposition opportunities. Models with encoders, decoders, samplers, DSP, token logic, or post-processors are better candidates.
-\item \textbf{Target hardware spans a range of devices.} The advantage is decisive on constrained hardware: MPS OOMs on a 24 GB laptop, and MLX is jetsam-killed on a 4 GB phone, where the bucketed Core ML pipeline completes.
+\item \textbf{Target hardware spans a range of devices.} The advantage is decisive on constrained hardware: PyTorch MPS fails the 15 s and 30 s inputs on every Mac tested, and MLX is jetsam-killed on a 4 GB phone, where the Core ML pipeline completes.
 \item \textbf{Real-time or interactive constraints matter.} For offline batch synthesis on a workstation, PyTorch MPS may be sufficient. For an app that must synthesize speech while rendering UI or running an assistant model, freeing GPU time matters. Case Study 2 is the limiting case: under a hard streaming deadline, the methodology's per-stage placement and host-owned glue are not an optimization but the only viable shape.
 \end{itemize}
 
@@ -835,11 +838,13 @@ The empirical claims of this paper now cover two structurally different generati
 
 \textbf{No concurrent workload benchmark.} We have not yet measured synthesis while a local LLM runs on the GPU. The paper's GPU-headroom argument follows from shorter wall time, staged placement, partial CPU/ANE execution, and Case Study 2's zero-GPU-impact traces, but it needs a direct co-scheduling benchmark before becoming a throughput claim.
 
-\textbf{MPS fallback overhead in Config D.} Config D uses \code{PYTORCH\_ENABLE\_MPS\_FALLBACK=1}, the realistic developer default, so its timings include CPU fallback costs for unsupported ops. The MLX comparison (\S\ref{sec:cs1-mlx}) partially addresses this --- MLX is a fallback-free Metal path and the Surgical pipeline still wins by 1.6--2.3$\times$ --- but a fallback-free MPS variant was not benchmarked.
+\textbf{MPS fallback overhead in Config D.} Config D uses \code{PYTORCH\_ENABLE\_MPS\_FALLBACK=1}, the realistic developer default, so its timings include CPU fallback costs for unsupported ops. The MLX comparison (\S\ref{sec:cs1-mlx}) partially addresses this --- MLX is a fallback-free Metal path and the Surgical pipeline still wins by 1.8--2.4$\times$ --- but a fallback-free MPS variant was not benchmarked.
 
-\textbf{Two-vintage results.} The PyTorch ledger (April) and the MLX/external bakeoff (June) used different builds of Config F; the April speedups are conservative for the current pipeline but are not contemporaneous with \S\ref{sec:cs1-headline}. The April M2 Air rows additionally contain a since-resolved vocoder regression, disclosed in \S\ref{sec:cs1-pytorch}.
+\textbf{Mixed OS and a mild-load laptop.} Each Mac's results come from one session, but not one OS: the M2 Ultra ran macOS 26.7.1 and the M2 Air and M1 Mini ran macOS 27.0.1. The M2 Air never cleared the quiet-host gate (load 2.2--2.9), so its rows are mild upper bounds (\S\ref{sec:cs1-setup}).
 
-\textbf{Remaining frontier on low-end hardware.} laishere's chain-only Core ML numbers remain faster than our full-pipeline numbers on M1 Mini short/medium buckets (\S\ref{sec:cs1-coreml-ports}). Graph-surface replication experiments (\S\ref{sec:disc-ane}) did not close this gap; the difference likely lies in runtime placement, weight decompression, or boundary structure, and is unresolved.
+\textbf{An OS regression shapes the shipped configuration.} The library's flexible-length generator, which avoids paying for bucket padding, aborts the process on macOS 27.0.1 inside MPSGraph. The runtime therefore uses the fixed-bucket generators on OS 27, and the main tables use them on every Mac for comparability.
+
+\textbf{Remaining frontier on low-end hardware.} In June 2026, laishere's chain-only Core ML numbers were faster than our full-pipeline numbers on the M1 Mini's short and medium buckets. That comparison cannot be repeated on macOS 27.0.1, where laishere's converter fails (\S\ref{sec:cs1-coreml-ports}). On the M2 Ultra the Surgical pipeline is now 1.9--2.0$\times$ faster. On base chips our generator stage dominates wall time (\S\ref{sec:cs1-stages}), and that is where any remaining gap would be.
 
 \textbf{Audio quality evaluation is automated, not human --- and it caught real defects that per-stage parity certified as correct.} To move beyond informal listening checks, we ran a structured perceptual evaluation of Case Study 1's shipped pipeline: the PyTorch eager reference (float32, CPU) versus the Swift + Core ML pipeline under its shipped staged compute policy, on the four frozen benchmark inputs (2.8--27.4 s), judged by a multimodal audio model (Gemini) in blind paired lineups with a known-bad control and repeat-vote agreement, alongside the objective waveform gate. The initial run passed the short and medium buckets cleanly --- the judge rated the Core ML output ``perceptually indistinguishable'' from the reference while unambiguously rejecting a speech-shaped static control that the objective waveform gate cannot catch --- and failed both long buckets: 3/3 votes on ``unnatural silent gaps'' at 15 s, and 2/2 votes on ``background static and hiss'' at 30 s, backed by signal analysis (phrase pauses measured 40--110 ms long; 1--9 kHz energy at 0.35--0.48$\times$ of the gain-matched reference). Stage-boundary tensor bisection traced both to implementation defects invisible to per-stage matched-input correlation: a native post-process that silenced punctuation-adjacent whitespace spans carrying real speech ($-$11 to $-$22 dBFS word onsets and phrase-final decays), and an export-time inverse-STFT substitution that scaled every interior frequency bin of the one-sided spectrum at half amplitude --- a defect present in \emph{every} bucket and every compute policy, which the judge only flagged where exposure was longest. A third, compounding defect surfaced during root-causing rather than from the perceptual gate directly: the Swift harmonic-source noise generator's xorshift64 RNG had an absorbing zero state, so the fixed seed used for every evaluated clip produced a degenerate DC-and-Nyquist-only ``noise'' signal instead of broadband Gaussian noise, muting the harmonic source across the board and compounding the iSTFT amplitude bug specifically at the seed used for every reported clip. After fixing all three (suppression narrowed to punctuation tokens; corrected one-sided iSTFT weights re-exported, matching the reference generator to $5\times10^{-7}$ max abs; the RNG reseeded via SplitMix64 scrambling so no seed reaches the absorbing state), all four inputs pass the blind evaluation (15 s 2/2, 30 s 2/2) and the control is still rejected. This is an automated model-judged evaluation, not a human MOS study: it establishes reproducible end-to-end perceptual parity on the frozen inputs and demonstrated the discriminative power to catch three shipped defects, but it does not calibrate absolute quality scores. Commands, verdicts, signal analyses, and the root-cause chain are recorded in the repository (Appendix~\ref{app:artifacts}). Case Study 2 reports token-level parity, embedding-space adherence and stereo-correlation metrics against the MLX reference, and blind automated listening gates with known-bad controls --- also short of a formal MOS study, and its adherence scores sit below the upstream runtime-CFG reference because the on-device pipeline bakes guidance at export time.
 
@@ -865,13 +870,17 @@ The empirical claims of this paper now cover two structurally different generati
 
 \section{Conclusion}\label{sec:conclusion}
 
-We presented Surgical Inference, a methodology for decomposing generative models into smaller neural submodels and native stages that can be scheduled across a heterogeneous SoC, and evaluated it on two structurally opposite workloads. By classifying stages into three computational motifs --- Sequential-Dynamic, Data-Dependent Logic, and Dense-Static --- matching each to candidate hardware, and resolving final placement with per-stage measurement, we produced a Kokoro-82M pipeline that is 1.6--2.3$\times$ faster than MLX, 2.0--4.0$\times$ faster than PyTorch MPS where MPS completes at all, and 2.5--7.3$\times$ faster than PyTorch CPU, across three Macs spanning the consumer-to-workstation range --- and that ships unchanged to iPhone, where it beats the MLX Swift port on current hardware and completes workloads that exhaust the GPU framework's memory budget.
+We presented Surgical Inference, a methodology for decomposing generative models into smaller neural submodels and native stages that can be scheduled across a heterogeneous SoC, and evaluated it on two structurally opposite workloads. By classifying stages into three computational motifs --- Sequential-Dynamic, Data-Dependent Logic, and Dense-Static --- matching each to candidate hardware, and resolving final placement with per-stage measurement, we produced a Kokoro-82M pipeline that is 1.8--2.4$\times$ faster than MLX, 2.7--6.5$\times$ faster than PyTorch MPS where MPS completes at all, and 3.2--6.8$\times$ faster than PyTorch CPU, across three Macs spanning the consumer-to-workstation range --- and that ships unchanged to iPhone, where it beats the MLX Swift port on current hardware and completes workloads that exhaust the GPU framework's memory budget.
 
 The same procedure carried Magenta RealTime 2 --- a 230M-parameter autoregressive streaming music model whose upstream real-time path requires an M-series Mac GPU --- onto iPhone hardware, and in doing so sharpened the methodology itself. The Sequential-Dynamic motif turned out to be divisible: a streaming transformer is Dense-Static math wrapped in cache bookkeeping, and cutting at that boundary --- caches as inputs, one-token updates as outputs, host-owned mutation --- moved the complete 12-layer stack through an ANE compiler that rejects every stateful variant. Layout proved to govern numerical survival, not just speed: after a channels-first rewrite, the ANE was the only compute unit producing finite FP16 codec output. And weight bandwidth emerged as the invariant that shapes graph boundaries on phones: per-call cost is weight bytes over DRAM bandwidth on every engine, which collapsed a twelve-prediction sampling loop into one in-graph rollout fed by host-supplied noise. Instruments traces and paired power profiles did what policy flags cannot --- proved all-ANE residency with zero app-attributed GPU time and a 56\% cut in CPU instructions against a GPU control. The corrected pipeline runs faster than real time on an iPhone 15 Pro Max; the 10-minute thermal envelope and the A14 budget remain open, and we report them as open.
 
 The methodology argues that the prevailing ``use the GPU'' convention in local inference is suboptimal for compute-bound generative pipelines with distinct stages. It also corrects the inverse oversimplification: the Neural Engine is not a magic substrate that dense graphs simply run on. A single-package Core ML export of the first case study cannot validly exist (\S\ref{sec:cs1-monolith}); the ANE rejected that case study's largest dense stage on geometry, rejected the second's transformer whenever state mutation entered the graph, and was simultaneously the only engine that ran the second's codec correctly. The win survives in both cases because decomposition --- static per-stage graphs, native orchestration, deliberate placement, and validated host glue --- is the active ingredient, with each accelerator contributing where its admission constraints allow.
 
 Across both case studies, the right question for on-device AI is not ``which single accelerator should run this model?'' The better question is: ``what is the smallest set of static neural packages and native kernels that lets the whole chip execute the workload?'' That framing is what makes faster, more efficient, less GPU-monopolizing local inference possible --- for batch synthesis on hardware people already own, and for generative audio that streams in real time from the phone in their pocket.
+
+\section*{Acknowledgments}
+
+Several improvements to the Kokoro pipeline reported here came from outside contributors to the open-source repository. Willem Kokke contributed mask-aware bucketing, which replaced the duration model's unrolled BiLSTM with stock LSTM operations and stopped bucket padding from biasing normalization statistics. He also removed the punctuation-span fade, corrected the generator's harmonic-input geometry and the STFT phase sign at the DC and Nyquist bins, ran the harmonic source concurrently, and contributed the flexible-length generator. Ahmed El Hadidi fixed a Swift error-mapping build failure, and David Bitton fixed the Intel (x86\_64) SDK build. We thank them for their work and their careful measurements.
 
 \bibliographystyle{plainnat}
 \bibliography{refs}
@@ -897,7 +906,7 @@ The implementation artifacts for the first case study are in the open-source \co
 \item Monolithic-export control experiment (\S\ref{sec:cs1-monolith}), protocol and verbatim logs: \code{README/Notes/monolithic-coreml-control-experiment.md}
 \item Structured perceptual evaluation (\S\ref{sec:disc-limitations}), protocol, verdicts, and signal analyses: \code{README/Notes/cs1-audio-quality-evaluation-2026-07-14.md}
 \item Release-build iPhone comparison (\S\ref{sec:cs1-iphone}), thermal protocol and raw results: \code{README/Notes/iphone-release-build-mlx-comparison.md}
-\item Per-cell dispersion verification run (\S\ref{sec:cs1-setup}), protocol and raw data: \code{README/Notes/config-f-dispersion-run-2026-07-14.md}
+\item October 2026 Mac benchmark run (\S\ref{sec:cs1-setup}--\S\ref{sec:cs1-scaling}), protocol, quiet-host log, and result summary: \code{README/Notes/paper-cs1-frozen-rerun-2026-10-20.md} (plan: \code{README/Plans/013-paper-cs1-frozen-rerun-plan.md})
 \end{itemize}
 \endgroup
 
