@@ -39,7 +39,7 @@
 
 \title{Surgical Inference: Decomposing Generative Models for\\Heterogeneous On-Device SoC Inference}
 \author{Matt Mireles\\Independent Researcher\\\texttt{mattmireles@gmail.com}}
-\date{}
+\date{October 21, 2026}
 
 \begin{document}
 \maketitle
@@ -502,7 +502,7 @@ The same run also benchmarked two independent Core ML Kokoro implementations on 
 
 \subsection{On iPhone}\label{sec:cs1-iphone}
 
-The same \code{.mlpackage} files deploy to iOS unchanged. On iOS the library ships the flexible-length generator, which runs correctly on iOS 27.0.1, together with the padded duration packages and the staged compute policy. Release-build results on iOS 27.0.1, October 2026, are given in Table~\ref{tab:iphone}. Each cell is one app launch running one arm on one bucket: 3 preflight calls discarded, 1 cold call, and the median of 10 warm calls. The phone cooled for at least 10 minutes before every launch, and arm order alternated by bucket.
+The same \code{.mlpackage} files deploy to iOS unchanged. The iPhone runs use the flexible-length generator, which ran correctly on iOS 27.0.1 on both phones, together with the padded duration packages and the staged compute policy. The shipped library currently disables the flexible generator on all OS 27 releases, iOS included, as a precaution against the macOS 27.0.1 abort (\S\ref{sec:cs1-setup}), and falls back to the fixed-bucket generators. Release-build results on iOS 27.0.1, October 2026, are given in Table~\ref{tab:iphone}. Each cell is one app launch running one arm on one bucket: 3 preflight calls discarded, 1 cold call, and the median of 10 warm calls. The phone cooled for at least 10 minutes before every launch, and arm order alternated by bucket.
 
 \begin{table}[h]
 \centering
