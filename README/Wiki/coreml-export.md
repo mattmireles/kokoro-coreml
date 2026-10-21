@@ -22,7 +22,10 @@ Every bucketed package takes a required `mask` input, and the export wrappers
 fail loudly without it. The generator is the one exception: an optional
 `RangeDim` program (`--time-axis range`, one bucket only, GPU, macOS 15) that
 takes the mask at each internal resolution. The generator's `har` input is at
-native length: 60 × x_pre frames + 1.
+native length: 60 × x_pre frames + 1. MPSGraph on macOS 27.0.1 can abort the
+process on that program, so the runtime uses the fixed generators on OS 27, and
+every SDK bundle ships them next to it (HF metadata `b303d712`, 2026-10-20; see
+[`debug-notes.md`](../Notes/debug-notes.md) "Flexible generator aborts on OS 27").
 
 The 2026-09-24 re-export (HF packages `dadebca4`, metadata `5bb7d75d`) passed:
 - parity against masked PyTorch fp32: fixed generators 46 dB, flexible 44 dB,

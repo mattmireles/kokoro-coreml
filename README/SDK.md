@@ -74,10 +74,10 @@ https://huggingface.co/mattmireles/kokoro-coreml/resolve/main/HostedManifest.jso
 Current public starter manifest SHA-256:
 
 ```text
-8d1f6dfa4904a9a1183fb9dcd5a93ed841b22f2315a5e4d7928ef75992dbd5cd
+13c4f51bec6113debe658bcdeaad0a3063ca148c565d06405b61ff01b3431bb1
 ```
 
-Immutable Hugging Face revision: `9183566f294ca3f31a63fd2767cf5848bfebfd50`.
+Immutable Hugging Face revision: `b303d71218a1a372cd5f340f2007a40237df330a`.
 
 ## Build A Resource Bundle
 
@@ -163,8 +163,8 @@ over HTTPS; local HTTP is only for explicit development fixtures.
 import KokoroTTS
 
 let resources = try await KokoroDownloadedModelStore(
-    manifestURL: URL(string: "https://huggingface.co/mattmireles/kokoro-coreml/resolve/9183566f294ca3f31a63fd2767cf5848bfebfd50/HostedManifest.json")!,
-    expectedManifestSHA256: "8d1f6dfa4904a9a1183fb9dcd5a93ed841b22f2315a5e4d7928ef75992dbd5cd",
+    manifestURL: URL(string: "https://huggingface.co/mattmireles/kokoro-coreml/resolve/b303d71218a1a372cd5f340f2007a40237df330a/HostedManifest.json")!,
+    expectedManifestSHA256: "13c4f51bec6113debe658bcdeaad0a3063ca148c565d06405b61ff01b3431bb1",
     cacheDirectory: cacheURL
 ).hydrate()
 
