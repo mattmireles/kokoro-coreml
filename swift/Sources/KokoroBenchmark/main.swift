@@ -200,7 +200,10 @@ class ModelCache: KokoroModelProvider {
             fputs("  Flexible generator present but compute units exclude the GPU; using bucket packages\n", stderr)
             return nil
         }
-        guard PipelineConstants.flexibleGeneratorAllowed() else {
+        let hasAnyBucketGenerator = PipelineConstants.tFramesForBucket.keys.contains {
+            FileManager.default.fileExists(atPath: modelsDir.appendingPathComponent("kokoro_decoder_har_post_\($0)s.mlpackage").path)
+        }
+        guard PipelineConstants.usesFlexibleGenerator(hasFlexibleGenerator: true, hasAnyBucketGenerator: hasAnyBucketGenerator) else {
             fputs("  Flexible generator gated off on OS \(PipelineConstants.flexibleGeneratorBrokenOSMajor)+ (\(PipelineConstants.flexibleGeneratorEnvKey)=1 overrides); using bucket packages\n", stderr)
             return nil
         }

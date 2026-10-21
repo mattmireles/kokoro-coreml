@@ -29,8 +29,9 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
     /// Whether to use the flexible (RangeDim) generator. Then that one
     /// program serves every bucket at the utterance's real length instead of
     /// the bucket's; otherwise the per-bucket generators serve (older
-    /// bundles, and macOS/iOS 27, whose MPSGraph can abort on the flexible
-    /// program, when the bundle ships bucket generators to fall back to).
+    /// bundles, and OS 27 when the bundle ships any bucket generator: macOS
+    /// 27's MPSGraph can abort on the flexible program, and iOS 27 is gated
+    /// too as a precaution).
     private let usesFlexibleGenerator: Bool
 
     /// Sidecar suffix tying reusable `.mlmodelc` output to a source tree hash.
@@ -70,8 +71,11 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         self.compiledModelsDirectory = compiledModelsDirectory
         let durationChoices = KokoroPipeline.discoverDurationChoices(modelsDirectory: modelsDirectory)
             .filter { manifestModelPaths.contains("coreml/\($0.packageURL.lastPathComponent)") }
-        let usesFlexibleGenerator = Self.listsFlexibleGenerator(manifest)
-            && (flexibleGeneratorAllowed || !Self.listsBucketGenerators(manifest))
+        let usesFlexibleGenerator = PipelineConstants.usesFlexibleGenerator(
+            hasFlexibleGenerator: Self.listsFlexibleGenerator(manifest),
+            hasAnyBucketGenerator: Self.listsBucketGenerators(manifest),
+            allowed: flexibleGeneratorAllowed
+        )
         try Self.validateModelSet(
             rootURL: root,
             modelsDirectory: modelsDirectory,
@@ -144,9 +148,11 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         manifest.modelPackages.contains { $0.path == "coreml/\(PipelineConstants.flexibleGeneratorPackage)" }
     }
 
-    /// Whether `manifest` lists a per-bucket generator for every bucket.
+    /// Whether `manifest` lists a per-bucket generator for any bucket. With the
+    /// gate off, a bundle missing one for some bucket then fails validation
+    /// instead of running the flexible generator.
     static func listsBucketGenerators(_ manifest: KokoroRuntimeManifest) -> Bool {
-        manifest.buckets.allSatisfy { bucket in
+        manifest.buckets.contains { bucket in
             manifest.modelPackages.contains { $0.path == "coreml/kokoro_decoder_har_post_\(bucket)s.mlpackage" }
         }
     }

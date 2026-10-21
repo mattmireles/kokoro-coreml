@@ -32,9 +32,11 @@ Where it was seen (all times PT, 2026-10-20):
 | m2-air (M2) | macOS 27.0.1 (26A434) | aborted 17:18, 17:19, 17:19, 18:27 (this session's repro, `--input-key 3s --compute-units staged`); then 0 aborts in 27 flexible runs from 18:32 (same binary, same args, cold and warm e5rt caches, 3s and 30s) |
 | irvine-m1 (M1) | macOS 27.0.1 (26A434) | aborted 17:18, 17:18 |
 | m2-studio (M2 Ultra) | macOS 26.7.1 (25G241) | runs, 5/5 inputs |
-| iPhone 15 Pro Max, iPhone 12 Pro | iOS 27.0.1 (24A446) | 6/6 predicts ran (T = 40, 120, 600, 2400; Xcode-compiled and on-device compiled) |
+| iPhone 15 Pro Max, iPhone 12 Pro | iOS 27.0.1 (24A446) | 6/6 predicts ran (T = 40, 120, 600, 2400; Xcode-compiled and on-device compiled); then the plan 013 benchmark, about 10 fresh app launches per phone across all 5 buckets (14 predicts each), 0 aborts ([`paper-cs1-frozen-rerun-2026-10-20.md`](paper-cs1-frozen-rerun-2026-10-20.md)) |
 
 laishere's independent flexible Core ML model hits the same assertion during conversion, so the bug is Apple's MPSGraph, not this package.
+
+iOS 27 has not reproduced the abort, but the gate covers it as a precaution: the macOS failures clustered in one window and then stopped (0 of 27 later runs), so a clean iOS sample does not prove iOS safe, and the abort cannot be caught. Lift it for iOS only with a fresh-process loop on both phones.
 
 ### Root Cause
 
@@ -47,7 +49,7 @@ Unknown inside MPSGraph: `ExpandDimsOp` reads an invalid axis while it allocates
 - `swift/Sources/KokoroPipeline/KokoroPipeline.swift`: `PipelineConstants.flexibleGeneratorAllowed(osVersion:environment:)` is false on OS major ≥ 27 (`flexibleGeneratorBrokenOSMajor`). `KOKORO_FLEXIBLE_GENERATOR=0|1` forces it either way. `KokoroPipeline.init` uses the flexible generator on a blocked OS only when no bucketed generator package ships, because then it is the only generator there is.
 - `swift/Sources/KokoroBenchmark/main.swift`: the bench checks the gate before compiling the flexible program and uses the bucket packages.
 - `swift-tts/Sources/KokoroTTS/KokoroSDKModelProvider.swift`: same rule (`flexibleGeneratorAllowed` init parameter, `listsBucketGenerators`). The published 2026-09-24 starter bundle ships only the flexible generator, so on OS 27 it keeps its flexible generator. Turning a sometimes-abort into an always-fail would be worse.
-- `scripts/build_sdk_bundle.mjs`, `scripts/download_models.py`: every profile ships the per-bucket generators again, next to the flexible one (starter +38 MB for `kokoro_decoder_har_post_15s`; full +5 generators). HF `dadebca4` already hosts them. Rebuilt bundles were republished on 2026-10-20 as HF metadata commit `b303d712` (see [`hf-release-2026-09-24.md`](hf-release-2026-09-24.md) "Republish 2026-10-20").
+- `scripts/build_sdk_bundle.mjs`, `scripts/download_models.py`: every profile ships the per-bucket generators again, next to the flexible one (starter +38 MB for `kokoro_decoder_har_post_15s`; full +5 generators). HF `dadebca4` already hosts them (as does `fd1e4958`, the bundle builder's default revision). Rebuilt bundles were republished on 2026-10-20 as HF metadata commit `b303d712` (see [`hf-release-2026-09-24.md`](hf-release-2026-09-24.md) "Republish 2026-10-20").
 
 Tests: `FlexibleShapeTests.testFlexibleGeneratorGatedOffOnOS27`, `testFlexibleGeneratorEnvOverrideForcesEitherWay`; `KokoroFacadeTests.testModelProviderUsesBucketGeneratorWhenFlexibleGeneratorGatedOff`, `testModelProviderKeepsFlexibleGeneratorWhenBundleHasNoBucketGenerator`; `tests/test_sdk_download_profile.py::test_every_sdk_profile_downloads_flexible_and_bucket_generators`.
 

@@ -106,6 +106,20 @@ public enum PipelineConstants {
         }
     }
 
+    /// The one rule both runtimes (KokoroPipeline, the SDK provider) use to
+    /// pick a generator. Where the gate blocks the flexible program, any
+    /// bucket generator in the bundle wins: buckets without one become
+    /// unavailable (or fail validation) rather than risk the abort. A bundle
+    /// with no bucket generator at all keeps the flexible one, because it is
+    /// the only generator there is.
+    public static func usesFlexibleGenerator(
+        hasFlexibleGenerator: Bool,
+        hasAnyBucketGenerator: Bool,
+        allowed: Bool = flexibleGeneratorAllowed()
+    ) -> Bool {
+        hasFlexibleGenerator && (allowed || !hasAnyBucketGenerator)
+    }
+
     /// Lengths fed to the flexible generator are rounded up to this granule
     /// (0.5 s: 40 x_pre frames at 80 Hz). The GPU
     /// runtime keeps a compiled executable per distinct input shape (about
@@ -299,12 +313,13 @@ public class KokoroPipeline: KokoroModelProvider {
         // Flexible generator (optional, macOS 15 / iOS 18). On an older OS it
         // is skipped and the bucketed generator packages serve every length.
         // On an OS the gate blocks it is skipped too, unless no bucketed
-        // generator ships: then it is the only generator there is.
+        // generator ships (PipelineConstants.usesFlexibleGenerator).
         var flexibleSupported = false
         if #available(macOS 15.0, iOS 18.0, *) { flexibleSupported = true }
-        let hasBucketGenerator = buckets.contains { exists("kokoro_decoder_har_post_\($0)s.mlpackage") }
-        let usesFlexibleGenerator = flexibleSupported && exists(PipelineConstants.flexibleGeneratorPackage)
-            && (PipelineConstants.flexibleGeneratorAllowed() || !hasBucketGenerator)
+        let usesFlexibleGenerator = flexibleSupported && PipelineConstants.usesFlexibleGenerator(
+            hasFlexibleGenerator: exists(PipelineConstants.flexibleGeneratorPackage),
+            hasAnyBucketGenerator: buckets.contains { exists("kokoro_decoder_har_post_\($0)s.mlpackage") }
+        )
 
         // A bucket is available when every stage it needs has a package.
         let availableBuckets = buckets.filter { sec in

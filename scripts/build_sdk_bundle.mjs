@@ -22,7 +22,8 @@ const sdkDurationTokenSizes = [128];
 const bundleMarkerName = '.kokoro-sdk-bundle';
 // One flexible (RangeDim, GPU) generator serves every bucket at the
 // utterance's real length. Export it traced at 30 s so it covers every
-// profile's largest bucket. MPSGraph on macOS/iOS 27 aborts on it, so every
+// profile's largest bucket. MPSGraph on macOS 27 can abort on it (iOS 27 is
+// gated too, as a precaution), so every
 // profile also ships the per-bucket generators the runtime falls back to
 // there (PipelineConstants.flexibleGeneratorAllowed).
 const flexibleGeneratorPackage = 'kokoro_decoder_har_post_range.mlpackage';

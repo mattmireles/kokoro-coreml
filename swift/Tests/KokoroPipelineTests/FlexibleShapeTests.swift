@@ -23,6 +23,16 @@ final class FlexibleShapeTests: XCTestCase {
         XCTAssertFalse(PipelineConstants.flexibleGeneratorAllowed(osVersion: os27, environment: [key: "yes"]))
     }
 
+    /// Regression: with the gate off, any bucket generator wins over the
+    /// flexible one, so a partial bundle never reaches the aborting program.
+    func testUsesFlexibleGeneratorPrefersAnyBucketGeneratorWhenGatedOff() {
+        let rule = PipelineConstants.usesFlexibleGenerator
+        XCTAssertTrue(rule(true, true, true))
+        XCTAssertFalse(rule(true, true, false))
+        XCTAssertTrue(rule(true, false, false))
+        XCTAssertFalse(rule(false, false, true))
+    }
+
     func testFlexibleTimeAxisRoundsUpToTheGranule() throws {
         XCTAssertEqual(try flexibleTimeAxis(realFrames: 1095, accepted: 40...2400, granule: 40, stage: "generator"), 1120)
         XCTAssertEqual(try flexibleTimeAxis(realFrames: 1120, accepted: 40...2400, granule: 40, stage: "generator"), 1120)

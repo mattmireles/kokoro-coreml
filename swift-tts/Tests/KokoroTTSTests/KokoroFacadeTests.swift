@@ -47,7 +47,7 @@ final class KokoroFacadeTests: XCTestCase {
         XCTAssertEqual(provider.availableBucketSeconds(), [15])
     }
 
-    /// Regression: on macOS/iOS 27 (gate off) a bundle that ships both
+    /// Regression: on OS 27 (gate off; macOS aborts, iOS gated as a precaution) a bundle that ships both
     /// generators serves from the bucket generator, never the flexible one
     /// whose first predict aborts the process inside MPSGraph.
     func testModelProviderUsesBucketGeneratorWhenFlexibleGeneratorGatedOff() throws {

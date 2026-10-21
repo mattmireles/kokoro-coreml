@@ -119,8 +119,8 @@ Five fixed-duration buckets: **3s, 7s, 10s, 15s, 30s**. Pick the smallest bucket
 | `kokoro_duration.mlpackage` | Legacy single duration model (fallback) | CPU/GPU |
 | `kokoro_f0ntrain_t{120,280,400,600,1200}.mlpackage` | Pitch + noise prediction, one per bucket's frame count | GPU |
 | `kokoro_decoder_pre_{3,7,10,15,30}s.mlpackage` | Text features → decoder hidden state | ANE |
-| `kokoro_decoder_har_post_range.mlpackage` | Generator, one flexible-length program for every utterance up to 30 s (macOS 15 / iOS 18 up to 26; MPSGraph on 27.0.1 can abort the process on it, so the runtime skips it on OS 27) | GPU |
-| `kokoro_decoder_har_post_{3,7,10,15,30}s.mlpackage` | Generator, one fixed-shape package per bucket (used on OS 27 and before macOS 15 / iOS 18) | GPU |
+| `kokoro_decoder_har_post_range.mlpackage` | Generator, one flexible-length program for every utterance up to 30 s (macOS 15 / iOS 18 up to 26; MPSGraph on macOS 27.0.1 can abort the process on it, so the runtime skips it on OS 27, iOS included as a precaution, when the bundle ships fixed generators) | GPU |
+| `kokoro_decoder_har_post_{3,7,10,15,30}s.mlpackage` | Generator, one fixed-shape package per bucket (used on OS 27 when the bundle ships them, and before macOS 15 / iOS 18) | GPU |
 | `kokoro_duration_multifunction.mlpackage` | Every duration token size (`t32`...`t512`) as one multifunction package, weights stored once (macOS 15 / iOS 18) | CPU/GPU |
 | `kokoro_f0ntrain_multifunction.mlpackage` | Every F0Ntrain frame count as one multifunction package | GPU |
 | `kokoro_decoder_pre_multifunction.mlpackage` | Every decoder-pre bucket (`bucket_3s`...`bucket_30s`) as one multifunction package | ANE |

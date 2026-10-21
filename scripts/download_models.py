@@ -207,7 +207,8 @@ def _split_int_csv(raw: str | None) -> list[int]:
 
 
 # One flexible (RangeDim, GPU) generator serves every SDK bucket at the real
-# utterance length. MPSGraph on macOS/iOS 27 aborts on it, so every profile
+# utterance length. MPSGraph on macOS 27 can abort on it (iOS 27 is gated too,
+# as a precaution), so every profile
 # also ships the per-bucket generators the runtime falls back to there
 # (PipelineConstants.flexibleGeneratorAllowed). Must match
 # scripts/build_sdk_bundle.mjs requiredPackages().

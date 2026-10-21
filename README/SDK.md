@@ -79,6 +79,11 @@ Current public starter manifest SHA-256:
 
 Immutable Hugging Face revision: `b303d71218a1a372cd5f340f2007a40237df330a`.
 
+Apps pinned to an earlier manifest (the 2026-09-24 starter ships only the
+flexible generator) keep using that generator on macOS 27, where MPSGraph can
+abort the process on it. Re-pin to the revision above to get the fixed-bucket
+fallback.
+
 ## Build A Resource Bundle
 
 Download the model snapshot and build a starter bundle:

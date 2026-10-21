@@ -33,8 +33,8 @@ def test_per_bucket_sdk_profiles_download_only_duration_t128():
 
 def test_every_sdk_profile_downloads_flexible_and_bucket_generators():
     """SDK bundles ship the RangeDim generator plus one generator per bucket:
-    macOS/iOS 27 abort on the RangeDim program, so the runtime falls back to
-    the bucket generators there. Must match scripts/build_sdk_bundle.mjs."""
+    macOS 27 can abort on the RangeDim program (iOS 27 is gated as a
+    precaution), so the runtime falls back to the bucket generators there. Must match scripts/build_sdk_bundle.mjs."""
     module = load_download_models_module()
     builder = (Path(__file__).resolve().parents[1] / "scripts" / "build_sdk_bundle.mjs").read_text()
     assert f"'{module.SDK_FLEXIBLE_GENERATOR}'" in builder
