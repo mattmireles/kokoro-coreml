@@ -119,8 +119,8 @@ Five fixed-duration buckets: **3s, 7s, 10s, 15s, 30s**. Pick the smallest bucket
 | `kokoro_duration.mlpackage` | Legacy single duration model (fallback) | CPU/GPU |
 | `kokoro_f0ntrain_t{120,280,400,600,1200}.mlpackage` | Pitch + noise prediction, one per bucket's frame count | GPU |
 | `kokoro_decoder_pre_{3,7,10,15,30}s.mlpackage` | Text features → decoder hidden state | ANE |
-| `kokoro_decoder_har_post_range.mlpackage` | Generator, one flexible-length program for every utterance up to 30 s (macOS 15 / iOS 18; the SDK uses this one) | GPU |
-| `kokoro_decoder_har_post_{3,7,10,15,30}s.mlpackage` | Generator, one fixed-shape package per bucket (older OS fallback) | GPU |
+| `kokoro_decoder_har_post_range.mlpackage` | Generator, one flexible-length program for every utterance up to 30 s (macOS 15 / iOS 18 up to 26; MPSGraph on 27.0.1 can abort the process on it, so the runtime skips it on OS 27) | GPU |
+| `kokoro_decoder_har_post_{3,7,10,15,30}s.mlpackage` | Generator, one fixed-shape package per bucket (used on OS 27 and before macOS 15 / iOS 18) | GPU |
 | `kokoro_duration_multifunction.mlpackage` | Every duration token size (`t32`...`t512`) as one multifunction package, weights stored once (macOS 15 / iOS 18) | CPU/GPU |
 | `kokoro_f0ntrain_multifunction.mlpackage` | Every F0Ntrain frame count as one multifunction package | GPU |
 | `kokoro_decoder_pre_multifunction.mlpackage` | Every decoder-pre bucket (`bucket_3s`...`bucket_30s`) as one multifunction package | ANE |
@@ -128,7 +128,7 @@ Five fixed-duration buckets: **3s, 7s, 10s, 15s, 30s**. Pick the smallest bucket
 
 The three multifunction packages plus `kokoro_decoder_har_post_range` serve
 every bucket and duration shape in 178 MB instead of ~840 MB of per-bucket
-packages. Load a function with `MLModelConfiguration.functionName`; the GitHub
+packages; the full profile also carries the five fixed generators for OS 27. Load a function with `MLModelConfiguration.functionName`; the GitHub
 repo's `KokoroPipeline` does this automatically when the packages are present.
 
 The alignment matrix and the hn-NSF harmonic source are not models -- they're a few hundred lines of Swift/vDSP in the GitHub repo's `KokoroPipeline`.
@@ -141,11 +141,11 @@ Two hosted manifests list every file to download, with bytes and SHA-256. Every
 
 | Manifest | Profile | Contents |
 |---|---|---|
-| `sdk/full/HostedManifest.json` | full (product) | 3 multifunction packages + flexible generator, 28 English voices, runtime assets, `g2p/` |
-| `HostedManifest.json` | starter | one 15 s bucket, t128 duration, `af_heart`; the `KokoroTTS` SDK contract |
+| `sdk/full/HostedManifest.json` | full (product) | 3 multifunction packages + flexible generator + 5 fixed generators, 28 English voices, runtime assets, `g2p/` |
+| `HostedManifest.json` | starter | one 15 s bucket (flexible + fixed 15 s generator), t128 duration, `af_heart`; the `KokoroTTS` SDK contract |
 
 Current full manifest SHA-256:
-`9af2fd5a5f0cb41a78ff80355b6cba152bbcaed0508165d2d815b1d4c78ce150`.
+`b2bb5abb1aaecdb54a2be5cca9e800726d8c3754968f3940b54d3f2ebe826f28`.
 
 **Pin the commit that published the manifest** -- the commit that last changed
 `HostedManifest.json` / `sdk/full/HostedManifest.json` (and this card) in the
@@ -221,7 +221,7 @@ node scripts/validate_sdk_bundle.mjs /tmp/kokoro-sdk-starter
 Downloaded-resource apps can hydrate the top-level starter
 `HostedManifest.json` with `KokoroDownloadedModelStore`. Pass
 `expectedManifestSHA256` for the exact manifest bytes (current public starter
-digest: `8d1f6dfa4904a9a1183fb9dcd5a93ed841b22f2315a5e4d7928ef75992dbd5cd`;
+digest: `13c4f51bec6113debe658bcdeaad0a3063ca148c565d06405b61ff01b3431bb1`;
 pin the commit that published it, as above).
 Production apps must serve manifests over HTTPS. Bundled-resource apps can use
 `KokoroResourceProvider.directory`, `.appBundle`, or `.packageBundle`, and
