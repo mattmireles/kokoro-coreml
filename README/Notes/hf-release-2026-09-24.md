@@ -164,3 +164,41 @@ Warm end-to-end medians, 10 calls per arm:
     would split it at 128 tokens.
   - The harness skips G2P, chunking and on-device compile.
   - One phone, one session.
+
+## Republish 2026-10-20: fixed generators back in the SDK bundles
+
+Why: on macOS 27.0.1, MPSGraph can abort the process on the flexible
+generator's first predict ([`debug-notes.md`](debug-notes.md) "Flexible
+generator aborts on OS 27"). The runtime now uses the fixed generators on OS 27
+wherever a bundle ships them, so both bundles ship them again. No model package
+changed. Only the metadata commit is new.
+
+1. Artifacts: HF `fd1e4958` (the builder's default `--revision`), which already
+   held `kokoro_decoder_har_post_{3,7,10,15,30}s`. No artifact upload.
+2. `download_models.py` and `build_sdk_bundle.mjs --compile-models 1` for
+   starter and full from the clean tree at `523cac42`, then
+   `validate_sdk_bundle.mjs`: exit 0 for both. Starter: 5 models, 19 files.
+   Full: 9 models, 70 files.
+3. `prepare_hf_sdk_metadata.py --upload --sdk-commit 523cac42…` with the model
+   card from `0965c7fa`. The 48 artifact files were already correct at the
+   parent `9183566f`. Published HF `b303d712`, then hydrate-checked at that
+   commit:
+   - starter `HostedManifest.json`: 19 files, 224,859,452 bytes, SHA-256
+     `13c4f51bec6113debe658bcdeaad0a3063ca148c565d06405b61ff01b3431bb1`;
+   - full `sdk/full/HostedManifest.json`: 70 files, 413,009,947 bytes,
+     SHA-256 `b2bb5abb1aaecdb54a2be5cca9e800726d8c3754968f3940b54d3f2ebe826f28`.
+4. `README/SDK.md` now pins `b303d712` and the new starter digest.
+
+`kokoro-sdk-smoke` checks, "Hello world.", 1.575 s at 24 kHz, exit 0 in every
+run:
+
+- Local starter bundle on m2-studio (macOS 26.7.1), once with
+  `KOKORO_FLEXIBLE_GENERATOR=1` and once with `=0`.
+- Local starter bundle on m2-air (macOS 27.0.1), three runs (the OS 27 path).
+- Downloaded-resource mode from the `b303d712` pin, on m2-studio and on m2-air.
+
+Caveat: the manifests' `sdk_commit` is `523cac42`, which lives on branch
+`claude/eloquent-tereshkova-16568e` and is not on GitHub until that branch is
+pushed or merged. Botnet's artifact list was already bucketed-only and is
+unaffected.
+
