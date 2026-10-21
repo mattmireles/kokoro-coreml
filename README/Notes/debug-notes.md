@@ -6,6 +6,77 @@ Institutional memory for Kokoro PyTorch → Core ML (`mlprogram`) export, synthe
 
 ---
 
+## Issue: Flexible generator aborts on OS 27 — Active
+
+**First spotted:** 2026-10-20
+**Status:** Active (mitigated in the runtime; Apple bug unfiled, draft below)
+
+### Summary
+
+On macOS 27.0.1 (26A434) the flexible (`RangeDim`) generator `kokoro_decoder_har_post_range` (HF `dadebca4`) can abort the whole process inside MPSGraph on its first predict. The abort is intermittent and cannot be caught. The same package hash runs on macOS 26.7.1. The runtime now skips the flexible generator on every OS 27.x wherever per-bucket generators ship, and the SDK bundle builder ships them again.
+
+### Symptom
+
+```text
+Loaded flexible generator: frames 40...2400
+loc(".../kokoro_decoder_har_post_range_<uuid>.mlmodelc/model.mil":479:12): error: 'mps.expand_dims' op invalid axis: 1142143332, axis must be in range - rank <= axis < rank, rank = 4
+.../MPSRuntime.mm:1519: failed assertion `shape for TensorData is not static'
+```
+
+Exit 134. MIL line 479 is the variable-length conv `xt_29` (resblocks_0 convs2_1). Crash stack (identical in all four `.ips` reports on m2-air): `-[MLE5Engine _predictionFromFeatures:…]` → `E5RT::Ops::MpsGraphInferenceOperation::…ExecuteSync` → `-[MPSGraphExecutable encodeToCommandBuffer:…]` → `GPU::BaseReshapeOpHandler<mlir::mps::ExpandDimsOp>::encodeOp` → `GPU::encodeReshape` → `GPURegionRuntime::allocateTensorDataForValue` → `MTLReportFailure`. The axis value is garbage: it reads like uninitialised memory.
+
+Where it was seen (all times PT, 2026-10-20):
+
+| host | OS | result |
+| --- | --- | --- |
+| m2-air (M2) | macOS 27.0.1 (26A434) | aborted 17:18, 17:19, 17:19, 18:27 (this session's repro, `--input-key 3s --compute-units staged`); then 0 aborts in 27 flexible runs from 18:32 (same binary, same args, cold and warm e5rt caches, 3s and 30s) |
+| irvine-m1 (M1) | macOS 27.0.1 (26A434) | aborted 17:18, 17:18 |
+| m2-studio (M2 Ultra) | macOS 26.7.1 (25G241) | runs, 5/5 inputs |
+| iPhone 15 Pro Max, iPhone 12 Pro | iOS 27.0.1 (24A446) | 6/6 predicts ran (T = 40, 120, 600, 2400; Xcode-compiled and on-device compiled) |
+
+laishere's independent flexible Core ML model hits the same assertion during conversion, so the bug is Apple's MPSGraph, not this package.
+
+### Root Cause
+
+Unknown inside MPSGraph: `ExpandDimsOp` reads an invalid axis while it allocates tensor data for a dynamic shape. Cache warmth is ruled out: renamed binaries (a cold `~/Library/Caches/<name>/com.apple.e5rt.e5bundlecache`) ran clean 3/3. What made 17:18–18:27 different from after 18:30 is not known. Botnet's consensus-asr packs and the plan-013 matrix were running on m2-air throughout.
+
+### Fix
+
+**Files:**
+
+- `swift/Sources/KokoroPipeline/KokoroPipeline.swift`: `PipelineConstants.flexibleGeneratorAllowed(osVersion:environment:)` is false on OS major ≥ 27 (`flexibleGeneratorBrokenOSMajor`). `KOKORO_FLEXIBLE_GENERATOR=0|1` forces it either way. `KokoroPipeline.init` uses the flexible generator on a blocked OS only when no bucketed generator package ships, because then it is the only generator there is.
+- `swift/Sources/KokoroBenchmark/main.swift`: the bench checks the gate before compiling the flexible program and uses the bucket packages.
+- `swift-tts/Sources/KokoroTTS/KokoroSDKModelProvider.swift`: same rule (`flexibleGeneratorAllowed` init parameter, `listsBucketGenerators`). The published 2026-09-24 starter bundle ships only the flexible generator, so on OS 27 it keeps its flexible generator. Turning a sometimes-abort into an always-fail would be worse.
+- `scripts/build_sdk_bundle.mjs`, `scripts/download_models.py`: every profile ships the per-bucket generators again, next to the flexible one (starter +38 MB for `kokoro_decoder_har_post_15s`; full +5 generators). HF `dadebca4` already hosts them. The fix reaches SDK users only after the bundles are rebuilt and republished. That step is not done.
+
+Tests: `FlexibleShapeTests.testFlexibleGeneratorGatedOffOnOS27`, `testFlexibleGeneratorEnvOverrideForcesEitherWay`; `KokoroFacadeTests.testModelProviderUsesBucketGeneratorWhenFlexibleGeneratorGatedOff`, `testModelProviderKeepsFlexibleGeneratorWhenBundleHasNoBucketGenerator`; `tests/test_sdk_download_profile.py::test_every_sdk_profile_downloads_flexible_and_bucket_generators`.
+
+### Verification
+
+```bash
+cd swift && swift test          # 65 tests, 0 failures
+cd swift-tts && swift test      # 76 tests, 0 failures
+pytest -q tests                 # 137 passed, 13 skipped
+```
+
+`kokoro-bench --compute-units staged`, inputs 3s/7s/10s/15s/30s: m2-air (macOS 27.0.1) 5/5 `status: ok` on the bucket generators ("Flexible generator gated off on OS 27+"); m2-studio (macOS 26.7.1) 5/5 `status: ok` on the flexible generator.
+
+### Apple Feedback draft (not filed)
+
+**Title:** MPSGraph aborts with "shape for TensorData is not static" on a Core ML flexible-shape (RangeDim) model on macOS 27.0.1
+
+**Area:** Core ML / Metal Performance Shaders Graph. **Builds:** fails on macOS 27.0.1 (26A434), M1 and M2. Works on macOS 26.7.1 (25G241), M2 Ultra. Not reproduced on iOS 27.0.1 (24A446), iPhone 15 Pro Max and iPhone 12 Pro.
+
+**Description:** An `mlprogram` with `RangeDim` inputs (a 1-D conv vocoder; x_pre `[1,512,40…2400]`, har `[1,22,2401…144001]`, masks), loaded with `computeUnits = .cpuAndGPU`, can abort the process on its first `prediction(from:)`. The error is `'mps.expand_dims' op invalid axis: <large garbage value> … rank = 4`, then `MPSRuntime.mm:1519: failed assertion 'shape for TensorData is not static'`. Stack: `GPU::BaseReshapeOpHandler<ExpandDimsOp>::encodeOp` → `GPU::encodeReshape` → `GPURegionRuntime::allocateTensorDataForValue` → `MTLReportFailure`. It is intermittent: six aborts across two Macs between 17:18 and 18:27 PT, then 0 aborts in 27 runs on one of them. The assertion kills the process, so apps cannot fall back. The same package runs on macOS 26.7.1.
+
+**Repro:** compile and load `kokoro_decoder_har_post_range.mlpackage` (attach it; also public on Hugging Face at revision `dadebca4`) with `.cpuAndGPU`. Predict once with T = 120: x_pre `[1,512,120]`, ref_s `[1,256]`, har and mask_x60 `[1,22|1,7201]`, mask `[1,1,120]`, mask_x10 `[1,1,1200]`, all zeros except masks of ones. Repeat in fresh processes. Attach the four `.ips` crash reports from m2-air.
+
+### If This Recurs
+
+To re-verify a new OS release, run the bench with `KOKORO_FLEXIBLE_GENERATOR=1` in a loop of fresh processes (the abort is intermittent; a handful of clean runs proves little). Raise `flexibleGeneratorBrokenOSMajor`, or bound it to a minor version, only after a release survives a long loop on more than one machine. An SDK bundle without `kokoro_decoder_har_post_{N}s` still uses the flexible generator on OS 27; rebuilding the bundle is the fix.
+
+---
+
 ## Issue: Bucket padding cost every utterance the price of its bucket — Resolved
 
 **First spotted:** 2026-09-16

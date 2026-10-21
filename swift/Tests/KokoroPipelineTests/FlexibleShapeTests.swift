@@ -3,6 +3,26 @@ import XCTest
 @testable import KokoroPipeline
 
 final class FlexibleShapeTests: XCTestCase {
+    /// Regression: MPSGraph on macOS 27.0.1 aborts the process on the flexible
+    /// generator's first predict, so OS 27 must fall back to bucket generators.
+    func testFlexibleGeneratorGatedOffOnOS27() {
+        let os26 = OperatingSystemVersion(majorVersion: 26, minorVersion: 7, patchVersion: 1)
+        let os27 = OperatingSystemVersion(majorVersion: 27, minorVersion: 0, patchVersion: 1)
+        let os28 = OperatingSystemVersion(majorVersion: 28, minorVersion: 0, patchVersion: 0)
+        XCTAssertTrue(PipelineConstants.flexibleGeneratorAllowed(osVersion: os26, environment: [:]))
+        XCTAssertFalse(PipelineConstants.flexibleGeneratorAllowed(osVersion: os27, environment: [:]))
+        XCTAssertFalse(PipelineConstants.flexibleGeneratorAllowed(osVersion: os28, environment: [:]))
+    }
+
+    func testFlexibleGeneratorEnvOverrideForcesEitherWay() {
+        let key = PipelineConstants.flexibleGeneratorEnvKey
+        let os26 = OperatingSystemVersion(majorVersion: 26, minorVersion: 7, patchVersion: 1)
+        let os27 = OperatingSystemVersion(majorVersion: 27, minorVersion: 0, patchVersion: 1)
+        XCTAssertTrue(PipelineConstants.flexibleGeneratorAllowed(osVersion: os27, environment: [key: "1"]))
+        XCTAssertFalse(PipelineConstants.flexibleGeneratorAllowed(osVersion: os26, environment: [key: "0"]))
+        XCTAssertFalse(PipelineConstants.flexibleGeneratorAllowed(osVersion: os27, environment: [key: "yes"]))
+    }
+
     func testFlexibleTimeAxisRoundsUpToTheGranule() throws {
         XCTAssertEqual(try flexibleTimeAxis(realFrames: 1095, accepted: 40...2400, granule: 40, stage: "generator"), 1120)
         XCTAssertEqual(try flexibleTimeAxis(realFrames: 1120, accepted: 40...2400, granule: 40, stage: "generator"), 1120)

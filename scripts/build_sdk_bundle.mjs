@@ -21,8 +21,10 @@ const runtimeAssetDir = path.join(repoRoot, 'swift-tts/Sources/KokoroTTS/Resourc
 const sdkDurationTokenSizes = [128];
 const bundleMarkerName = '.kokoro-sdk-bundle';
 // One flexible (RangeDim, GPU) generator serves every bucket at the
-// utterance's real length; the SDK's macOS 15 / iOS 18 floor always has it.
-// Export it traced at 30 s so it covers every profile's largest bucket.
+// utterance's real length. Export it traced at 30 s so it covers every
+// profile's largest bucket. MPSGraph on macOS/iOS 27 aborts on it, so every
+// profile also ships the per-bucket generators the runtime falls back to
+// there (PipelineConstants.flexibleGeneratorAllowed).
 const flexibleGeneratorPackage = 'kokoro_decoder_har_post_range.mlpackage';
 // Minimal asset set for the KokoroG2P Swift library
 // (`KokoroEnglishFrontend(assetsDirectory:)`), mirrored from the Apache-2.0
@@ -37,7 +39,7 @@ const profiles = {
     durationTokenSizes: sdkDurationTokenSizes,
   },
   // Product profile: three multifunction packages (one function per shape,
-  // weights stored once) plus the flexible generator serve every bucket and
+  // weights stored once) plus the generators serve every bucket and
   // duration shape. Loaded by KokoroPipeline (MultifunctionPackages.swift);
   // the KokoroTTS SDK provider only loads per-bucket starter/custom bundles.
   full: {
@@ -49,6 +51,11 @@ const profiles = {
       'kokoro_f0ntrain_multifunction.mlpackage',
       'kokoro_decoder_pre_multifunction.mlpackage',
       flexibleGeneratorPackage,
+      'kokoro_decoder_har_post_3s.mlpackage',
+      'kokoro_decoder_har_post_7s.mlpackage',
+      'kokoro_decoder_har_post_10s.mlpackage',
+      'kokoro_decoder_har_post_15s.mlpackage',
+      'kokoro_decoder_har_post_30s.mlpackage',
     ],
     g2p: true,
   },
@@ -333,6 +340,7 @@ function requiredPackages(config) {
   for (const bucket of config.buckets) {
     names.push(`kokoro_f0ntrain_t${bucket * 40}.mlpackage`);
     names.push(`kokoro_decoder_pre_${bucket}s.mlpackage`);
+    names.push(`kokoro_decoder_har_post_${bucket}s.mlpackage`);
   }
   names.push(flexibleGeneratorPackage);
   return names;

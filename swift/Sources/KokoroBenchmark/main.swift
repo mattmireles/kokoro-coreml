@@ -190,13 +190,18 @@ class ModelCache: KokoroModelProvider {
     }
 
     /// The flexible generator runs on the GPU only (the ANE runtime rejects
-    /// flexible shapes); a compute-unit policy that excludes the GPU, or an OS
-    /// before macOS 15, leaves it unused so the bucket packages keep serving.
+    /// flexible shapes); a compute-unit policy that excludes the GPU, an OS
+    /// before macOS 15, or the OS 27 gate leaves it unused so the bucket
+    /// packages keep serving.
     private func loadFlexibleGenerator() -> MLModel? {
         let pkgURL = modelsDir.appendingPathComponent(PipelineConstants.flexibleGeneratorPackage)
         guard FileManager.default.fileExists(atPath: pkgURL.path) else { return nil }
         guard stagedComputeUnits || computeUnits == .cpuAndGPU || computeUnits == .all else {
             fputs("  Flexible generator present but compute units exclude the GPU; using bucket packages\n", stderr)
+            return nil
+        }
+        guard PipelineConstants.flexibleGeneratorAllowed() else {
+            fputs("  Flexible generator gated off on OS \(PipelineConstants.flexibleGeneratorBrokenOSMajor)+ (\(PipelineConstants.flexibleGeneratorEnvKey)=1 overrides); using bucket packages\n", stderr)
             return nil
         }
         do {

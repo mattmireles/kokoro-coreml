@@ -207,18 +207,21 @@ def _split_int_csv(raw: str | None) -> list[int]:
 
 
 # One flexible (RangeDim, GPU) generator serves every SDK bucket at the real
-# utterance length; the SDK's macOS 15 / iOS 18 floor always supports it.
-# Must match scripts/build_sdk_bundle.mjs requiredPackages().
+# utterance length. MPSGraph on macOS/iOS 27 aborts on it, so every profile
+# also ships the per-bucket generators the runtime falls back to there
+# (PipelineConstants.flexibleGeneratorAllowed). Must match
+# scripts/build_sdk_bundle.mjs requiredPackages().
 SDK_FLEXIBLE_GENERATOR = "kokoro_decoder_har_post_range.mlpackage"
-# The full (product) profile: three multifunction packages plus the flexible
-# generator serve every bucket and duration shape for KokoroPipeline, and the
+FULL_BUCKET_SECONDS = [3, 7, 10, 15, 30]
+# The full (product) profile: three multifunction packages plus the
+# generators serve every bucket and duration shape for KokoroPipeline, and the
 # KokoroG2P assets live under g2p/. Must match build_sdk_bundle.mjs profiles.full.
 FULL_PACKAGES = [
     "coreml/kokoro_duration_multifunction.mlpackage",
     "coreml/kokoro_f0ntrain_multifunction.mlpackage",
     "coreml/kokoro_decoder_pre_multifunction.mlpackage",
     f"coreml/{SDK_FLEXIBLE_GENERATOR}",
-]
+] + [f"coreml/kokoro_decoder_har_post_{bucket}s.mlpackage" for bucket in FULL_BUCKET_SECONDS]
 G2P_PATTERNS = ["g2p/**"]
 
 
@@ -248,6 +251,7 @@ def _sdk_patterns(profile: str, voices: list[str], buckets: list[int]) -> list[s
         patterns.extend([
             f"coreml/kokoro_f0ntrain_t{t_frames}.mlpackage/**",
             f"coreml/kokoro_decoder_pre_{bucket}s.mlpackage/**",
+            f"coreml/kokoro_decoder_har_post_{bucket}s.mlpackage/**",
         ])
     patterns.append(f"coreml/{SDK_FLEXIBLE_GENERATOR}/**")
     for voice in voices:
@@ -275,6 +279,7 @@ def _sdk_required_packages(profile: str, voices: list[str], buckets: list[int]) 
         packages.extend([
             f"coreml/kokoro_f0ntrain_t{bucket * 40}.mlpackage",
             f"coreml/kokoro_decoder_pre_{bucket}s.mlpackage",
+            f"coreml/kokoro_decoder_har_post_{bucket}s.mlpackage",
         ])
     packages.append(f"coreml/{SDK_FLEXIBLE_GENERATOR}")
     return packages

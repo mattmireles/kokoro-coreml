@@ -26,10 +26,11 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
     /// Compute-unit policy selected for this facade.
     private let computePolicy: KokoroComputePolicy
 
-    /// Whether the bundle ships the flexible (RangeDim) generator. When it
-    /// does, that one program serves every bucket at the utterance's real
-    /// length instead of the bucket's; older bundles ship one generator per
-    /// bucket and keep working.
+    /// Whether to use the flexible (RangeDim) generator. Then that one
+    /// program serves every bucket at the utterance's real length instead of
+    /// the bucket's; otherwise the per-bucket generators serve (older
+    /// bundles, and macOS/iOS 27, whose MPSGraph can abort on the flexible
+    /// program, when the bundle ships bucket generators to fall back to).
     private let usesFlexibleGenerator: Bool
 
     /// Sidecar suffix tying reusable `.mlmodelc` output to a source tree hash.
@@ -40,7 +41,13 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
     /// - Parameters:
     ///   - resources: Runtime bundle location.
     ///   - computePolicy: Core ML compute-unit policy for model stages.
-    init(resources: KokoroResourceProvider, computePolicy: KokoroComputePolicy = .gistDefault) throws {
+    ///   - flexibleGeneratorAllowed: Whether this OS may run the flexible
+    ///     generator; injected by tests.
+    init(
+        resources: KokoroResourceProvider,
+        computePolicy: KokoroComputePolicy = .gistDefault,
+        flexibleGeneratorAllowed: Bool = PipelineConstants.flexibleGeneratorAllowed()
+    ) throws {
         let root = try resources.rootURL()
         let manifestURL = root.appendingPathComponent("KokoroRuntimeManifest.json")
         guard FileManager.default.fileExists(atPath: manifestURL.path) else {
@@ -63,11 +70,14 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         self.compiledModelsDirectory = compiledModelsDirectory
         let durationChoices = KokoroPipeline.discoverDurationChoices(modelsDirectory: modelsDirectory)
             .filter { manifestModelPaths.contains("coreml/\($0.packageURL.lastPathComponent)") }
+        let usesFlexibleGenerator = Self.listsFlexibleGenerator(manifest)
+            && (flexibleGeneratorAllowed || !Self.listsBucketGenerators(manifest))
         try Self.validateModelSet(
             rootURL: root,
             modelsDirectory: modelsDirectory,
             manifest: manifest,
-            durationChoices: durationChoices
+            durationChoices: durationChoices,
+            usesFlexibleGenerator: usesFlexibleGenerator
         )
         guard let runtimeDuration = durationChoices.first(where: {
             $0.allowsPadding && $0.tokenLength == KokoroTTS.runtimeDurationTokenLength
@@ -82,7 +92,7 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         self.durationChoices = [runtimeDuration]
         self.manifest = manifest
         self.computePolicy = computePolicy
-        self.usesFlexibleGenerator = Self.listsFlexibleGenerator(manifest)
+        self.usesFlexibleGenerator = usesFlexibleGenerator
         try Self.validateFileDigests(rootURL: root, manifest: manifest)
     }
 
@@ -132,6 +142,13 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
     /// Whether `manifest` lists the flexible generator package.
     static func listsFlexibleGenerator(_ manifest: KokoroRuntimeManifest) -> Bool {
         manifest.modelPackages.contains { $0.path == "coreml/\(PipelineConstants.flexibleGeneratorPackage)" }
+    }
+
+    /// Whether `manifest` lists a per-bucket generator for every bucket.
+    static func listsBucketGenerators(_ manifest: KokoroRuntimeManifest) -> Bool {
+        manifest.buckets.allSatisfy { bucket in
+            manifest.modelPackages.contains { $0.path == "coreml/kokoro_decoder_har_post_\(bucket)s.mlpackage" }
+        }
     }
 
     /// Loads a generator/HAR-post model.
@@ -511,7 +528,8 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         rootURL: URL,
         modelsDirectory: URL,
         manifest: KokoroRuntimeManifest,
-        durationChoices: [DurationModelChoice]
+        durationChoices: [DurationModelChoice],
+        usesFlexibleGenerator: Bool
     ) throws {
         guard !durationChoices.isEmpty else {
             throw KokoroError.missingModel("duration")
@@ -539,14 +557,13 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
                 throw KokoroError.missingModel(url.lastPathComponent)
             }
         }
-        let flexibleGenerator = listsFlexibleGenerator(manifest)
-        var required = flexibleGenerator ? [PipelineConstants.flexibleGeneratorPackage] : []
+        var required = usesFlexibleGenerator ? [PipelineConstants.flexibleGeneratorPackage] : []
         for bucket in manifest.buckets {
             guard let tFrames = PipelineConstants.tFramesForBucket[bucket] else {
                 throw KokoroError.missingModel("bucket \(bucket)s")
             }
             required += ["kokoro_f0ntrain_t\(tFrames).mlpackage", "kokoro_decoder_pre_\(bucket)s.mlpackage"]
-            if !flexibleGenerator {
+            if !usesFlexibleGenerator {
                 required.append("kokoro_decoder_har_post_\(bucket)s.mlpackage")
             }
         }
