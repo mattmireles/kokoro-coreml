@@ -1,10 +1,11 @@
-% References for "Surgical Inference" — keys match the markdown draft's [N] numbering.
+% References for "Surgical Inference".
 % [1]
 @misc{coremltools,
   author = {{Apple}},
   title = {Core ML Tools},
   howpublished = {\url{https://github.com/apple/coremltools}},
-  note = {Software package and documentation for converting trained models to Core ML}
+  year = {2025},
+  note = {Software package for converting trained models to Core ML; version 8.3.0 (April 2025) used for every export}
 }
 % [2]
 @misc{apple-ane-transformers,
@@ -34,14 +35,16 @@
   author = {{Apple}},
   title = {PyTorch Conversion Workflow},
   howpublished = {\url{https://apple.github.io/coremltools/docs-guides/source/convert-pytorch-workflow.html}},
-  note = {Core ML Tools guide}
+  year = {2026},
+  note = {Core ML Tools guide. Accessed October 2026}
 }
 % [6]
 @misc{pytorch-mps-metal,
   author = {{Apple Developer}},
   title = {Accelerated PyTorch training on Mac},
   howpublished = {\url{https://developer.apple.com/metal/pytorch/}},
-  note = {PyTorch MPS backend documentation}
+  year = {2026},
+  note = {PyTorch MPS backend documentation. Accessed October 2026}
 }
 % [7]
 @article{starpu,
@@ -65,21 +68,24 @@
   author = {Blaizzy},
   title = {mlx-audio},
   howpublished = {\url{https://github.com/Blaizzy/mlx-audio}},
-  note = {MLX audio generation toolkit used for the MLX Kokoro baseline}
+  year = {2026},
+  note = {Version 0.4.3, commit 862dfbe (June 2026); MLX audio generation toolkit used for the MLX Kokoro baseline}
 }
 % [10]
 @misc{llamacpp,
   author = {Gerganov, Georgi and contributors},
   title = {llama.cpp},
-  howpublished = {\url{https://github.com/ggerganov/llama.cpp}},
-  note = {Software}
+  howpublished = {\url{https://github.com/ggml-org/llama.cpp}},
+  year = {2026},
+  note = {Software. Accessed October 2026}
 }
 % [11]
 @misc{whispercpp,
   author = {Gerganov, Georgi and contributors},
   title = {whisper.cpp},
-  howpublished = {\url{https://github.com/ggerganov/whisper.cpp}},
-  note = {Software; includes a Core ML encoder path}
+  howpublished = {\url{https://github.com/ggml-org/whisper.cpp}},
+  year = {2026},
+  note = {Software; includes a Core ML encoder path. Accessed October 2026}
 }
 % [12]
 @misc{mlx,
@@ -94,14 +100,16 @@
   author = {hexgrad},
   title = {Kokoro-82M},
   howpublished = {\url{https://huggingface.co/hexgrad/Kokoro-82M}},
-  note = {Open-weight 82M-parameter text-to-speech model}
+  year = {2024},
+  note = {Open-weight 82M-parameter text-to-speech model; model repository created December 2024}
 }
 % [14]
 @misc{kokoro-lib,
   author = {hexgrad},
   title = {kokoro},
   howpublished = {\url{https://github.com/hexgrad/kokoro}},
-  note = {Python inference library for Kokoro-82M}
+  year = {2025},
+  note = {Python inference library for Kokoro-82M; repository created January 2025}
 }
 % [15]
 @inproceedings{istftnet,
@@ -125,7 +133,8 @@
   author = {laishere},
   title = {kokoro-coreml},
   howpublished = {\url{https://github.com/laishere/kokoro-coreml}},
-  note = {Independent Core ML Kokoro implementation used as a comparison baseline}
+  year = {2026},
+  note = {Commit 484907d; independent Core ML Kokoro implementation used as a comparison baseline. Accessed October 2026}
 }
 % [18]
 @inproceedings{styletts2,
@@ -145,33 +154,37 @@
 }
 % [20]
 @misc{magenta-rt,
-  author = {{Magenta team, Google}},
-  title = {Magenta RealTime: An Open-Weights Live Music Model},
+  author = {{Lyria Team} and Caillon, Antoine and McWilliams, Brian and Tarakajian, Cassie and Simon, Ian and Manco, Ilaria and Engel, Jesse and Constant, Noah and others},
+  title = {Live Music Models},
   year = {2025},
-  eprint = {2506.20061},
+  eprint = {2508.04651},
   archivePrefix = {arXiv},
-  howpublished = {\url{https://arxiv.org/abs/2506.20061}}
+  howpublished = {\url{https://arxiv.org/abs/2508.04651}},
+  note = {Introduces Magenta RealTime}
 }
 % [21]
 @misc{magenta-rt-repo,
   author = {{Magenta team, Google}},
   title = {magenta-realtime},
   howpublished = {\url{https://github.com/magenta/magenta-realtime}},
-  note = {Open-weights live music model repository; upstream source for the second case study}
+  year = {2026},
+  note = {Open-weights live music model repository; upstream source for the second case study. Accessed October 2026}
 }
 % [22]
 @misc{kokoro-ios,
   author = {mlalma},
   title = {kokoro-ios},
   howpublished = {\url{https://github.com/mlalma/kokoro-ios}},
-  note = {MLX Swift Kokoro implementation used for iOS comparison}
+  year = {2025},
+  note = {Version 1.0.8 (October 2025); MLX Swift Kokoro implementation used for iOS comparison}
 }
 % [23]
 @misc{melotts,
   author = {{MyShell.ai}},
   title = {{MeloTTS}},
   howpublished = {\url{https://github.com/myshell-ai/MeloTTS}},
-  note = {Open-source multilingual text-to-speech system}
+  year = {2024},
+  note = {Open-source multilingual text-to-speech system; repository created February 2024}
 }
 % [24]
 @misc{whisperkit,
@@ -188,41 +201,99 @@
   author = {{Piper contributors}},
   title = {Piper},
   howpublished = {\url{https://github.com/rhasspy/piper}},
-  note = {Fast local neural text-to-speech system}
+  year = {2023},
+  note = {Fast local neural text-to-speech system; repository created January 2023, since archived}
 }
 % [26]
 @misc{executorch,
   author = {{PyTorch}},
   title = {{ExecuTorch}},
   howpublished = {\url{https://github.com/pytorch/executorch}},
-  note = {On-device inference runtime with delegate backends}
+  year = {2026},
+  note = {On-device inference runtime with delegate backends. Accessed October 2026}
 }
 % [27]
 @misc{pytorch-mps-notes,
   author = {{PyTorch}},
   title = {{MPS} backend notes},
   howpublished = {\url{https://pytorch.org/docs/stable/notes/mps.html}},
-  note = {Apple Silicon GPU backend documentation}
+  year = {2026},
+  note = {Apple Silicon GPU backend documentation. Accessed October 2026}
 }
 % [28]
 @misc{ane-field-guide,
   author = {skyfallsin},
   title = {Apple Neural Engine Reverse-Engineering Field Guide},
   howpublished = {\url{https://github.com/skyfallsin/apple-neural-engine-field-guide}},
-  note = {Experiment-driven ANE notes and constraints}
+  year = {2026},
+  note = {Experiment-driven ANE notes and constraints. Accessed October 2026}
 }
 % [29]
 @misc{speech-swift,
   author = {soniqo},
   title = {speech-swift},
   howpublished = {\url{https://github.com/soniqo/speech-swift}},
-  note = {Independent Core ML Kokoro implementation used as a comparison baseline}
+  year = {2026},
+  note = {Commit 0d09a2e; independent Core ML Kokoro implementation used as a comparison baseline. Accessed October 2026}
 }
 % [30]
 @article{soundstream,
   author = {Zeghidour, Neil and Luebs, Alejandro and Omran, Ahmed and Skoglund, Jan and Tagliasacchi, Marco},
   title = {{SoundStream}: An End-to-End Neural Audio Codec},
   journal = {IEEE/ACM Transactions on Audio, Speech, and Language Processing},
-  year = {2021},
+  volume = {30},
+  pages = {495--507},
+  year = {2022},
+  doi = {10.1109/TASLP.2021.3129994},
   note = {\url{https://arxiv.org/abs/2107.03312}}
+}
+% Mobile heterogeneous scheduling (verified via Crossref / arXiv API, October 2026)
+@inproceedings{band,
+  author = {Jeong, Joo Seong and Lee, Jingyu and Kim, Donghyun and Jeon, Changmin and Jeong, Changjin and Lee, Youngki and Chun, Byung-Gon},
+  title = {Band: Coordinated Multi-{DNN} Inference on Heterogeneous Mobile Processors},
+  booktitle = {Proceedings of the 20th Annual International Conference on Mobile Systems, Applications and Services (MobiSys)},
+  pages = {235--247},
+  year = {2022},
+  doi = {10.1145/3498361.3538948}
+}
+@inproceedings{codl,
+  author = {Jia, Fucheng and Zhang, Deyu and Cao, Ting and Jiang, Shiqi and Liu, Yunxin and Ren, Ju and Zhang, Yaoxue},
+  title = {{CoDL}: Efficient {CPU-GPU} Co-Execution for Deep Learning Inference on Mobile Devices},
+  booktitle = {Proceedings of the 20th Annual International Conference on Mobile Systems, Applications and Services (MobiSys)},
+  pages = {209--221},
+  year = {2022},
+  doi = {10.1145/3498361.3538932}
+}
+@inproceedings{mulayer,
+  author = {Kim, Youngsok and Kim, Joonsung and Chae, Dongju and Kim, Daehyun and Kim, Jangwoo},
+  title = {$\mu${Layer}: Low Latency On-Device Inference Using Cooperative Single-Layer Acceleration and Processor-Friendly Quantization},
+  booktitle = {Proceedings of the Fourteenth EuroSys Conference (EuroSys)},
+  pages = {1--15},
+  year = {2019},
+  doi = {10.1145/3302424.3303950}
+}
+@inproceedings{llmnpu,
+  author = {Xu, Daliang and Zhang, Hao and Yang, Liming and Liu, Ruiqi and Huang, Gang and Xu, Mengwei and Liu, Xuanzhe},
+  title = {Fast On-device {LLM} Inference with {NPUs}},
+  booktitle = {Proceedings of the 30th ACM International Conference on Architectural Support for Programming Languages and Operating Systems (ASPLOS)},
+  pages = {445--462},
+  year = {2025},
+  doi = {10.1145/3669940.3707239}
+}
+@misc{powerinfer2,
+  author = {Xue, Zhenliang and Song, Yixin and Mi, Zeyu and Zheng, Xinrui and Xia, Yubin and Chen, Haibo},
+  title = {{PowerInfer-2}: Fast Large Language Model Inference on a Smartphone},
+  year = {2024},
+  eprint = {2406.06282},
+  archivePrefix = {arXiv},
+  howpublished = {\url{https://arxiv.org/abs/2406.06282}}
+}
+@misc{heterollm,
+  author = {Chen, Le and Feng, Dahu and Feng, Erhu and Wang, Yingrui and Zhao, Rong and Xia, Yubin and Xu, Pinjie and Chen, Haibo},
+  title = {Characterizing Mobile {SoC} for Accelerating Heterogeneous {LLM} Inference},
+  year = {2025},
+  eprint = {2501.14794},
+  archivePrefix = {arXiv},
+  howpublished = {\url{https://arxiv.org/abs/2501.14794}},
+  note = {Version 1 titled ``HeteroLLM: Accelerating Large Language Model Inference on Mobile SoCs platform with Heterogeneous AI Accelerators''; the engine is called HeteroInfer in later versions}
 }

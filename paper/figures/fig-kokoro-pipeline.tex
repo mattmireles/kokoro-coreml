@@ -1,10 +1,10 @@
 % fig-kokoro-pipeline.tex
 % CS1 (Kokoro-82M) decomposed inference pipeline.
-% data: surgical-inference.md Section 4.1 (pipeline ASCII diagram) and Section 4.1
-%       prose on the shipped staged compute policy + DecoderPre || hn-nsf concurrency.
+% Data: paper/main.tex Section 4.1 (shipped staged compute policy and
+%       DecoderPre || hn-nsf concurrency).
 % Four Core ML model families, three native Swift stages. Per-stage compute-unit
 % annotations: DecoderPre = .cpuAndNeuralEngine; Duration, F0Ntrain,
-% GeneratorFromHar = .cpuAndGPU; alignment/pad/trim = Swift (CPU).
+% GeneratorFromHar = .cpuAndGPU; alignment, pad and trim = Swift (CPU).
 % Build: tectonic paper/figures/fig-kokoro-pipeline.tex
 \documentclass[border=6pt]{standalone}
 \usepackage[T1]{fontenc}
@@ -66,7 +66,7 @@
 \node[cmlgpu, below=42mm of pad] (gen)
   {\textbf{GeneratorFromHar model}\\conv residual stacks $+$ iSTFT\\x\_pre $+$ har $\to$ waveform};
 \node[swiftc, below=of gen] (trim)
-  {\textbf{Trim} $+$ punctuation suppression};
+  {\textbf{Trim}};
 \node[io, below=of trim] (out) {24\,kHz PCM waveform};
 
 % ---- flow edges ----

@@ -7,7 +7,7 @@ workload; only the temporal stage's compute policy varied; 60 s capture. The
 contrast to make unmissable: GPU impact goes to zero and CPU instructions roughly
 halve under the ANE policy.
 
-data: surgical-inference.md Section 6.7 "Power" paragraph. iPhone 12 Pro (A14),
+data: main.tex Section 6.7 "Power" paragraph. iPhone 12 Pro (A14),
 Power Profiler paired capture.
   gpuImpact:            ANE 0.000  vs  GPU 2.23
   cpuImpact:            ANE 1.38   vs  GPU 2.63

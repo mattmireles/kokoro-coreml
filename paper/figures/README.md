@@ -1,6 +1,6 @@
 # Paper Figures — *Surgical Inference*
 
-Publication figures for `Scratchpad/surgical-inference.md`. Every number in every
+Publication figures for `paper/main.tex`. Every number in every
 figure is transcribed directly from the paper's own tables; the section citation
 is in a `data:` comment at the top of each generator/source file. Do not edit the
 figures to disagree with the draft — if a table changes, change the figure's data

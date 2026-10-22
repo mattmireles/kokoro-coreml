@@ -96,8 +96,8 @@ node scripts/memory-health.mjs --strict
 ```
 
 ```
-Text → Phonemes → Duration (CoreML) → Alignment (Swift) → Matrix ops (Accelerate)
-  → F0Ntrain (CoreML) → DecoderPre (CoreML) + hn-nsf (Swift) → GeneratorFromHar (CoreML) → Audio
+Text → Phonemes → Duration (CoreML) → Alignment (Swift: expand token vectors to frames)
+  → F0Ntrain (CoreML) → DecoderPre (CoreML) ∥ hn-nsf (Swift) → GeneratorFromHar (CoreML) → Trim → Audio
 ```
 
 Decoder-pre runs on the ANE; duration, F0 and the generator run on the GPU (the ANE compiler rejects the generator's waveform-length tensors). One DSP stage (harmonic source) runs in Swift with double-precision phase accumulation, concurrently with decoder-pre. The generator has zero `nn.Linear` ops — all replaced with `Conv1d(kernel_size=1)` (48 → 0 linear ops in the MIL graph).
@@ -112,10 +112,7 @@ Text --> Phonemes (tokenizer)
 Duration CoreML [32/64/128/256/320/384/512 tokens] --> pred_dur, d, t_en, s, ref_s
     |
     v
-Alignment (Swift) --> one-hot matrix from pred_dur
-    |
-    v
-Matrix ops (Accelerate) --> en = d x alignment, asr = t_en x alignment
+Alignment (Swift) --> expand d and t_en to frames by pred_dur (en, asr)
     |
     v
 F0Ntrain CoreML --> F0_pred, N_pred (pitch + noise contours)
@@ -137,11 +134,12 @@ Trim (Swift) --> final audio
 | Model | Sizes | Input | Output | Role |
 | --- | --- | --- | --- | --- |
 | `kokoro_duration_t{N}` | T=32, 64, 128, 256, 320, 384, 512 | input_ids, attention_mask, ref_s, speed | pred_dur, d, t_en, s, ref_s_out | BERT + prosody prediction |
-| `kokoro_f0ntrain_t{N}` | T=120, 400, 560, 1200, 2400 | en, s, mask | F0_pred, N_pred | Pitch/noise from aligned features |
+| `kokoro_f0ntrain_t{N}` | T=120, 280, 400, 600, 1200 | en, s, mask | F0_pred, N_pred | Pitch/noise from aligned features |
 | `kokoro_decoder_pre_{N}s` | 3s, 7s, 10s, 15s, 30s | asr, f0, n_input, ref_s, mask | x_pre | Decoder stack (Conv + AdaIN) |
-| `kokoro_decoder_har_post_{N}s` | 3s, 7s, 10s, 15s, 30s | x_pre, ref_s, har, mask | waveform | Generator (0 linear ops, all Conv1d; runs on GPU) |
+| `kokoro_decoder_har_post_{N}s` | 3s, 7s, 10s, 15s, 30s | x_pre, ref_s, har, mask | waveform | Generator, fixed shape per bucket (GPU) |
+| `kokoro_decoder_har_post_range` | 0.5 s granule up to 30 s | x_pre, ref_s, har, mask | waveform | Generator, one flexible-length program (GPU; skipped on OS 27) |
 
-The Duration model uses per-size exports because E5RT (Apple Neural Engine runtime) cannot handle `RangeDim` or `EnumeratedShapes` with multiple variable inputs. The caller pads tokens to the nearest enumeration.
+Duration, F0Ntrain and decoder-pre stay bucketed: the ANE rejects flexible shapes, an LSTM over a symbolic length runs about 5x slower on the CPU, and `EnumeratedShapes` costs about 140 ms per shape change. The caller pads to the nearest bucket and passes a `mask` so padding never reaches a statistic. Only the GPU generator ships as a flexible (`RangeDim`) program.
 Newly exported padded-stage packages require the binary prefix `mask`; the runtime also recognizes legacy published packages that predate that input.
 
 </details>

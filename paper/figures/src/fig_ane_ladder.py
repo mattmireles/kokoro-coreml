@@ -7,7 +7,7 @@ the story to make legible is that even the full 12-layer stack with 48 caches-in
 48 one-token-updates-out compiles ANE-resident and lands at 15.0 ms, beating both
 CPU-only and CPU+GPU -- provided in-graph cache mutation is absent.
 
-data: surgical-inference.md Section 6.3 ladder table. iPhone 12 Pro (A14), FP16,
+data: main.tex Section 6.3 ladder table. iPhone 12 Pro (A14), FP16,
 p99 ms over warmed runs, MLComputePlan placement evidence. Every rung: ANE cost
 share 1.000.
 
@@ -30,7 +30,7 @@ plt.rcParams.update({
     "ytick.major.width": 0.6,
 })
 
-# --- Data (surgical-inference.md Section 6.3). p99 ms, A14, FP16. ----------
+# --- Data (main.tex Section 6.3). p99 ms, A14, FP16. ----------
 # Order top->bottom follows the ladder's build-up; the headline full stack is last.
 RUNGS = [
     "12-layer FFN stack, stateless",

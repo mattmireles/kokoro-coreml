@@ -1,3 +1,5 @@
+> Frozen July 2026 draft. The current paper is paper/main.tex; numbers and prose here are superseded.
+
 # Surgical Inference: Decomposing Generative Models for Heterogeneous On-Device SoC Inference
 
 **Matt Mireles**
