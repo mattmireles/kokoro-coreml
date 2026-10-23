@@ -1,45 +1,9 @@
-# Kokoro TTS: 9.8x faster than MLX on an M1 Mac
-
-**It speaks 27 seconds of audio in under a third of a second, on a 2020 M1 Mac Mini or an iPhone 15 Pro Max.** MLX was measured on the same Mac, with the same text.
+# Kokoro TTS: Surgically Optimized for Apple Silicon
+**15.1x faster than MLX on iPhone 15 Pro Max. 9.8x faster than MLX on M1 Mac Mini. 4.8x faster than MLX on m2 Ultra.** MLX was measured on the same Mac, with the same text, same 27 sec audio duration.
 
 [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) running on the Apple Neural Engine through Core ML. No Python, no server, no API key. The model is cut at its seams, and each stage runs on the part of the chip that suits it. That includes the vocoder, which the Neural Engine rejects as exported; a reshape that leaves its math unchanged gets it in.
 
 > **Pre-converted models:** [huggingface.co/mattmireles/kokoro-coreml](https://huggingface.co/mattmireles/kokoro-coreml) · **Paper:** [`paper/main.pdf`](paper/main.pdf)
-
-## Quickstart
-
-On an Apple Silicon Mac with macOS 15+ and Xcode 26+ (Swift 6.2):
-
-```bash
-git clone https://github.com/mattmireles/kokoro-coreml && cd kokoro-coreml
-swift run -c release kokoro-say "Hello from the Neural Engine."
-afplay kokoro.wav
-```
-
-The first run builds the CLI (about a minute) and downloads the pinned ~210 MB starter model bundle from Hugging Face into `~/Library/Caches/kokoro-coreml`. Each download is checked against a SHA-256 before use. `kokoro-say` prints the time per stage and which path ran each one.
-
-- **Options:** `--out speech.wav`, `--runs 3` (the first run includes one-time Core ML compilation). The starter bundle has one voice (`af_heart`) and one 15 s bucket, so every input is timed at that bucket; build the `full` bundle (README/SDK.md) and pass `--bundle` for the other voices and buckets.
-- **Help:** `swift run -c release kokoro-say --help`.
-- **If the build stops compiling Metal shaders** on a fresh Xcode, run `xcodebuild -downloadComponent MetalToolchain` once.
-
-## Use it in your app
-
-```swift
-// Package.swift
-.package(url: "https://github.com/mattmireles/kokoro-coreml", revision: "<commit>")
-// target dependency
-.product(name: "KokoroTTS", package: "kokoro-coreml")
-```
-
-```swift
-import KokoroTTS
-
-let tts = try await KokoroTTS.load(resources: .huggingFace())   // download + verify once, then cached
-let audio = try await tts.synthesize("Hello world.", voice: .afHeart)
-let buffer = try audio.makePCMBuffer()                           // 24 kHz mono, ready for AVAudioEngine
-```
-
-iOS 18+ / macOS 15+. Text preparation, phonemization, chunking, model loading and fallbacks are handled for you. The full SDK guide, including bundled-resource mode and playback, is in [README/SDK.md](README/SDK.md). Pin the latest `main` commit.
 
 ## Performance
 
@@ -63,6 +27,25 @@ Caveats:
 - **Short clips on the M2 Ultra regressed.** 3 s clips use the all-ANE generator, which is slower there than the old GPU generator: 74 ms here against 64 ms in October's run under similar load (45 ms in its quiet pass).
 
 Full protocol, every cell with its min-max range, the ablation and raw data: [paper-cs1-hybrid-rerun-2026-10-23.md](README/Notes/paper-cs1-hybrid-rerun-2026-10-23.md).
+
+### Memory
+
+Peak memory for one synthesis, in MB, same run and same inputs as the latency table:
+
+| Audio | M2 Ultra | M1 Mini | iPhone 15 Pro Max | iPhone 12 Pro |
+| --- | ---: | ---: | ---: | ---: |
+| 3s | 144 | 134 | 255 | 61 |
+| 7s | 235 | 177 | 551 | 282 |
+| 10s | 263 | 199 | 655 | 349 |
+| 15s | 275 | 247 | 869 | 500 |
+| 30s (27.4 s input) | **434** | **375** | **1,338** | **831** |
+| **MLX** | 786-815 | 771-801 | not measured | runs out of memory at 30 s |
+
+On a Mac this pipeline uses about half of MLX's memory at 30 s (434 vs 815 MB on the M2 Ultra, 375 vs 801 MB on the M1 Mini), and far less on short clips.
+
+- **What's counted:** on Macs, the peak resident memory of a fresh process doing one synthesis; on iPhones, the app's peak memory footprint over the whole run.
+- **Where the memory goes on iPhone:** the hybrid generator, used at 7 s and longer, buys its speed with memory. If memory matters more than speed, set `KOKORO_HYBRID_GENERATOR=0` to use the all-ANE generator everywhere. At 30 s it peaks at 780 MB on the iPhone 15 Pro Max and 284 MB on the iPhone 12 Pro, but takes 2.5-3.2x longer.
+- **The MLX 3 s figures are missing:** mlx-audio fails every 3 s input.
 
 ## How it works
 
@@ -106,6 +89,42 @@ The paper's numbers come from a frozen build: source commit `903f1fc1`, with its
 - [`paper/data/frozen_rerun_014/`](paper/data/frozen_rerun_014/)
 
 The older PyTorch, Python and MLX bakeoff harness is in `scripts/bakeoff_harness.py`; see [bakeoff-results.md](README/Notes/bakeoff-results.md).
+
+## Quickstart
+
+On an Apple Silicon Mac with macOS 15+ and Xcode 26+ (Swift 6.2):
+
+```bash
+git clone https://github.com/mattmireles/kokoro-coreml && cd kokoro-coreml
+swift run -c release kokoro-say "Hello from the Neural Engine."
+afplay kokoro.wav
+```
+
+The first run builds the CLI (about a minute) and downloads the pinned ~210 MB starter model bundle from Hugging Face into `~/Library/Caches/kokoro-coreml`. Each download is checked against a SHA-256 before use. `kokoro-say` prints the time per stage and which path ran each one.
+
+- **Options:** `--out speech.wav`, `--runs 3` (the first run includes one-time Core ML compilation). The starter bundle has one voice (`af_heart`) and one 15 s bucket, so every input is timed at that bucket; build the `full` bundle (README/SDK.md) and pass `--bundle` for the other voices and buckets.
+- **Help:** `swift run -c release kokoro-say --help`.
+- **If the build stops compiling Metal shaders** on a fresh Xcode, run `xcodebuild -downloadComponent MetalToolchain` once.
+
+## Use it in your app
+
+```swift
+// Package.swift
+.package(url: "https://github.com/mattmireles/kokoro-coreml", revision: "<commit>")
+// target dependency
+.product(name: "KokoroTTS", package: "kokoro-coreml")
+```
+
+```swift
+import KokoroTTS
+
+let tts = try await K#okoroTTS.load(resources: .huggingFace())   // download + verify once, then cached
+let audio = try await tts.synthesize("Hello world.", voice: .afHeart)
+let buffer = try audio.makePCMBuffer()                           // 24 kHz mono, ready for AVAudioEngine
+```
+
+iOS 18+ / macOS 15+. Text preparation, phonemization, chunking, model loading and fallbacks are handled for you. The full SDK guide, including bundled-resource mode and playback, is in [README/SDK.md](README/SDK.md). Pin the latest `main` commit.
+
 
 ## Python fallback
 
