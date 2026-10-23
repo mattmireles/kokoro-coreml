@@ -202,10 +202,10 @@ final class KokoroFacadeTests: XCTestCase {
     func testDownloadedStoreRejectsPathEscapes() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
 
-        XCTAssertThrowsError(try KokoroDownloadedModelStore.containedURL(rootURL: root, relativePath: "../evil")) { error in
+        XCTAssertThrowsError(try KokoroPathGuard.containedURL(rootURL: root, relativePath: "../evil")) { error in
             XCTAssertEqual(error as? KokoroError, .pathEscape("../evil"))
         }
-        XCTAssertThrowsError(try KokoroDownloadedModelStore.containedURL(rootURL: root, relativePath: "voices\\evil.bin")) { error in
+        XCTAssertThrowsError(try KokoroPathGuard.containedURL(rootURL: root, relativePath: "voices\\evil.bin")) { error in
             XCTAssertEqual(error as? KokoroError, .pathEscape("voices\\evil.bin"))
         }
     }
@@ -506,7 +506,7 @@ final class KokoroFacadeTests: XCTestCase {
         try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(at: voices, withDestinationURL: outside)
 
-        XCTAssertThrowsError(try KokoroDownloadedModelStore.rejectExistingSymlinkComponents(
+        XCTAssertThrowsError(try KokoroPathGuard.rejectExistingSymlinkComponents(
             rootURL: root,
             targetURL: voices.appendingPathComponent("af_heart.bin")
         )) { error in
@@ -524,7 +524,7 @@ final class KokoroFacadeTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: root)
 
-        XCTAssertThrowsError(try KokoroDownloadedModelStore.rejectRootSymlink(rootURL: link)) { error in
+        XCTAssertThrowsError(try KokoroPathGuard.rejectRootSymlink(rootURL: link)) { error in
             guard case .pathEscape = error as? KokoroError else {
                 XCTFail("expected pathEscape, got \(error)")
                 return
@@ -544,7 +544,7 @@ final class KokoroFacadeTests: XCTestCase {
             withDestinationURL: outside.appendingPathComponent("version")
         )
 
-        XCTAssertThrowsError(try KokoroDownloadedModelStore.rejectExistingSymlinkComponents(
+        XCTAssertThrowsError(try KokoroPathGuard.rejectExistingSymlinkComponents(
             rootURL: root,
             targetURL: sidecar
         )) { error in
@@ -604,7 +604,7 @@ final class KokoroFacadeTests: XCTestCase {
     /// tree without duplicating the manifest shape.
     private func makeBundleRoot(
         removeVoiceFile: Bool = false,
-        schemaVersion: Int = 1,
+        schemaVersion: Int = KokoroSDKModelProvider.supportedSchemaVersion,
         voiceHashOverride: String? = nil,
         voicePath: String = "voices/af_heart.bin",
         modelPackages: [[String: Any]]? = nil,

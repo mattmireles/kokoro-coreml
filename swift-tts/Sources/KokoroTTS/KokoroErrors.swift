@@ -29,6 +29,10 @@ public enum KokoroError: Error, Equatable, LocalizedError {
     /// A downloaded manifest or file exceeded configured safety limits.
     case downloadTooLarge(path: String, bytes: Int, maxBytes: Int)
 
+    /// ``KokoroHostedModels/revision`` is not a Hugging Face commit SHA (an
+    /// unreleased build), so the hosted bundle cannot be downloaded.
+    case unpinnedHostedRevision(String)
+
     /// The runtime manifest schema is not supported by this SDK.
     case unsupportedManifestSchema(Int)
 
@@ -87,6 +91,9 @@ public enum KokoroError: Error, Equatable, LocalizedError {
             return "Kokoro hosted manifest must use HTTPS unless insecure local development mode is enabled: \(url.absoluteString)."
         case .downloadTooLarge(let path, let bytes, let maxBytes):
             return "Kokoro download is too large for configured limits: \(path) has \(bytes) bytes, maximum \(maxBytes)."
+        case .unpinnedHostedRevision(let revision):
+            return "this build has no pinned Hugging Face revision (KokoroHostedModels.revision is \"\(revision)\"); "
+                + "use a release commit or pass --bundle <bundle-root>."
         case .unsupportedManifestSchema(let version):
             return "Kokoro runtime manifest schema is not supported: \(version)."
         case .unsupportedVoice(let voice):

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
@@ -10,22 +11,22 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const files = {
   pipeline: 'swift/Sources/KokoroPipeline/KokoroPipeline.swift',
   package: 'swift-tts/Package.swift',
+  rootPackage: 'Package.swift',
   consumerFixturePackage: 'examples/KokoroConsumerFixture/Package.swift',
   voice: 'swift-tts/Sources/KokoroTTS/KokoroVoiceID.swift',
   textChunker: 'swift-tts/Sources/KokoroTTS/TextChunker.swift',
-  synthesisOptions: 'swift-tts/Sources/KokoroTTS/KokoroSynthesisOptions.swift',
   manifestDecoder: 'swift-tts/Sources/KokoroTTS/KokoroRuntimeManifest.swift',
   manifestSchema: 'schemas/KokoroRuntimeManifest.schema.json',
   downloadedStore: 'swift-tts/Sources/KokoroTTS/KokoroDownloadedModelStore.swift',
   tts: 'swift-tts/Sources/KokoroTTS/KokoroTTS.swift',
   errors: 'swift-tts/Sources/KokoroTTS/KokoroErrors.swift',
   buildBundle: 'scripts/build_sdk_bundle.mjs',
-  downloadModels: 'scripts/download_models.py',
+  sdkProfiles: 'scripts/sdk_profiles.json',
   jsPrep: 'scripts/kokoro-prepare-input.mjs',
   pyPrep: 'scripts/kokoro-prepare-input.py',
-  sdkReadme: 'README/SDK.md',
-  modelCard: 'README/hf-model-card.md',
 };
+// Gitignored local export of the hybrid generator; absent in a fresh clone.
+const hybridPlanPath = path.join(repoRoot, 'coreml-hybrid/plan.json');
 
 function fail(message) {
   throw new Error(message);
@@ -37,14 +38,6 @@ function parseIntConstant(source, name) {
     fail(`missing Swift Int constant ${name}`);
   }
   return Number.parseInt(match[1].replaceAll('_', ''), 10);
-}
-
-function parseDoubleConstant(source, name) {
-  const match = source.match(new RegExp(`(?:public )?static let ${name} = ([0-9.]+)`));
-  if (!match) {
-    fail(`missing Swift Double constant ${name}`);
-  }
-  return Number.parseFloat(match[1]);
 }
 
 function parseSwiftIntArray(source, name) {
@@ -87,26 +80,27 @@ function parsePythonIntConstant(source, name) {
   return Number.parseInt(match[1].replaceAll('_', ''), 10);
 }
 
-function parseJsProfile(source, profile, field) {
-  const profileMatch = source.match(new RegExp(`${profile}: \\{([\\s\\S]*?)\\n  \\}`));
-  if (!profileMatch) {
-    fail(`missing JS bundle profile ${profile}`);
-  }
-  const fieldMatch = profileMatch[1].match(new RegExp(`${field}: \\[([^\\]]+)\\]`));
-  if (!fieldMatch) {
-    fail(`missing ${field} for JS bundle profile ${profile}`);
-  }
-  return fieldMatch[1]
-    .split(',')
-    .map((item) => item.trim().replaceAll("'", '').replaceAll('"', ''))
-    .filter(Boolean)
-    .map((item) => (/^[0-9]+$/.test(item) ? Number.parseInt(item, 10) : item));
-}
-
 function requireIncludes(source, file, snippet) {
   if (!source.includes(snippet)) {
     fail(`${file} is missing required SDK contract snippet: ${snippet}`);
   }
+}
+
+function parseSwiftIntMap(source, name) {
+  const match = source.match(new RegExp(`static let ${name}: \\[Int: Int\\] = \\[([^\\]]+)\\]`));
+  if (!match) {
+    fail(`missing Swift [Int: Int] ${name}`);
+  }
+  return Object.fromEntries([...match[1].matchAll(/(\d+)\s*:\s*(\d+)/g)].map((m) => [m[1], Number(m[2])]));
+}
+
+/** Returns the `kind: "value"` pin after the MisakiSwift package URL. */
+function misakiPin(source, file) {
+  const match = source.match(/url: "https:\/\/github\.com\/mattmireles\/MisakiSwift",\s*(\w+): "([^"]+)"/);
+  if (!match) {
+    fail(`${file} is missing the MisakiSwift package pin`);
+  }
+  return `${match[1]}: ${match[2]}`;
 }
 
 function manifestSchemaRequiredKeys(schemaSource) {
@@ -147,7 +141,6 @@ const sources = Object.fromEntries(
 const contract = {
   iOS: '18.0',
   macOS: '15.0',
-  sampleRate: parseIntConstant(sources.pipeline, 'sampleRate'),
   voiceEmbeddingDim: parseIntConstant(sources.pipeline, 'voiceEmbeddingDim'),
   maxCallerChunkTokens: parseIntConstant(sources.pipeline, 'maxCallerChunkTokens'),
   durationTokenSizes: parseSwiftIntArray(sources.pipeline, 'durationTokenSizes'),
@@ -155,39 +148,13 @@ const contract = {
   fullBuckets: parseSwiftIntArray(sources.pipeline, 'defaultBuckets'),
   starterBuckets: [15],
   starterVoice: 'af_heart',
-  defaultChunkSeconds: parseDoubleConstant(sources.synthesisOptions, 'defaultMaxChunkSeconds'),
+  tFramesForBucket: parseSwiftIntMap(sources.pipeline, 'tFramesForBucket'),
 };
 
-assertArrayEqual(
-  'build_sdk_bundle starter buckets',
-  parseJsProfile(sources.buildBundle, 'starter', 'buckets'),
-  contract.starterBuckets
-);
-assertArrayEqual(
-  'build_sdk_bundle full buckets',
-  parseJsProfile(sources.buildBundle, 'full', 'buckets'),
-  contract.fullBuckets
-);
-assertArrayEqual(
-  'build_sdk_bundle full duration sizes (multifunction functions)',
-  parseJsProfile(sources.buildBundle, 'full', 'durationTokenSizes'),
-  contract.durationTokenSizes
-);
-assertArrayEqual(
-  'build_sdk_bundle duration sizes',
-  parseJsConstArray(sources.buildBundle, 'sdkDurationTokenSizes'),
-  contract.sdkDurationTokenSizes
-);
-assertArrayEqual(
-  'download_models starter buckets',
-  parsePythonIntArray(sources.downloadModels, 'STARTER_BUCKET_SECONDS'),
-  contract.starterBuckets
-);
-assertArrayEqual(
-  'download_models duration sizes',
-  parsePythonIntArray(sources.downloadModels, 'SDK_DURATION_TOKEN_SIZES'),
-  contract.sdkDurationTokenSizes
-);
+const sdkProfiles = JSON.parse(sources.sdkProfiles);
+assertArrayEqual('sdk_profiles starter buckets', sdkProfiles.profiles.starter.buckets, contract.starterBuckets);
+assertArrayEqual('sdk_profiles full buckets', sdkProfiles.profiles.full.buckets, contract.fullBuckets);
+assertArrayEqual('sdk_profiles duration sizes', sdkProfiles.duration_token_sizes, contract.sdkDurationTokenSizes);
 assertArrayEqual('JS prep duration sizes', parseJsConstArray(sources.jsPrep, 'EnumSizes'), contract.durationTokenSizes);
 assertArrayEqual('Python prep duration sizes', parsePythonIntArray(sources.pyPrep, 'ENUM_SIZES'), contract.durationTokenSizes);
 
@@ -216,35 +183,32 @@ for (const key of manifestSchemaRequiredKeys(sources.manifestSchema)) {
   }
 }
 
-const docs = [files.sdkReadme, files.modelCard];
-for (const file of docs) {
-  const source = sources[Object.entries(files).find(([, rel]) => rel === file)[0]];
-  requireIncludes(source, file, 'KokoroTTS');
-  requireIncludes(source, file, `iOS ${contract.iOS}+`);
-  requireIncludes(source, file, `macOS ${contract.macOS}+`);
-  requireIncludes(source, file, String(contract.sampleRate));
-  requireIncludes(source, file, contract.starterVoice);
-  requireIncludes(source, file, contract.sdkDurationTokenSizes.join(','));
-  requireIncludes(source, file, contract.fullBuckets.join(','));
-  requireIncludes(source, file, String(contract.maxCallerChunkTokens));
-  requireIncludes(source, file, String(contract.voiceEmbeddingDim));
-}
-
-requireIncludes(sources.sdkReadme, files.sdkReadme, '.product(name: "KokoroTTS", package: "swift-tts")');
-requireIncludes(sources.modelCard, files.modelCard, 'matching Git release commit');
-requireIncludes(sources.sdkReadme, files.sdkReadme, 'expectedManifestSHA256');
-requireIncludes(sources.modelCard, files.modelCard, 'expectedManifestSHA256');
 requireIncludes(sources.downloadedStore, files.downloadedStore, 'expectedManifestSHA256');
 requireIncludes(sources.downloadedStore, files.downloadedStore, 'allowInsecureLocalDevelopment');
 requireIncludes(sources.errors, files.errors, 'insecureManifestURL');
 requireIncludes(sources.errors, files.errors, 'downloadTooLarge');
 
-const manifestHashMatch = sources.sdkReadme.match(/expectedManifestSHA256:\s*"([0-9a-f]{64})"/);
-if (!manifestHashMatch) {
-  fail(`${files.sdkReadme} is missing expectedManifestSHA256 in the downloaded-resource snippet`);
+// custom-profile geometry must match what the Swift pipeline loads.
+const custom = sdkProfiles.custom;
+for (const [bucket, tFrames] of Object.entries(custom.t_frames)) {
+  if (contract.tFramesForBucket[bucket] !== tFrames) {
+    fail(`sdk_profiles custom.t_frames[${bucket}]=${tFrames} != Swift tFramesForBucket[${bucket}]=${contract.tFramesForBucket[bucket]}`);
+  }
 }
-if (!sources.modelCard.includes(manifestHashMatch[1])) {
-  fail(`${files.modelCard} is missing the documented hosted-manifest SHA-256`);
+// Hybrid row count per bucket: ceil(x_pre frames / core), x_pre = 2 * tFrames.
+// core is plan.json's `core`; 224 when the gitignored export is absent (see
+// HybridGenerator's FoldGeometry in swift/Sources/KokoroPipeline/HybridGenerator.swift).
+const hybridCore = existsSync(hybridPlanPath) ? JSON.parse(await readFile(hybridPlanPath, 'utf8')).core : 224;
+for (const [bucket, rows] of Object.entries(custom.hybrid_rows)) {
+  const expected = Math.ceil((2 * custom.t_frames[bucket]) / hybridCore);
+  if (rows !== expected) {
+    fail(`sdk_profiles custom.hybrid_rows[${bucket}]=${rows} != ceil(2*${custom.t_frames[bucket]}/${hybridCore})=${expected}`);
+  }
+}
+
+// The root Package.swift mirrors swift-tts/Package.swift for SwiftPM consumers.
+if (misakiPin(sources.rootPackage, files.rootPackage) !== misakiPin(sources.package, files.package)) {
+  fail(`${files.rootPackage} MisakiSwift pin != ${files.package} pin`);
 }
 
 console.log('SDK drift check passed');

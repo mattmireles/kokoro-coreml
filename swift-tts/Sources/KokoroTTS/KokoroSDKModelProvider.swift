@@ -34,6 +34,19 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
     /// too as a precaution).
     private let usesFlexibleGenerator: Bool
 
+    /// Whether the bundle's `coreml/hybrid` generator may run: listed in the
+    /// manifest and the policy is not ``KokoroComputePolicy/cpuOnly``.
+    private let usesHybridGenerator: Bool
+
+    /// The only manifest schema this SDK reads. Schema 2 bundles ship the
+    /// split duration/F0Ntrain pairs, ANE decoder-pre, folded generators and
+    /// the `coreml/hybrid` tree; older SDKs reject them with this error too.
+    static let supportedSchemaVersion = 2
+
+    /// Manifest entry of the hybrid generator tree (plan.json, adain.bin,
+    /// hybrid_generator_r{N}.mlpackage), digested like a package.
+    static let hybridDirectoryPath = "coreml/hybrid"
+
     /// Sidecar suffix tying reusable `.mlmodelc` output to a source tree hash.
     private static let compiledSourceHashSuffix = ".kokoro-source-tree-sha256"
 
@@ -55,22 +68,34 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
             throw KokoroError.missingManifest(manifestURL)
         }
         self.rootURL = root
-        try Self.rejectRootSymlink(rootURL: root)
+        try KokoroPathGuard.rejectRootSymlink(rootURL: root)
         let manifest = try JSONDecoder().decode(KokoroRuntimeManifest.self, from: Data(contentsOf: manifestURL))
-        guard manifest.schemaVersion == 1 else {
+        guard manifest.schemaVersion == Self.supportedSchemaVersion else {
             throw KokoroError.unsupportedManifestSchema(manifest.schemaVersion)
         }
         guard manifest.hfProvenanceVerified else {
             throw KokoroError.badHash(path: "hf_provenance_verified")
         }
         let manifestModelPaths = Set(manifest.modelPackages.map(\.path))
-        self.modelsDirectory = root.appendingPathComponent("coreml", isDirectory: true)
+        let modelsDirectory = root.appendingPathComponent("coreml", isDirectory: true)
+        self.modelsDirectory = modelsDirectory
         let compiledModelsDirectory = resources.explicitCompiledModelsDirectoryURL()
             ?? Self.defaultCompiledModelsDirectory(for: manifest)
         try Self.validateCompiledModelsDirectory(bundleRootURL: root, compiledModelsDirectory: compiledModelsDirectory)
         self.compiledModelsDirectory = compiledModelsDirectory
+        // Re-rooted under `modelsDirectory`: discovery resolves symlinks
+        // (/tmp -> /private/tmp), which would fail the lexical containment checks.
         let durationChoices = KokoroPipeline.discoverDurationChoices(modelsDirectory: modelsDirectory)
-            .filter { manifestModelPaths.contains("coreml/\($0.packageURL.lastPathComponent)") }
+            .filter { $0.functionName == nil }
+            .filter {
+                manifestModelPaths.contains("coreml/\($0.packageURL.lastPathComponent)")
+                    || Self.splitDurationPackages(paths: manifestModelPaths, tokenLength: $0.tokenLength) != nil
+            }
+            .map {
+                DurationModelChoice(cacheKey: $0.cacheKey, tokenLength: $0.tokenLength,
+                                    packageURL: modelsDirectory.appendingPathComponent($0.packageURL.lastPathComponent),
+                                    requiresAttentionMask: $0.requiresAttentionMask, allowsPadding: $0.allowsPadding)
+            }
         let usesFlexibleGenerator = PipelineConstants.usesFlexibleGenerator(
             hasFlexibleGenerator: Self.listsFlexibleGenerator(manifest),
             hasAnyBucketGenerator: Self.listsBucketGenerators(manifest),
@@ -78,7 +103,6 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         )
         try Self.validateModelSet(
             rootURL: root,
-            modelsDirectory: modelsDirectory,
             manifest: manifest,
             durationChoices: durationChoices,
             usesFlexibleGenerator: usesFlexibleGenerator
@@ -86,9 +110,7 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         guard let runtimeDuration = durationChoices.first(where: {
             $0.allowsPadding && $0.tokenLength == KokoroTTS.runtimeDurationTokenLength
         }) else {
-            throw KokoroError.missingModel(
-                "kokoro_duration_t\(KokoroTTS.runtimeDurationTokenLength).mlpackage"
-            )
+            throw KokoroError.missingModel(Self.durationPackagesDetail(tokenLength: KokoroTTS.runtimeDurationTokenLength))
         }
         // The starter bundle has one 15-second acoustic bucket. Matching it
         // with one padded duration shape avoids seven independent first-load
@@ -97,6 +119,7 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         self.manifest = manifest
         self.computePolicy = computePolicy
         self.usesFlexibleGenerator = usesFlexibleGenerator
+        self.usesHybridGenerator = manifestModelPaths.contains(Self.hybridDirectoryPath) && computePolicy != .cpuOnly
         try Self.validateFileDigests(rootURL: root, manifest: manifest)
     }
 
@@ -115,28 +138,46 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         try model(cacheKey: "duration.\(choice.cacheKey)", url: choice.packageURL, units: computePolicy.duration)
     }
 
+    /// Compute units for a fast-path package (split pairs, folded generator).
+    ///
+    /// Those packages keep their measured placement under every policy except
+    /// ``KokoroComputePolicy/cpuOnly``, which runs them on the CPU instead (and
+    /// turns the hybrid generator off): a schema-2 bundle has no whole-model
+    /// fallback, so "CPU only" must still be able to run the fast-path files.
+    private func fastPathUnits(_ measured: MLComputeUnits) -> MLComputeUnits {
+        computePolicy == .cpuOnly ? .cpuOnly : measured
+    }
+
     /// Two-part duration model (ANE-layout BERT front + CPU back) when the
     /// manifest lists both packages for this size; see SplitDuration.swift.
     func splitDuration(choice: DurationModelChoice) throws -> SplitDuration? {
+        try loadSplitDuration(choice: choice, progress: nil)
+    }
+
+    private func loadSplitDuration(choice: DurationModelChoice, progress: ((String) -> Void)?) throws -> SplitDuration? {
         guard SplitDuration.allowed, choice.allowsPadding,
               let names = Self.splitDurationPackages(paths: Set(manifest.modelPackages.map(\.path)), tokenLength: choice.tokenLength)
         else { return nil }
-        let front = try model(cacheKey: "duration.front.t\(choice.tokenLength)",
-                              url: modelsDirectory.appendingPathComponent(names.front), units: SplitDuration.frontComputeUnits)
-        let back = try model(cacheKey: "duration.back.t\(choice.tokenLength)",
-                             url: modelsDirectory.appendingPathComponent(names.back), units: SplitDuration.backComputeUnits)
+        let front = try model(cacheKey: "duration.front.t\(choice.tokenLength)", url: modelsDirectory.appendingPathComponent(names.front),
+                              units: fastPathUnits(SplitDuration.frontComputeUnits), progress: progress)
+        let back = try model(cacheKey: "duration.back.t\(choice.tokenLength)", url: modelsDirectory.appendingPathComponent(names.back),
+                             units: fastPathUnits(SplitDuration.backComputeUnits), progress: progress)
         return SplitDuration(front: front, back: back)
     }
 
     /// Two-part F0Ntrain when the manifest lists both packages for this size.
     func splitF0N(tFrames: Int) throws -> SplitF0N? {
+        try loadSplitF0N(tFrames: tFrames, progress: nil)
+    }
+
+    private func loadSplitF0N(tFrames: Int, progress: ((String) -> Void)?) throws -> SplitF0N? {
         guard SplitF0N.allowed,
               let names = Self.splitF0NPackages(paths: Set(manifest.modelPackages.map(\.path)), tFrames: tFrames)
         else { return nil }
-        let front = try model(cacheKey: "f0ntrain.front.t\(tFrames)",
-                              url: modelsDirectory.appendingPathComponent(names.front), units: SplitF0N.frontComputeUnits)
-        let back = try model(cacheKey: "f0ntrain.back.t\(tFrames)",
-                             url: modelsDirectory.appendingPathComponent(names.back), units: SplitF0N.backComputeUnits)
+        let front = try model(cacheKey: "f0ntrain.front.t\(tFrames)", url: modelsDirectory.appendingPathComponent(names.front),
+                              units: fastPathUnits(SplitF0N.frontComputeUnits), progress: progress)
+        let back = try model(cacheKey: "f0ntrain.back.t\(tFrames)", url: modelsDirectory.appendingPathComponent(names.back),
+                             units: fastPathUnits(SplitF0N.backComputeUnits), progress: progress)
         return SplitF0N(front: front, back: back)
     }
 
@@ -193,27 +234,48 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         return try model(
             cacheKey: "generator.fold.\(bucketSec)",
             url: modelsDirectory.appendingPathComponent(name),
-            units: .cpuAndNeuralEngine
+            units: fastPathUnits(.cpuAndNeuralEngine)
         )
     }
 
-    /// Hybrid ANE-conv + Metal generator, when the bundle's manifest lists
-    /// `coreml/hybrid/plan.json` (README/Notes/ane-folded-generator.md). One
-    /// is kept resident; on a Metal failure (iOS background) the executor
-    /// falls back to the folded generator for that call.
+    /// Hybrid ANE-conv + Metal generator, when the manifest lists the
+    /// `coreml/hybrid` tree (README/Notes/ane-folded-generator.md). The tree
+    /// digest is checked before plan.json or adain.bin is read, and the row
+    /// package compiles into the compiled-model cache like every other model.
+    /// One is kept resident. Any error here or in its predict turns the hybrid
+    /// off for the process and the folded generator serves
+    /// (`resolveHybridGenerator` in KokoroSynthesisExecutor.swift).
     private var hybrid: (rows: Int, generator: AnyObject)?
+    private var hybridTree: KokoroRuntimeManifest.ModelPackage?
     private let hybridLock = NSLock()
     func hybridGenerator(bucketSec: Int, xPreFrames: Int) throws -> AnyObject? {
-        guard #available(macOS 15.0, iOS 18.0, *),
-              manifest.modelPackages.contains(where: { $0.path == "coreml/hybrid/plan.json" }) || HybridGenerator.enabled
-        else { return nil }
-        let dir = modelsDirectory.appendingPathComponent("hybrid")
-        guard let rows = HybridGenerator.rows(bucketSec: bucketSec, xPreFrames: xPreFrames, directory: dir) else { return nil }
+        guard #available(macOS 15.0, iOS 18.0, *), usesHybridGenerator else { return nil }
         hybridLock.lock()
         defer { hybridLock.unlock() }
+        // After a failure the folded generator serves; free the hybrid's ANE
+        // functions and IOSurfaces instead of holding both (jetsam on iOS).
+        guard HybridGenerator.allowed else { hybrid = nil; return nil }
+        let dir = modelsDirectory.appendingPathComponent("hybrid", isDirectory: true)
+        let tree = try hybridTree ?? validateModelPackageIfNeeded(dir)
+        hybridTree = tree
+        guard let rows = HybridGenerator.rows(bucketSec: bucketSec, xPreFrames: xPreFrames, directory: dir) else { return nil }
         if let hybrid, hybrid.rows == rows { return hybrid.generator }
         hybrid = nil
-        let generator = try HybridGenerator(directory: dir, rows: rows)
+        let name = "hybrid_generator_r\(rows)"
+        let source = dir.appendingPathComponent("\(name).mlpackage", isDirectory: true)
+        let cached = compiledModelsDirectory.appendingPathComponent("\(name).mlmodelc", isDirectory: true)
+        let compiled = try compiledModelURL(sourceURL: source, destinationURL: cached, sourceTreeSHA256: tree.treeSHA256)
+        let generator: HybridGenerator
+        do {
+            generator = try HybridGenerator(directory: dir, rows: rows, compiledModel: compiled)
+        } catch HybridGeneratorError.modelLoad where compiled == cached {
+            // A cached compile Core ML can no longer load: evict it and recompile
+            // once, as `model(cacheKey:)` does. Other errors (plan, Metal,
+            // KOKORO_HYBRID_E5) are not the cache's fault and are not retried.
+            try Self.removeCompiledCache(cacheRootURL: compiledModelsDirectory, destinationURL: cached)
+            let recompiled = try compiledModelURL(sourceURL: source, destinationURL: cached, sourceTreeSHA256: tree.treeSHA256)
+            generator = try HybridGenerator(directory: dir, rows: rows, compiledModel: recompiled)
+        }
         hybrid = (rows, generator)
         return generator
     }
@@ -264,34 +326,29 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         progress: ((String) -> Void)? = nil
     ) throws {
         let selectedBuckets = bucketSeconds ?? availableBucketSeconds()
-        if let actualTokens {
-            let choice = try KokoroPipeline.selectDurationChoice(durationChoices, actualTokens: actualTokens)
+        let choices = try actualTokens.map { [try KokoroPipeline.selectDurationChoice(durationChoices, actualTokens: $0)] }
+            ?? durationChoices
+        // The same program the executor will run: the split pair when it ships.
+        for choice in choices where try loadSplitDuration(choice: choice, progress: progress) == nil {
             _ = try model(
                 cacheKey: "duration.\(choice.cacheKey)",
                 url: choice.packageURL,
                 units: computePolicy.duration,
                 progress: progress
             )
-        } else {
-            for choice in durationChoices {
-                _ = try model(
-                    cacheKey: "duration.\(choice.cacheKey)",
-                    url: choice.packageURL,
-                    units: computePolicy.duration,
-                    progress: progress
-                )
-            }
         }
         for bucket in selectedBuckets {
             guard let tFrames = PipelineConstants.tFramesForBucket[bucket] else {
                 throw KokoroError.missingModel("bucket \(bucket)s")
             }
-            _ = try model(
-                cacheKey: "f0ntrain.\(tFrames)",
-                url: modelsDirectory.appendingPathComponent("kokoro_f0ntrain_t\(tFrames).mlpackage"),
-                units: computePolicy.f0ntrain,
-                progress: progress
-            )
+            if try loadSplitF0N(tFrames: tFrames, progress: progress) == nil {
+                _ = try model(
+                    cacheKey: "f0ntrain.\(tFrames)",
+                    url: modelsDirectory.appendingPathComponent("kokoro_f0ntrain_t\(tFrames).mlpackage"),
+                    units: computePolicy.f0ntrain,
+                    progress: progress
+                )
+            }
             _ = try model(
                 cacheKey: "decoder_pre.\(bucket)",
                 url: modelsDirectory.appendingPathComponent("kokoro_decoder_pre_\(bucket)s.mlpackage"),
@@ -302,7 +359,7 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
                 _ = try model(
                     cacheKey: "generator.fold.\(bucket)",
                     url: modelsDirectory.appendingPathComponent(folded),
-                    units: .cpuAndNeuralEngine,
+                    units: fastPathUnits(.cpuAndNeuralEngine),
                     progress: progress
                 )
             } else if !usesFlexibleGenerator {
@@ -335,7 +392,7 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
             let linear_weights: [Float]
             let linear_bias: Float
         }
-        let url = try Self.containedURL(rootURL: rootURL, relativePath: manifest.runtimeAssets.hnsfWeights.path)
+        let url = try KokoroPathGuard.containedURL(rootURL: rootURL, relativePath: manifest.runtimeAssets.hnsfWeights.path)
         let payload = try JSONDecoder().decode(Payload.self, from: Data(contentsOf: url))
         guard payload.linear_weights.count == 9, payload.linear_weights.allSatisfy(\.isFinite), payload.linear_bias.isFinite else {
             throw KokoroError.badHash(path: manifest.runtimeAssets.hnsfWeights.path)
@@ -345,7 +402,7 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
 
     /// Loads the verified vocab declared by the runtime manifest.
     func vocab() throws -> [String: Int32] {
-        let url = try Self.containedURL(rootURL: rootURL, relativePath: manifest.runtimeAssets.vocab.path)
+        let url = try KokoroPathGuard.containedURL(rootURL: rootURL, relativePath: manifest.runtimeAssets.vocab.path)
         return try KokoroTextProcessor.loadVocab(from: url)
     }
 
@@ -361,7 +418,7 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         }
         progress?("resolve.\(cacheKey)")
         guard FileManager.default.fileExists(atPath: url.path) else {
-            throw KokoroError.missingModel(url.lastPathComponent)
+            throw KokoroError.missingModel(Self.missingPackageDetail(url.lastPathComponent))
         }
         let package = try validateModelPackageIfNeeded(url)
         let config = MLModelConfiguration()
@@ -409,6 +466,26 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         return loaded
     }
 
+    /// The missing package's name, prefixed with the environment switch that
+    /// asked for it. A schema-2 bundle ships only the fast-path packages, so
+    /// KOKORO_SPLIT_DURATION=0, KOKORO_SPLIT_F0N=0 or KOKORO_FOLDED_GENERATOR=0
+    /// sends the stage to a whole or GPU package the bundle does not have.
+    static func missingPackageDetail(_ name: String) -> String {
+        let switches = [
+            ("kokoro_duration_t", SplitDuration.envKey, SplitDuration.allowed),
+            ("kokoro_f0ntrain_t", SplitF0N.envKey, SplitF0N.allowed),
+            ("kokoro_decoder_har_post_", PipelineConstants.foldedGeneratorEnvKey, PipelineConstants.foldedGeneratorAllowed),
+        ]
+        guard let (_, key, _) = switches.first(where: { name.hasPrefix($0.0) && !$0.2 }) else { return name }
+        return "\(key)=0 needs a bundle with \(name)"
+    }
+
+    /// Names a missing duration program by the split pair the SDK runs.
+    static func durationPackagesDetail(tokenLength: Int) -> String {
+        let names = SplitDuration.packageNames(tokenLength: tokenLength)
+        return "\(names.front) + \(names.back)"
+    }
+
     /// Returns a reusable compiled model URL, compiling and caching if needed.
     private func compiledModelURL(sourceURL: URL, destinationURL: URL, sourceTreeSHA256: String) throws -> URL {
         if try Self.compiledSidecarMatches(
@@ -425,7 +502,7 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
             throw KokoroError.coreMLLoadFailed(sourceURL.lastPathComponent)
         }
         do {
-            try Self.rejectExistingSymlinkComponents(
+            try KokoroPathGuard.rejectExistingSymlinkComponents(
                 rootURL: compiledModelsDirectory,
                 targetURL: destinationURL.deletingLastPathComponent()
             )
@@ -433,7 +510,7 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
                 at: destinationURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            try Self.rejectExistingSymlinkComponents(
+            try KokoroPathGuard.rejectExistingSymlinkComponents(
                 rootURL: compiledModelsDirectory,
                 targetURL: destinationURL.deletingLastPathComponent()
             )
@@ -460,7 +537,7 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         guard FileManager.default.fileExists(atPath: destinationURL.path) else {
             return false
         }
-        try rejectExistingSymlinkComponents(rootURL: cacheRootURL, targetURL: destinationURL)
+        try KokoroPathGuard.rejectExistingSymlinkComponents(rootURL: cacheRootURL, targetURL: destinationURL)
         let values = try destinationURL.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
         guard values.isSymbolicLink != true, values.isDirectory == true else {
             return false
@@ -469,7 +546,7 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         guard FileManager.default.fileExists(atPath: sidecarURL.path) else {
             return false
         }
-        try rejectExistingSymlinkComponents(rootURL: cacheRootURL, targetURL: sidecarURL)
+        try KokoroPathGuard.rejectExistingSymlinkComponents(rootURL: cacheRootURL, targetURL: sidecarURL)
         let sidecarValues = try sidecarURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
         guard sidecarValues.isSymbolicLink != true,
               sidecarValues.isRegularFile == true,
@@ -482,12 +559,12 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
 
     /// Removes a corrupt compiled cache entry and its source-hash sidecar.
     private static func removeCompiledCache(cacheRootURL: URL, destinationURL: URL) throws {
-        try rejectExistingSymlinkComponents(rootURL: cacheRootURL, targetURL: destinationURL)
+        try KokoroPathGuard.rejectExistingSymlinkComponents(rootURL: cacheRootURL, targetURL: destinationURL)
         if FileManager.default.fileExists(atPath: destinationURL.path) {
             try FileManager.default.removeItem(at: destinationURL)
         }
         let sidecar = compiledSourceHashURL(for: destinationURL)
-        try rejectExistingSymlinkComponents(rootURL: cacheRootURL, targetURL: sidecar)
+        try KokoroPathGuard.rejectExistingSymlinkComponents(rootURL: cacheRootURL, targetURL: sidecar)
         if FileManager.default.fileExists(atPath: sidecar.path) {
             try FileManager.default.removeItem(at: sidecar)
         }
@@ -515,7 +592,7 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         guard let expected = manifest.modelPackages.first(where: { $0.path == relativePath }) else {
             throw KokoroError.missingModel(packageURL.lastPathComponent)
         }
-        try Self.rejectExistingSymlinkComponents(rootURL: rootURL, targetURL: packageURL)
+        try KokoroPathGuard.rejectExistingSymlinkComponents(rootURL: rootURL, targetURL: packageURL)
         try Self.validatePackageTree(packageURL: packageURL, relativePath: relativePath, expected: expected)
         return expected
     }
@@ -531,9 +608,9 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
 
     /// Validates one file digest entry.
     private static func validate(digest: KokoroRuntimeManifest.FileDigest, rootURL: URL) throws {
-        let url = try containedURL(rootURL: rootURL, relativePath: digest.path)
+        let url = try KokoroPathGuard.containedURL(rootURL: rootURL, relativePath: digest.path)
         let path = url.standardizedFileURL.path
-        try rejectExistingSymlinkComponents(rootURL: rootURL, targetURL: url)
+        try KokoroPathGuard.rejectExistingSymlinkComponents(rootURL: rootURL, targetURL: url)
         guard FileManager.default.fileExists(atPath: path) else {
             if digest.path.hasPrefix("voices/") {
                 throw KokoroError.missingVoice(url.deletingPathExtension().lastPathComponent)
@@ -552,34 +629,12 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         }
     }
 
-    /// Resolves a manifest path under a bundle root without accepting lexical escapes.
-    private static func containedURL(rootURL: URL, relativePath: String) throws -> URL {
-        let components = relativePath.split(separator: "/", omittingEmptySubsequences: false)
-        guard !relativePath.hasPrefix("/"),
-              !relativePath.contains("\\"),
-              !components.isEmpty,
-              components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
-            throw KokoroError.pathEscape(relativePath)
-        }
-        let url = components.reduce(rootURL) { partial, component in
-            partial.appendingPathComponent(String(component))
-        }
-        let root = rootURL.standardizedFileURL.path
-        let target = url.standardizedFileURL.path
-        guard target == root || target.hasPrefix("\(root)/") else {
-            throw KokoroError.pathEscape(relativePath)
-        }
-        return url
-    }
-
     /// Verifies the compiled cache root can be used without following symlinks.
     private static func validateCompiledModelsDirectory(bundleRootURL rootURL: URL, compiledModelsDirectory: URL) throws {
-        let root = rootURL.standardizedFileURL.path
-        let target = compiledModelsDirectory.standardizedFileURL.path
-        if target == root || target.hasPrefix("\(root)/") {
-            try rejectExistingSymlinkComponents(rootURL: rootURL, targetURL: compiledModelsDirectory)
+        if KokoroPathGuard.isInside(compiledModelsDirectory, root: rootURL) {
+            try KokoroPathGuard.rejectExistingSymlinkComponents(rootURL: rootURL, targetURL: compiledModelsDirectory)
         } else {
-            try rejectRootSymlink(rootURL: compiledModelsDirectory)
+            try KokoroPathGuard.rejectRootSymlink(rootURL: compiledModelsDirectory)
         }
     }
 
@@ -622,15 +677,24 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
     }
 
     /// Verifies the manifest describes a model set that can satisfy synthesis.
-    private static func validateModelSet(
+    ///
+    /// Per stage, either program form satisfies it: duration and F0Ntrain by
+    /// the whole package or the split pair; a bucket's generator by a folded
+    /// package (then no har_post or range package is needed), else the
+    /// flexible or per-bucket GPU generator. `coreml/hybrid` needs a folded
+    /// package for every bucket: it is the hybrid's fallback, and serves the
+    /// buckets below ``HybridGenerator/minBucketSec``. Checks the bundle only;
+    /// the KOKORO_* environment switches do not change what it must contain.
+    static func validateModelSet(
         rootURL: URL,
-        modelsDirectory: URL,
         manifest: KokoroRuntimeManifest,
         durationChoices: [DurationModelChoice],
         usesFlexibleGenerator: Bool
     ) throws {
         guard !durationChoices.isEmpty else {
-            throw KokoroError.missingModel("duration")
+            // KOKORO_SPLIT_DURATION=0 hides the split pair from discovery.
+            throw KokoroError.missingModel(SplitDuration.allowed ? "duration"
+                : missingPackageDetail("kokoro_duration_t\(KokoroTTS.runtimeDurationTokenLength).mlpackage"))
         }
         let sdkDurationTokenSizes = [KokoroTTS.runtimeDurationTokenLength]
         guard manifest.durationTokenSizes == sdkDurationTokenSizes else {
@@ -638,16 +702,15 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         }
         let paths = Set(manifest.modelPackages.map(\.path))
         for tokenLength in manifest.durationTokenSizes {
-            let name = "kokoro_duration_t\(tokenLength).mlpackage"
-            let path = "coreml/\(name)"
-            guard paths.contains(path),
-                  durationChoices.contains(where: { $0.tokenLength == tokenLength && $0.packageURL.lastPathComponent == name }) else {
-                throw KokoroError.missingModel(name)
+            guard paths.contains("coreml/kokoro_duration_t\(tokenLength).mlpackage")
+                    || splitDurationPackages(paths: paths, tokenLength: tokenLength) != nil,
+                  durationChoices.contains(where: { $0.tokenLength == tokenLength }) else {
+                throw KokoroError.missingModel(durationPackagesDetail(tokenLength: tokenLength))
             }
         }
         for package in manifest.modelPackages {
-            let url = try containedURL(rootURL: rootURL, relativePath: package.path)
-            try rejectExistingSymlinkComponents(rootURL: rootURL, targetURL: url)
+            let url = try KokoroPathGuard.containedURL(rootURL: rootURL, relativePath: package.path)
+            try KokoroPathGuard.rejectExistingSymlinkComponents(rootURL: rootURL, targetURL: url)
             let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
             guard FileManager.default.fileExists(atPath: url.path),
                   values?.isDirectory == true,
@@ -655,14 +718,20 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
                 throw KokoroError.missingModel(url.lastPathComponent)
             }
         }
+        let listsHybrid = paths.contains(hybridDirectoryPath)
         var required = usesFlexibleGenerator ? [PipelineConstants.flexibleGeneratorPackage] : []
         for bucket in manifest.buckets {
             guard let tFrames = PipelineConstants.tFramesForBucket[bucket] else {
                 throw KokoroError.missingModel("bucket \(bucket)s")
             }
-            required += ["kokoro_f0ntrain_t\(tFrames).mlpackage", "kokoro_decoder_pre_\(bucket)s.mlpackage"]
-            if let folded = foldedPackageName(manifest, bucket: bucket) {
+            if splitF0NPackages(paths: paths, tFrames: tFrames) == nil {
+                required.append("kokoro_f0ntrain_t\(tFrames).mlpackage")
+            }
+            required.append("kokoro_decoder_pre_\(bucket)s.mlpackage")
+            if let folded = PipelineConstants.foldedGeneratorCandidates(bucketSec: bucket).first(where: { paths.contains("coreml/\($0)") }) {
                 required.append(folded)
+            } else if listsHybrid {
+                throw KokoroError.missingModel(PipelineConstants.foldedGeneratorPackage(bucketSec: bucket, poly: true))
             } else if !usesFlexibleGenerator {
                 required.append("kokoro_decoder_har_post_\(bucket)s.mlpackage")
             }
@@ -671,47 +740,7 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
             guard paths.contains("coreml/\(name)") else {
                 throw KokoroError.missingModel(name)
             }
-            let url = modelsDirectory.appendingPathComponent(name, isDirectory: true)
-            guard FileManager.default.fileExists(atPath: url.path) else {
-                throw KokoroError.missingModel(name)
-            }
         }
-    }
-
-    /// Rejects symlinked bundle components before reads or writes can follow them.
-    private static func rejectExistingSymlinkComponents(rootURL: URL, targetURL: URL) throws {
-        let root = rootURL.standardizedFileURL.path
-        let target = targetURL.standardizedFileURL.path
-        guard target == root || target.hasPrefix("\(root)/") else {
-            throw KokoroError.pathEscape(target)
-        }
-        try rejectRootSymlink(rootURL: rootURL)
-        let suffix = String(target.dropFirst(root.count)).split(separator: "/")
-        var current = rootURL
-        for component in suffix {
-            current = current.appendingPathComponent(String(component))
-            if Self.isSymbolicLink(current) {
-                throw KokoroError.pathEscape(current.path)
-            }
-            guard FileManager.default.fileExists(atPath: current.path) else {
-                continue
-            }
-        }
-    }
-
-    /// Rejects a generated bundle root that is itself a symlink.
-    private static func rejectRootSymlink(rootURL: URL) throws {
-        if Self.isSymbolicLink(rootURL) {
-            throw KokoroError.pathEscape(rootURL.path)
-        }
-        guard FileManager.default.fileExists(atPath: rootURL.path) else {
-            return
-        }
-    }
-
-    /// Returns true when a URL is itself a symbolic link.
-    private static func isSymbolicLink(_ url: URL) -> Bool {
-        (try? FileManager.default.destinationOfSymbolicLink(atPath: url.path)) != nil
     }
 
     /// Validates a model package against the manifest tree digest.

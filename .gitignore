@@ -225,3 +225,7 @@ tmp/
 # Root SwiftPM manifest build output
 /.build/
 /.swiftpm/
+
+# kokoro-say default output and contributor weights (README quickstart)
+/kokoro.wav
+/kokoro-82m/

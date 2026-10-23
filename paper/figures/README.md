@@ -35,9 +35,9 @@ encoding.
 
 | File | Type | Data source | Generator |
 |------|------|-------------|-----------|
-| `fig-kokoro-pipeline.pdf` | TikZ | §4.1 (pipeline diagram + staged policy) | `fig-kokoro-pipeline.tex` |
+| `fig-kokoro-pipeline.pdf` | TikZ | §4.1 + Table `tab:cs1-placement` (shipped placement) + §`sec:cs1-hybrid` (hybrid generator) | `fig-kokoro-pipeline.tex` |
 | `fig-mrt2-pipeline.pdf` | TikZ | §6.2 (per-frame loop) + §6.7 (placement, per-stage ms) + §6.1 (40 ms deadline) | `fig-mrt2-pipeline.tex` |
-| `fig-cs1-latency.pdf` | matplotlib | §5.3 (Config F vs MLX) | `src/fig_cs1_latency.py` |
+| `fig-cs1-latency.pdf` | matplotlib | Tables `tab:cs1-mac` + `tab:cs1-iphone` (plan 014 rerun; Surgical vs MLX) | `src/fig_cs1_latency.py` |
 | `fig-ane-ladder.pdf` | matplotlib | §6.3 (falsification ladder table) | `src/fig_ane_ladder.py` |
 | `fig-power.pdf` | matplotlib | §6.7 (A14 paired power) | `src/fig_power.py` |
 
@@ -46,14 +46,15 @@ encoding.
 Captions live in LaTeX, not inside the figures. Drafts below — each states what the
 reader should conclude.
 
-**fig-kokoro-pipeline** — *The decomposed Kokoro-82M pipeline: four Core ML model
-families and three native Swift stages, zero Python at inference time. Each stage is
-classified by computational motif and placed on the SoC engine that measurement
-selects (color = placement); only DecoderPre is admitted to the ANE, while the
-geometry-rejected GeneratorFromHar and the sequential Duration model run Core ML on
-CPU+GPU. The decomposition also exposes cross-unit parallelism a monolithic graph
-cannot express: DecoderPre (ANE) and the hn-nsf harmonic source (background CPU
-thread) execute concurrently.*
+**fig-kokoro-pipeline** — *The shipped Kokoro-82M pipeline: four Core ML model
+families and three native Swift stages, zero Python at inference time. Color shows
+placement; a split fill marks a stage that runs on two engines. Duration runs its BERT
+front on the ANE and its LSTM back on the CPU; F0Ntrain runs a CPU front and an ANE
+back; DecoderPre runs on the ANE concurrently with the Swift hn-nsf harmonic source.
+For inputs of 7 s and longer the generator is one stage on two engines: 53 convolutions
+on the ANE and AdaIN, Snake and branch joins in Metal on the GPU, sharing IOSurface
+memory without copies. Below 7 s, and as the fallback if Metal fails, a folded all-ANE
+generator runs instead. The iSTFT tail and trim run in Swift.*
 
 **fig-mrt2-pipeline** — *The Magenta RealTime 2 per-frame streaming loop. Every frame
 must complete within the 40 ms (25 Hz) audio deadline, which never pauses. Audio-rate
@@ -63,11 +64,14 @@ the host synthesizes PCM — and the three Core ML stages ship on three differen
 on A17 Pro shown). Generation runs ahead of playback through a lock-free SPSC ring feeding
 an `AVAudioSourceNode`; the render callback never blocks on the model.*
 
-**fig-cs1-latency** — *Kokoro-82M end-to-end latency, the Surgical pipeline (Config F)
-vs. MLX, warm medians across three Macs and five input buckets (log axis; §5.3). The
-Surgical pipeline is faster on every completed cell, by 1.6–2.3× (annotated), with the
-gap widest on the newest silicon. The pinned MLX build fails every 3 s input with a
-broadcast-shape error, so no 3 s comparison exists.*
+**fig-cs1-latency** — *Kokoro-82M end-to-end latency, the shipped Surgical pipeline
+(hybrid generator, folded below 7 s) vs. MLX, warm medians across five input buckets on
+two Macs and two iPhones (log axis; Tables~\ref{tab:cs1-mac}
+and~\ref{tab:cs1-iphone}). The Surgical pipeline is faster on every completed cell:
+3.5–4.8× on the M2 Ultra, 8.1–9.8× on the M1 Mini, 8.9–15.1× on the A17 Pro and
+9.3–15.2× on the A14 (annotated). The pinned mlx-audio fails every 3 s Mac
+input with a broadcast-shape error, and the memory watchdog kills kokoro-ios at 30 s on
+the 4 GB A14.*
 
 **fig-ane-ladder** — *The falsification ladder that located the ANE admission cliff for
 streaming transformers (p99 per frame, iPhone 12 Pro / A14, FP16; §6.3). Every rung is
@@ -86,9 +90,15 @@ backpressure.*
 
 ## Notes / deviations from spec
 
-- **fig-cs1-latency** uses a **log** y-axis (spec left this to judgment): the buckets
-  span 50 ms → 3078 ms, so linear would crush the short buckets illegibly. Speedup labels
-  and the "MLX error" markers preserve the per-pair story.
+- **fig-cs1-latency** uses a **log** y-axis: the cells span 54 ms → 4797 ms, so a
+  linear axis would crush the short buckets. Speedup labels and the "MLX error" / "MLX
+  OOM" markers preserve the per-pair story. The M2 Air is **excluded**: it was the
+  noisiest host and `tab:cs1-mac` marks its ratios as not comparable. The e5rt
+  (private-API) column is not plotted, because no claim uses it.
+- **fig-kokoro-pipeline** uses a **split fill** for stages placed on two engines
+  (Duration, F0Ntrain, Generator), with a dashed divider below each centered title.
+  The Generator's GPU half is Metal, not Core ML, so the legend has a separate
+  "Metal (GPU)" entry. No Core ML stage ships on CPU+GPU any more.
 - **fig-mrt2-pipeline** annotates each Core ML stage with its **shipped** per-frame p50
   from §6.7 (temporal 12.2 / depth 8.4 / decoder 8.3 ms, A17 Pro) and labels temporal
   placement as CPU+GPU (shipped) with "ANE provable, §6.3" — matching the paper's honest

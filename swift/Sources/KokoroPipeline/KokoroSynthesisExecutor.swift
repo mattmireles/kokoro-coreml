@@ -116,6 +116,45 @@ func logFootprint(_ stage: String) {
     }
 }
 
+/// The hybrid generator for one clip, or nil. Any error getting it (plan,
+/// digest, compile, ANE load, no Metal) goes to `hybridFailed`.
+func resolveHybridGenerator(_ provider: KokoroModelProvider, bucketSec: Int, xPreFrames: Int,
+                            requested: Bool = hybridRequested()) throws -> AnyObject? {
+    // No failure check here: every provider gates on HybridGenerator.allowed /
+    // .enabled itself, and must be called after a failure so it can release
+    // the dead hybrid (its ANE functions and IOSurfaces) instead of holding it
+    // next to the folded generator.
+    guard #available(macOS 15.0, iOS 18.0, *) else { return nil }
+    do {
+        return try provider.hybridGenerator(bucketSec: bucketSec, xPreFrames: xPreFrames)
+    } catch {
+        try hybridFailed(error, requested: requested)
+        return nil
+    }
+}
+
+private func hybridRequested() -> Bool {
+    guard #available(macOS 15.0, iOS 18.0, *) else { return false }
+    return HybridGenerator.requested
+}
+
+/// A hybrid error. When a benchmark requested the hybrid it is rethrown, so a
+/// folded run is never timed under a hybrid label. Otherwise it is recorded
+/// with `HybridGenerator.recordFailure`, which turns the hybrid off for the
+/// process; the folded generator serves instead.
+func hybridFailed(_ error: Error, requested: Bool = hybridRequested()) throws {
+    if requested { throw error }
+    if #available(macOS 15.0, iOS 18.0, *) { HybridGenerator.recordFailure(error) }
+}
+
+/// x_pre length the flexible generator runs at: the real length rounded up to
+/// the granule and clamped to the program's bounds; nil for a fixed shape.
+private func flexibleXPreTime(_ model: MLModel, realFrames: Int) throws -> Int? {
+    guard let accepted = flexibleTimeRange(of: model, input: "x_pre") else { return nil }
+    return try flexibleTimeAxis(realFrames: realFrames, accepted: accepted,
+                                granule: PipelineConstants.flexibleXPreGranuleFrames, stage: "generator")
+}
+
 public func executeKokoroSynthesis(
     request: KokoroSynthesisRequest,
     modelProvider: KokoroModelProvider,
@@ -161,6 +200,7 @@ private func executeKokoroSynthesisBody(
     )
     let durationModel: StagePredictor = try modelProvider.splitDuration(choice: durationChoice)
         ?? modelProvider.durationModel(choice: durationChoice)
+    let durationPath = durationModel is SplitDuration ? "split" : "whole"
 
     try writeDurationInputs(durationInput, tensorDump: &tensorDump)
 
@@ -279,6 +319,7 @@ private func executeKokoroSynthesisBody(
     try modelProvider.prepareForBucket(bucketSec: bucketSec, tFrames: tFrames)
     let f0nModel: StagePredictor = try modelProvider.splitF0N(tFrames: tFrames)
         ?? modelProvider.f0ntrainModel(tFrames: tFrames)
+    let f0Path = f0nModel is SplitF0N ? "split" : "whole"
     let enPadded = try zeroPad3D(
         source: en,
         channels: PipelineConstants.hiddenDim,
@@ -317,7 +358,7 @@ private func executeKokoroSynthesisBody(
     let t8 = CFAbsoluteTimeGetCurrent()
     // A folded ANE generator replaces the GPU ones: do not open the flexible
     // program (or any GPU generator) when the bucket has one.
-    let hybridGen = try modelProvider.hybridGenerator(bucketSec: bucketSec, xPreFrames: 2 * frames)
+    let hybridGen = try resolveHybridGenerator(modelProvider, bucketSec: bucketSec, xPreFrames: 2 * frames)
     var foldedGen = hybridGen == nil ? try modelProvider.foldedGeneratorModel(bucketSec: bucketSec) : nil
     let flexibleGen = hybridGen == nil && foldedGen == nil ? try modelProvider.flexibleGeneratorModel() : nil
     let bucketSamples = bucketSec * PipelineConstants.sampleRate
@@ -340,12 +381,7 @@ private func executeKokoroSynthesisBody(
     // The flexible generator takes x_pre and har at the real length rounded up
     // to the granule (and the program's bounds); har is then built from the F0
     // curve at that length, and stageInputs masks the padded tail.
-    let genXPreTime: Int?
-    if let flexibleGen, let accepted = flexibleTimeRange(of: flexibleGen, input: "x_pre") {
-        genXPreTime = try flexibleTimeAxis(realFrames: 2 * frames, accepted: accepted, granule: PipelineConstants.flexibleXPreGranuleFrames, stage: "generator")
-    } else {
-        genXPreTime = nil
-    }
+    let genXPreTime = try flexibleGen.flatMap { try flexibleXPreTime($0, realFrames: 2 * frames) }
     let harF0 = genXPreTime.map { zeroPad1D(source: f0Curve, targetLength: $0) } ?? f0Padded
 
     // Stage 7 starts here: the hn-nsf harmonic source needs only the F0 curve,
@@ -436,9 +472,14 @@ private func executeKokoroSynthesisBody(
         do {
             hybridAudio = try hybrid.synthesize(xPre: xPre, validXPreFrames: originalF0Len, har: harFlat,
                                                 harFrames: harFrames, refS: request.refS)
-        } catch HybridGeneratorError.metalFailed {
-            // No GPU right now (e.g. iOS background): run this clip on the folded ANE generator.
-            foldedGen = try modelProvider.foldedGeneratorModel(bucketSec: bucketSec)
+        } catch {
+            // Any hybrid failure (no GPU in the iOS background, an ANE predict
+            // error): this clip and the rest of the process use the folded
+            // generator. The folded generator is the hybrid's only fallback (the
+            // SDK requires it whenever hybrid/ ships); without one the error stands.
+            try hybridFailed(error)
+            guard let folded = try modelProvider.foldedGeneratorModel(bucketSec: bucketSec) else { throw error }
+            foldedGen = folded
         }
     }
     if #available(macOS 15.0, iOS 18.0, *), var audio = hybridAudio, let hybrid = hybridGen as? HybridGenerator {
@@ -464,7 +505,10 @@ private func executeKokoroSynthesisBody(
             xPreExpectedTime: hybrid.geometry.w0,
             harExpectedTime: hybrid.geometry.w0 * FoldGeometry.stage2Rate + hybrid.plan.extra2,
             trimSampleCount: audio.count,
-            tokenDurationFrames: predDur
+            tokenDurationFrames: predDur,
+            durationPath: durationPath,
+            f0Path: f0Path,
+            generatorPath: "hybrid"
         )
     }
     if let foldedGen, let geometry = FoldGeometry(model: foldedGen) {
@@ -500,7 +544,10 @@ private func executeKokoroSynthesisBody(
             xPreExpectedTime: geometry.w0,
             harExpectedTime: geometry.w2,
             trimSampleCount: audio.count,
-            tokenDurationFrames: predDur
+            tokenDurationFrames: predDur,
+            durationPath: durationPath,
+            f0Path: f0Path,
+            generatorPath: "folded"
         )
     }
 
@@ -583,7 +630,10 @@ private func executeKokoroSynthesisBody(
         xPreExpectedTime: xPreExpectedTime,
         harExpectedTime: harExpectedTime,
         trimSampleCount: trimLen,
-        tokenDurationFrames: predDur
+        tokenDurationFrames: predDur,
+        durationPath: durationPath,
+        f0Path: f0Path,
+        generatorPath: flexibleGen == nil ? "bucket" : "flexible"
     )
 }
 
@@ -748,7 +798,7 @@ private func warmModels(
 
     // With a folded ANE generator, warm only that: loading the GPU generator as
     // well costs ~1 GB of footprint at 30 s and it would never run.
-    if try modelProvider.hybridGenerator(bucketSec: probe.bucketSec, xPreFrames: 2 * probe.validFrames) != nil {
+    if try resolveHybridGenerator(modelProvider, bucketSec: probe.bucketSec, xPreFrames: 2 * probe.validFrames) != nil {
         return  // HybridGenerator compiles and loads in its init; nothing else to warm
     }
     if let folded = try modelProvider.foldedGeneratorModel(bucketSec: probe.bucketSec) {

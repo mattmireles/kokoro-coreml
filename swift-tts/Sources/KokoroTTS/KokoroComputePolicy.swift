@@ -29,6 +29,12 @@ public struct KokoroComputePolicy: Equatable, Sendable {
     )
 
     /// Explicit CPU-only policy for callers that intentionally choose it.
+    ///
+    /// The one policy the fast-path packages honour: under it the split
+    /// duration/F0Ntrain pairs and the folded generator load on the CPU, and
+    /// the hybrid generator (ANE + Metal) is off. Under every other policy
+    /// those packages keep their measured placement and only the whole-model
+    /// stages use the per-stage units below.
     public static let cpuOnly = KokoroComputePolicy(
         duration: .cpuOnly,
         f0ntrain: .cpuOnly,

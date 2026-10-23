@@ -1,22 +1,52 @@
 // swift-tools-version: 5.9
 // Root manifest so apps can depend on this repo straight from GitHub:
 //   .package(url: "https://github.com/mattmireles/kokoro-coreml.git", revision: "<commit>")
-// It exposes the two runtime libraries only. Benchmarks, CLIs and tests live
-// in swift/Package.swift. Keep the target paths below in sync with it.
+// then `.product(name: "KokoroTTS", package: "kokoro-coreml")` for raw text ->
+// speech, or KokoroPipeline / KokoroG2P for the low-level runtime.
+// `swift run -c release kokoro-say "Hello"` from the repo root speaks to
+// ./kokoro.wav. Benchmarks, other CLIs and tests live in swift/Package.swift and
+// swift-tts/Package.swift. Keep the target paths and the MisakiSwift pin below
+// in sync with those two manifests.
+//
+// macOS 15 / iOS 18: KokoroTTS's G2P dependency (MisakiSwift) requires them.
 
 import PackageDescription
 
 let package = Package(
     name: "KokoroCoreML",
     platforms: [
-        .macOS(.v13),
-        .iOS(.v16),
+        .macOS("15.0"),
+        .iOS("18.0"),
     ],
     products: [
+        .library(name: "KokoroTTS", targets: ["KokoroTTS"]),
         .library(name: "KokoroPipeline", targets: ["KokoroPipeline"]),
         .library(name: "KokoroG2P", targets: ["KokoroG2P"]),
+        .executable(name: "kokoro-say", targets: ["KokoroSay"]),
+    ],
+    dependencies: [
+        .package(
+            url: "https://github.com/mattmireles/MisakiSwift",
+            revision: "3a27756a780fc138e328a96e533fb440a3419d5b"
+        ),
     ],
     targets: [
+        .target(
+            name: "KokoroTTS",
+            dependencies: [
+                "KokoroPipeline",
+                .product(name: "MisakiSwift", package: "MisakiSwift"),
+            ],
+            path: "swift-tts/Sources/KokoroTTS",
+            resources: [
+                .process("Resources"),
+            ]
+        ),
+        .executableTarget(
+            name: "KokoroSay",
+            dependencies: ["KokoroTTS"],
+            path: "swift-tts/Sources/KokoroSay"
+        ),
         .target(
             name: "KokoroPipeline",
             path: "swift/Sources/KokoroPipeline"

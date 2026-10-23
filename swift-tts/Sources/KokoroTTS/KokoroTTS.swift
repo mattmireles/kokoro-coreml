@@ -30,6 +30,9 @@ public actor KokoroTTS {
     /// hn-NSF linear weights used by the Swift harmonic source.
     private let hnsf: (linearWeights: [Float], linearBias: Float)
 
+    /// Paths and stage timings of the most recent synthesis or prewarm.
+    public private(set) var lastReport: KokoroSynthesisReport?
+
     /// Creates a loaded facade.
     ///
     /// - Parameters:
@@ -288,6 +291,8 @@ public actor KokoroTTS {
         let inputs = try prepare(text, voice: voice, options: options)
         var joiner = PcmStreamJoiner(sampleRate: PipelineConstants.sampleRate)
         var produced = false
+        var chunks: [KokoroSynthesisReport.Chunk] = []
+        defer { lastReport = KokoroSynthesisReport(chunks: chunks) }
         func emit(_ samples: [Float]) throws {
             guard !samples.isEmpty else { return }
             guard samples.allSatisfy({ $0.isFinite }) else { throw KokoroError.invalidAudioOutput }
@@ -305,6 +310,7 @@ public actor KokoroTTS {
                 linearBias: hnsf.linearBias
             ) { _, result in
                 try Task.checkCancellation()
+                chunks.append(KokoroSynthesisReport.Chunk(result))
                 try emit(joiner.push(result.audio))
             }
             try emit(joiner.finish())
@@ -387,6 +393,8 @@ public actor KokoroTTS {
         hnsf: (linearWeights: [Float], linearBias: Float)
     ) throws -> KokoroAudio {
         var segments: [[Float]] = []
+        var chunks: [KokoroSynthesisReport.Chunk] = []
+        defer { lastReport = KokoroSynthesisReport(chunks: chunks) }
         try Task.checkCancellation()
         try executeKokoroSynthesisPipelined(
             requests: inputs.map { $0.synthesisRequest() },
@@ -395,6 +403,7 @@ public actor KokoroTTS {
             linearBias: hnsf.linearBias
         ) { _, result in
             try Task.checkCancellation()
+            chunks.append(KokoroSynthesisReport.Chunk(result))
             segments.append(result.audio)
         }
         let samples = PcmJoiner.join(segments: segments, sampleRate: PipelineConstants.sampleRate)

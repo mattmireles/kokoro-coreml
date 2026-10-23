@@ -259,6 +259,11 @@ public struct SynthesisResult {
     public let trimSampleCount: Int
     /// Per-input-token duration frame counts (BOS + phoneme ids + EOS), aligned with the caller's ``inputIds`` prefix.
     public let tokenDurationFrames: [Int]
+    /// Which programs ran: duration and F0Ntrain `split` or `whole`; generator
+    /// `hybrid`, `folded`, `flexible` or `bucket` (the per-bucket GPU package).
+    public let durationPath: String
+    public let f0Path: String
+    public let generatorPath: String
 }
 
 public struct DurationModelChoice {
@@ -387,8 +392,10 @@ public class KokoroPipeline: KokoroModelProvider {
         // A bucket is available when every stage it needs has a package.
         let availableBuckets = buckets.filter { sec in
             guard let tFrames = PipelineConstants.tFramesForBucket[sec] else { return false }
+            let split = SplitF0N.packageNames(tFrames: tFrames)
             let hasF0 = f0Multi?.functionNames.contains(PipelineConstants.f0ntrainFunctionName(tFrames: tFrames)) == true
                 || exists("kokoro_f0ntrain_t\(tFrames).mlpackage")
+                || (SplitF0N.allowed && exists(split.front) && exists(split.back))
             let hasPre = preMulti?.functionNames.contains(PipelineConstants.decoderPreFunctionName(bucketSec: sec)) == true
                 || exists("kokoro_decoder_pre_\(sec)s.mlpackage")
             let hasFolded = PipelineConstants.foldedGeneratorAllowed
@@ -521,7 +528,14 @@ public class KokoroPipeline: KokoroModelProvider {
                 continue
             }
             let url = resolvedModelsDirectory.appendingPathComponent("kokoro_duration_t\(tokenLength).mlpackage")
-            if fm.fileExists(atPath: url.path) {
+            let split = SplitDuration.packageNames(tokenLength: tokenLength)
+            let hasSplit = SplitDuration.allowed
+                && fm.fileExists(atPath: resolvedModelsDirectory.appendingPathComponent(split.front).path)
+                && fm.fileExists(atPath: resolvedModelsDirectory.appendingPathComponent(split.back).path)
+            // A split pair alone (SDK schema-2 bundles ship no whole model)
+            // also makes the size available; `packageURL` still names the
+            // whole package, and providers serve the choice with the split.
+            if fm.fileExists(atPath: url.path) || hasSplit {
                 choices.append(DurationModelChoice(
                     cacheKey: "padded_t\(tokenLength)",
                     tokenLength: tokenLength,
@@ -620,16 +634,41 @@ public class KokoroPipeline: KokoroModelProvider {
     }
 
     private var hybridGenerators: [Int: AnyObject] = [:]
+    /// The hybrid generator when `hybrid/` sits next to the other packages
+    /// (on unless KOKORO_HYBRID_GENERATOR=0 or it failed earlier this process).
     public func hybridGenerator(bucketSec: Int, xPreFrames: Int) throws -> AnyObject? {
-        guard #available(macOS 15.0, iOS 18.0, *), HybridGenerator.enabled else { return nil }
-        let dir = modelsDirectory.appendingPathComponent("hybrid")
-        guard let rows = HybridGenerator.rows(bucketSec: bucketSec, xPreFrames: xPreFrames, directory: dir) else { return nil }
+        guard #available(macOS 15.0, iOS 18.0, *) else { return nil }
         lock.lock()
         defer { lock.unlock() }
+        // After a failure the folded generator serves; free the hybrid instead of holding both.
+        guard HybridGenerator.allowed else { hybridGenerators.removeAll(); return nil }
+        let dir = modelsDirectory.appendingPathComponent("hybrid")
+        guard let rows = HybridGenerator.rows(bucketSec: bucketSec, xPreFrames: xPreFrames, directory: dir) else { return nil }
         if let g = hybridGenerators[rows] { return g }
         // Keep one resident: several loaded at once failed on an M1 (README/Notes/ane-folded-generator.md).
         hybridGenerators.removeAll()
-        let g = try HybridGenerator(directory: dir, rows: rows)
+        let package = dir.appendingPathComponent("hybrid_generator_r\(rows).mlpackage")
+        guard FileManager.default.fileExists(atPath: package.path), compiledModelCache != nil else {
+            let g = try HybridGenerator(directory: dir, rows: rows)
+            hybridGenerators[rows] = g
+            return g
+        }
+        // A cached compile Core ML can no longer load (an interrupted move, an
+        // OS upgrade) is evicted and recompiled once. Other errors (plan, Metal,
+        // KOKORO_HYBRID_E5) are not the cache's fault and are not retried.
+        func make(reuseCache: Bool) throws -> HybridGenerator {
+            let compiled = try CompiledModelCache.compiledURL(for: package, cache: compiledModelCache) { _ in reuseCache }
+            return try HybridGenerator(directory: dir, rows: rows, compiledModel: compiled)
+        }
+        let g: HybridGenerator
+        do {
+            g = try make(reuseCache: true)
+        } catch HybridGeneratorError.modelLoad {
+            // Not testable: needs a real hybrid package and a corrupted compile in a
+            // KokoroPipeline model dir; the SDK twin is covered by
+            // SchemaTwoManifestTests.testCorruptHybridCompileCacheIsEvictedAndRebuilt.
+            g = try make(reuseCache: false)
+        }
         hybridGenerators[rows] = g
         return g
     }
@@ -684,11 +723,14 @@ public class KokoroPipeline: KokoroModelProvider {
     /// Opens the models one bucket needs, so the first synthesis in it is not
     /// the one that pays the compile.
     public func prepareForBucket(bucketSec: Int, tFrames: Int) throws {
-        _ = try f0ntrainModel(tFrames: tFrames)
+        // The program the executor will run: the split pair when it ships.
+        if try splitF0N(tFrames: tFrames) == nil {
+            _ = try f0ntrainModel(tFrames: tFrames)
+        }
         _ = try decoderPreModel(bucketSec: bucketSec)
         // The executor prefers the hybrid; opening the folded or GPU generator
         // too would only hold memory.
-        if try hybridGenerator(bucketSec: bucketSec, xPreFrames: bucketSec * Int(PipelineConstants.f0FrameRate)) != nil { return }
+        if try resolveHybridGenerator(self, bucketSec: bucketSec, xPreFrames: bucketSec * Int(PipelineConstants.f0FrameRate)) != nil { return }
         if try foldedGeneratorModel(bucketSec: bucketSec) != nil { return }
         if try flexibleGeneratorModel() == nil {
             _ = try generatorModel(bucketSec: bucketSec)

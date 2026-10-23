@@ -21,12 +21,13 @@ enum KokoroBundleFixture {
     /// - Returns: Bundle root directory.
     static func makeBundleRoot(
         removeVoiceFile: Bool = false,
-        schemaVersion: Int = 1,
+        schemaVersion: Int = KokoroSDKModelProvider.supportedSchemaVersion,
         voiceHashOverride: String? = nil,
         voicePath: String = "voices/af_heart.bin",
         modelPackages: [[String: Any]]? = nil,
         durationTokenSizes: [Int] = [128],
-        hnsfPayload: String? = nil
+        hnsfPayload: String? = nil,
+        packageTrees: [String: [(String, Data)]]? = nil
     ) throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -52,7 +53,11 @@ enum KokoroBundleFixture {
         if removeVoiceFile {
             try FileManager.default.removeItem(at: voiceURL)
         }
-        try writeRequiredPackages(root: root)
+        if let packageTrees {
+            for (path, files) in packageTrees { try writeTree(root: root, path: path, files: files) }
+        } else {
+            try writeRequiredPackages(root: root)
+        }
 
         let manifest: [String: Any] = [
             "schema_version": schemaVersion,
@@ -66,7 +71,9 @@ enum KokoroBundleFixture {
             "bundle_profile": "starter",
             "buckets": [15],
             "duration_token_sizes": durationTokenSizes,
-            "model_packages": modelPackages ?? requiredPackageEntries(),
+            "model_packages": modelPackages
+                ?? packageTrees.map { $0.sorted { $0.key < $1.key }.map { treeEntry(path: $0.key, files: $0.value) } }
+                ?? requiredPackageEntries(),
             "voices": [[
                 "path": voicePath,
                 "bytes": voiceData.count,
@@ -166,6 +173,53 @@ enum KokoroBundleFixture {
         try writeOneFilePackage(root: root, path: "coreml/kokoro_f0ntrain_t600.mlpackage", data: Data("f0-600".utf8))
         try writeOneFilePackage(root: root, path: "coreml/kokoro_decoder_pre_15s.mlpackage", data: Data("decoder-pre-15".utf8))
         try writeOneFilePackage(root: root, path: "coreml/kokoro_decoder_har_post_15s.mlpackage", data: Data("har-post-15".utf8))
+    }
+
+    /// The schema-2 starter set from the release contract: split duration and
+    /// F0Ntrain pairs, ANE decoder-pre, fold_poly and the `coreml/hybrid` tree.
+    /// No whole duration/F0Ntrain, har_post or range package.
+    static func contractStarterTrees() -> [String: [(String, Data)]] {
+        var trees: [String: [(String, Data)]] = [:]
+        for name in [
+            "kokoro_duration_ane_front_t128", "kokoro_duration_back_t128",
+            "kokoro_f0ntrain_front_t600", "kokoro_f0ntrain_ane_back_t600",
+            "kokoro_decoder_pre_15s", "kokoro_generator_fold_poly_15s",
+        ] {
+            trees["coreml/\(name).mlpackage"] = [(packagePayloadRelativePath, Data(name.utf8))]
+        }
+        trees["coreml/hybrid"] = [
+            ("adain.bin", Data(count: 64)),
+            ("hybrid_generator_r6.mlpackage/\(packagePayloadRelativePath)", Data("hybrid-r6".utf8)),
+            ("plan.json", Data("{}".utf8)),
+        ]
+        return trees
+    }
+
+    /// Writes a directory tree of `(relative path, bytes)` files at `path`.
+    static func writeTree(root: URL, path: String, files: [(String, Data)]) throws {
+        for (rel, data) in files {
+            let url = root.appendingPathComponent(path, isDirectory: true).appendingPathComponent(rel)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: url)
+        }
+    }
+
+    /// Manifest entry for a tree, with the bundle script's digest algorithm.
+    static func treeEntry(path: String, files: [(String, Data)]) -> [String: Any] {
+        var digest = SHA256()
+        for (rel, data) in files.sorted(by: { $0.0 < $1.0 }) {
+            for part in [rel, String(data.count), sha256(data)] {
+                digest.update(data: Data(part.utf8))
+                digest.update(data: Data([0]))
+            }
+        }
+        return [
+            "path": path,
+            "tree_sha256": digest.finalize().map { String(format: "%02x", $0) }.joined(),
+            "file_count": files.count,
+            "bytes": files.reduce(0) { $0 + $1.1.count },
+            "files": files.map { ["path": $0.0, "bytes": $0.1.count, "sha256": sha256($0.1)] },
+        ]
     }
 
     /// Computes a SHA-256 digest string.

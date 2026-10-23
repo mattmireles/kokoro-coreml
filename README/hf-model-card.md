@@ -17,261 +17,103 @@ tags:
 
 # Kokoro 82M TTS -- Surgically Optimized for Apple Silicon
 
-**30 seconds of speech in 287 ms on a Mac Studio, and in 1.6 s on an M1 Mac Mini. 1.8-2.4x faster than MLX on the same hardware.**
+**27 seconds of speech in 309 ms on an M1 Mac Mini, 9.8x faster than MLX on the same machine, and in 319 ms on an iPhone 15 Pro Max.**
 
-[Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) compiled to Core ML and cut into four model families, each running on the processor that suits it: the Neural Engine, the GPU, or the CPU. On-device, offline, no API keys, no cents-per-character. This repo holds the pre-converted `.mlpackage` files; you load them with a Swift `MLModel(contentsOf:)` call.
+[Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) compiled to Core ML and cut at its seams, so each stage runs on the engine that suits it. Even the vocoder runs on the Apple Neural Engine, which rejects it as exported. On-device, offline, no API keys, no cents per character.
 
-> **Source, exporters, Swift runtime:** [github.com/mattmireles/kokoro-coreml](https://github.com/mattmireles/kokoro-coreml)
+> **Source, Swift SDK, paper:** [github.com/mattmireles/kokoro-coreml](https://github.com/mattmireles/kokoro-coreml)
+
+## Try it
+
+On an Apple Silicon Mac (macOS 15+, Xcode 26+):
+
+```bash
+git clone https://github.com/mattmireles/kokoro-coreml && cd kokoro-coreml
+swift run -c release kokoro-say "Hello from the Neural Engine."
+afplay kokoro.wav
+```
+
+The CLI downloads the pinned starter bundle from this repo (about 210 MB, SHA-256 checked) and prints the time per stage and which path ran each one.
+
+In an app (iOS 18+ / macOS 15+):
+
+```swift
+// .package(url: "https://github.com/mattmireles/kokoro-coreml", revision: "<latest main commit>")
+// .product(name: "KokoroTTS", package: "kokoro-coreml")
+import KokoroTTS
+
+let tts = try await KokoroTTS.load(resources: .huggingFace())
+let audio = try await tts.synthesize("Hello world.", voice: .afHeart)   // 24 kHz mono PCM
+```
 
 ## The numbers
 
-Median warm wall time for one full synthesize call -- token IDs in, 24 kHz PCM out. Measured October 2026 with these packages (revision `dadebca4`), fixed-bucket generator on Macs.
+Warm median end-to-end time, token IDs in, 24 kHz audio out. Measured October 23, 2026 against MLX on the same device in the same session:
 
-| Audio | M2 Studio (64 GB) | M2 Air (24 GB) | M1 Mini (16 GB) |
-|---|---:|---:|---:|
-| 3s  | **45 ms** | 123 ms | 205 ms |
-| 10s | **112 ms** | 397 ms | 590 ms |
-| 30s | **287 ms** | 1,176 ms | 1,636 ms |
+| Audio | M2 Ultra | M1 Mini | iPhone 15 Pro Max | iPhone 12 Pro |
+| --- | ---: | ---: | ---: | ---: |
+| 3s | 74 ms | 95 ms | 62 ms | 98 ms |
+| 7s | 54 ms | 99 ms | 103 ms | 145 ms |
+| 10s | 71 ms | 124 ms | 156 ms | 186 ms |
+| 15s | 89 ms | 169 ms | 224 ms | 261 ms |
+| 30s (27.4 s input) | **159 ms** | **309 ms** | **319 ms** | **480 ms** |
+| **vs MLX** | 3.5-4.8x | 8.1-9.8x | 8.9-15.1x\* | 9.3-15.2x; MLX runs out of memory at 30 s |
 
-That's 14-96x realtime across the lineup. The M2 Studio synthesizes 30 seconds of audio in 287 ms, but the M1 Mini is the number that matters -- the cheapest Apple Silicon Mac you can buy turns text into speech 17x faster than you can listen to it.
+At least 57x real time on the 27.4 s input on every device.
+- **Comparators:** [mlx-audio](https://github.com/Blaizzy/mlx-audio) 0.4.3 on Macs (it fails every 3 s input) and [kokoro-ios](https://github.com/mlalma/kokoro-ios) 1.0.8 on iPhones.
+- **Mac rows are upper bounds.** The hosts were busy, with background load 2-7.
+- **\* A17 ratios at 10 s and above are upper bounds.** MLX ran hot on that phone.
+- **Phone numbers are a sustained workload.**
 
-## vs MLX
+Full protocol and raw data: [paper-cs1-hybrid-rerun-2026-10-23.md](https://github.com/mattmireles/kokoro-coreml/blob/main/README/Notes/paper-cs1-hybrid-rerun-2026-10-23.md).
 
-Same machines, same utterances, same voice (`af_heart`), same timing boundary, median of 10 warm calls. Comparator: [Blaizzy/mlx-audio](https://github.com/Blaizzy/mlx-audio) 0.4.3 at commit `862dfbe`, running `mlx-community/Kokoro-82M-bf16`.
-
-| Audio | M2 Studio | M2 Air | M1 Mini |
-|---|---|---|---|
-| 3s  | 45 ms vs *error* | 123 ms vs *error* | 205 ms vs *error* |
-| 7s  | 80 vs 184 ms -- **2.3x** | 274 vs 566 ms -- **2.1x** | 410 vs 797 ms -- **1.9x** |
-| 10s | 112 vs 243 ms -- **2.2x** | 397 vs 765 ms -- **1.9x** | 590 vs 1,100 ms -- **1.9x** |
-| 30s | 287 vs 685 ms -- **2.4x** | 1,176 vs 2,150 ms -- **1.8x** | 1,636 vs 3,004 ms -- **1.8x** |
-
-**Faster on every bucket, on every machine.** (The pinned MLX version fails 3-second clips with a broadcast-shape error; no time to report.)
-
-This is not a knock on MLX -- it's a fine framework. It's the surgery. A monolithic port runs wherever the scheduler drops it. A dissected pipeline runs each stage where it belongs.
-
-## On iPhone
-
-Same `.mlpackage` files, deployed to phones (October 2026, iOS 27.0.1, Release builds, flexible-length generator, median of 10 warm calls, phone cooled before every run). Comparator: [mlalma/kokoro-ios](https://github.com/mlalma/kokoro-ios) 1.0.8, the MLX Swift port of Kokoro -- the Python mlx-audio above doesn't run on iOS. Its timing includes its Misaki G2P pass (about 1 ms); ours starts from token IDs.
-
-| Audio | iPhone 15 Pro Max | iPhone 12 Pro |
-|---|---|---|
-| 3s  | 195 vs 543 ms -- **2.8x** | 421 vs 926 ms -- **2.2x** |
-| 7s  | 417 vs 1,198 ms -- **2.9x** | 917 vs 2,050 ms -- **2.2x** |
-| 15s | 881 vs 2,802 ms -- **3.2x** | 1,984 vs 4,062 ms -- **2.0x** |
-| 30s | 1,721 vs 4,508 ms -- **2.6x** | 4,017 ms vs *OOM* |
-
-Faster on every bucket on both phones: 14-16x realtime on the A17 Pro, about 7x on the A14. On the 4 GB iPhone 12 Pro the memory watchdog kills MLX on 30-second clips; this pipeline synthesizes them in 4.0 s. (MLX's 15 s cell on the A17 Pro ran warm, so its ratio is an upper bound.) The shipped policy is staged on every device -- decoder-pre on the ANE, the other stages on CPU+GPU.
-
-Cold start takes a few seconds (Core ML compiles on first load); everything after is steady-state. Benchmarks drift with macOS and hardware -- rerun them on your target machine with the harness in the GitHub repo before you ship a claim of your own.
-
-## Why surgery?
-
-Apple Silicon isn't one processor. It's three -- **CPU, GPU, and the Neural Engine (ANE)** -- each built for different work. The ANE devours fixed-shape convolutions at a fraction of the GPU's power draw. But it has rules: no dynamic shapes, no data-dependent control flow. Shove a whole TTS model through Core ML and the scheduler quietly dumps you on the CPU.
-
-So we cut the pipeline at the joints:
+## How it works
 
 ```
-                  ┌────────────────────────────────┐
-"Hello world" ──▶ │  DURATION  (kokoro_duration_t*) │ ◀── CPU/GPU
-                  │  BERT + LSTMs                   │     branching, variable lengths
-                  └──────────────┬─────────────────┘
-                                 ▼
-                  ┌────────────────────────────────┐
-                  │  ALIGNMENT  (Swift)             │ ◀── CPU
-                  │  Matrix from durations, ~50 LoC │     small, data-dependent logic
-                  └──────────────┬─────────────────┘
-                                 ▼
-                  ┌────────────────────────────────┐
-                  │  F0 / NOISE  (kokoro_f0ntrain)  │ ◀── GPU
-                  │  Pitch + aperiodicity contours  │     fixed-shape dense math
-                  └──────────────┬─────────────────┘
-                                 ▼
-                  ┌────────────────────────────────┐
-                  │  DECODER PRE (kokoro_decoder_pre)│ ◀── ANE
-                  │  Text features → decoder state  │     fixed-shape convolutions
-                  └──────────────┬─────────────────┘
-                                 ▼
-                  ┌────────────────────────────────┐
-                  │  HARMONIC SOURCE  (Swift/vDSP)  │ ◀── CPU
-                  │  hn-NSF sine + noise excitation │     cheap DSP, exact phase
-                  └──────────────┬─────────────────┘
-                                 ▼
-                  ┌────────────────────────────────┐
-                  │  GENERATOR (kokoro_decoder_     │ ◀── GPU
-                  │  har_post) convs + iSTFT        │     runs at the real utterance length
-                  └──────────────┬─────────────────┘
-                                 ▼
-                            24 kHz Audio
+text -> Misaki G2P -> phoneme IDs
+  DURATION      BERT front on the ANE, LSTM back on the CPU
+  ALIGNMENT     Swift
+  F0 + NOISE    CPU front, ANE back
+  DECODER-PRE   ANE   || harmonic source in Swift/vDSP, concurrently
+  GENERATOR     >=7 s: convolutions on the ANE, normalization + activations on the GPU (hybrid)
+                <7 s or no Metal: folded, entirely on the ANE
+  iSTFT + trim  Swift  -> 24 kHz audio
 ```
 
-Decoder-pre runs on the ANE (250 of 250 ops in its compute plan at 3, 15 and 30 s); duration, pitch and the generator run on CPU+GPU, where they are fastest; one DSP stage runs in Swift with double-precision phase accumulation. The generator exceeds the ANE's tensor-size limits, so it runs on the GPU as one flexible-length program that computes only the frames the utterance needs.
+- **Folding.** The ANE rejects the vocoder because one time axis is up to 720,000 samples against a 16,384 limit. Folding that axis into overlapping rows, with five exact op rewrites, puts 1,927 of 1,928 ops on the ANE. The math is unchanged: 68 dB against the unfolded model.
+- **Hybrid.** Splitting each vocoder stage between the ANE and the GPU, which share memory, cuts its time by 16-78% against the all-ANE form at every input of 7 s and longer (up to 4.4x faster).
 
-**Redesign the inference pipeline, not the model.** That's where the 2x over MLX comes from -- not by fighting the GPU, but by routing around it.
+Audio matches the fp32 PyTorch reference at 40.8-45.8 dB SNR per clip.
 
-## What's in the download
+## What's in the repo
 
-Five fixed-duration buckets: **3s, 7s, 10s, 15s, 30s**. Pick the smallest bucket that fits your predicted utterance. That's the whole strategy.
+The SDK bundles list exact files with SHA-256 in `HostedManifest.json` (starter) and `sdk/<profile>/KokoroRuntimeManifest.json`. Pin a commit; see "Pinning" below.
 
-| File | What it does | Runs on |
-|---|---|---|
-| `kokoro_duration_t128.mlpackage` | Phoneme durations + text/style encodings at the SDK's fixed padded token length | CPU/GPU |
-| `kokoro_duration.mlpackage` | Legacy single duration model (fallback) | CPU/GPU |
-| `kokoro_f0ntrain_t{120,280,400,600,1200}.mlpackage` | Pitch + noise prediction, one per bucket's frame count | GPU |
-| `kokoro_decoder_pre_{3,7,10,15,30}s.mlpackage` | Text features → decoder hidden state | ANE |
-| `kokoro_decoder_har_post_range.mlpackage` | Generator, one flexible-length program for every utterance up to 30 s (macOS 15 / iOS 18 up to 26; MPSGraph on macOS 27.0.1 can abort the process on it, so the runtime skips it on OS 27, iOS included as a precaution, when the bundle ships fixed generators) | GPU |
-| `kokoro_decoder_har_post_{3,7,10,15,30}s.mlpackage` | Generator, one fixed-shape package per bucket (used on OS 27 when the bundle ships them, and before macOS 15 / iOS 18) | GPU |
-| `kokoro_duration_multifunction.mlpackage` | Every duration token size (`t32`...`t512`) as one multifunction package, weights stored once (macOS 15 / iOS 18) | CPU/GPU |
-| `kokoro_f0ntrain_multifunction.mlpackage` | Every F0Ntrain frame count as one multifunction package | GPU |
-| `kokoro_decoder_pre_multifunction.mlpackage` | Every decoder-pre bucket (`bucket_3s`...`bucket_30s`) as one multifunction package | ANE |
-| `g2p/` | English grapheme-to-phoneme assets for the `KokoroG2P` Swift library (see below) | CPU |
+| Path | What it is | Runs on |
+| --- | --- | --- |
+| `coreml/kokoro_duration_ane_front_t128` + `kokoro_duration_back_t128` | Duration model, split | ANE + CPU |
+| `coreml/kokoro_f0ntrain_front_t{120,280,400,600,1200}` + `kokoro_f0ntrain_ane_back_t*` | Pitch and noise, split, one pair per bucket | CPU + ANE |
+| `coreml/kokoro_decoder_pre_{3,7,10,15,30}s` | Decoder features, ANE layout | ANE |
+| `coreml/kokoro_generator_fold_poly_{b}s`, `kokoro_generator_fold_{b}s` | Folded generator: polynomial Snake (every chip) and native `sin` (A17-class ANE) | ANE |
+| `coreml/hybrid/` | Hybrid generator: `plan.json`, `adain.bin`, `hybrid_generator_r{2,3,4,6,10,11}` (53 Core ML functions each) | ANE + GPU (Metal) |
+| `voices/` (starter voice), `kokoro.js/voices/` (all 28), `runtime/`, `g2p/` | Voice embeddings, vocab and hn-NSF weights, English G2P assets | -- |
+| `coreml-{dur-ane,f0n-split,dpre-ane,fold,hybrid}/` | The paper's frozen package set (revision `e65729b9`), kept for reproduction | -- |
+| other `coreml/` packages | Previous pipeline (GPU generator, whole duration/F0, and the old multifunction duration/F0/DecoderPre packages); not used by schema-2 bundles | -- |
 
-The three multifunction packages plus `kokoro_decoder_har_post_range` serve
-every bucket and duration shape in 178 MB instead of ~840 MB of per-bucket
-packages; the full profile also carries the five fixed generators for OS 27. Load a function with `MLModelConfiguration.functionName`; the GitHub
-repo's `KokoroPipeline` does this automatically when the packages are present.
+Five fixed buckets: 3, 7, 10, 15 and 30 s. The runtime pads each utterance to the smallest bucket that fits and masks the padding.
 
-The alignment matrix and the hn-NSF harmonic source are not models -- they're a few hundred lines of Swift/vDSP in the GitHub repo's `KokoroPipeline`.
+## Pinning
 
-## Hosted manifests and pinning
-
-Two hosted manifests list every file to download, with bytes and SHA-256. Every
-`path` is relative to this repo's root, so a file's URL is
-`https://huggingface.co/mattmireles/kokoro-coreml/resolve/<commit>/<path>`.
-
-| Manifest | Profile | Contents |
-|---|---|---|
-| `sdk/full/HostedManifest.json` | full (product) | 3 multifunction packages + flexible generator + 5 fixed generators, 28 English voices, runtime assets, `g2p/` |
-| `HostedManifest.json` | starter | one 15 s bucket (flexible + fixed 15 s generator), t128 duration, `af_heart`; the `KokoroTTS` SDK contract |
-
-Current full manifest SHA-256:
-`b2bb5abb1aaecdb54a2be5cca9e800726d8c3754968f3940b54d3f2ebe826f28`.
-
-**Pin the commit that published the manifest** -- the commit that last changed
-`HostedManifest.json` / `sdk/full/HostedManifest.json` (and this card) in the
-Files history. Every listed file is byte-identical at that commit and the
-release pipeline verifies it there before announcing it. `hf_artifact_revision`
-inside `KokoroRuntimeManifest.json` is the older commit where the models were
-verified; it predates the manifests and is not a hydratable pin. Check any pin
-with `python scripts/prepare_hf_sdk_metadata.py --verify <commit>` from the
-GitHub repo.
-
-## G2P assets (`g2p/`)
-
-`us_lexicon_cache.json`, `g2p_vocab.json`, `G2PEncoder.mlmodelc/`, and
-`G2PDecoder.mlmodelc/` are the minimal asset set for the GitHub repo's
-`KokoroG2P` library (`KokoroEnglishFrontend(assetsDirectory:)`): a Misaki
-lexicon plus a BART G2P fallback for out-of-vocabulary words. They are copied
-byte-for-byte from
-[FluidInference/kokoro-82m-coreml](https://huggingface.co/FluidInference/kokoro-82m-coreml)
-at commit `c032f6d05d2a58179b817201a443fbbcef06f962`, which is released under
-Apache 2.0.
-
-## Usage (Swift SDK)
-
-This section is the Swift SDK contract for the matching Git release commit. The
-`KokoroTTS` SDK loads the starter profile (top-level manifests, with
-per-profile metadata under `sdk/starter/`). The full profile is for
-`KokoroPipeline` + `KokoroG2P` apps. If you are using an older HF snapshot, use
-the low-level `KokoroPipeline` snippets from that snapshot instead.
-
-```swift
-import KokoroTTS
-
-let resources = KokoroResourceProvider.directory(bundleURL)
-let tts = try await KokoroTTS.load(resources: resources)
-try await tts.prewarm(text: "Hello world.", voice: .afHeart)
-
-let audio = try await tts.synthesize("Hello world.", voice: .afHeart)
-let samples = audio.samples        // 24 kHz mono Float PCM
-let buffer = try audio.makePCMBuffer()
-```
-
-`prewarm` proves the duration-to-audio path selected by the supplied text.
-Full-profile clients using several utterance-length buckets should call it with
-representative text for each expected path.
-
-The SDK is in the GitHub repo's `swift-tts` package. It owns raw-text
-preparation, Misaki phonemization, Botnet-compatible chunking, model loading,
-and AVFoundation PCM buffer creation. Current hosted SDK contract: iOS 18.0+,
-macOS 15.0+, sample rate `24000`, starter voice `af_heart`, fixed duration token
-size `128`, full buckets `3,7,10,15,30`, max caller
-chunk tokens `450`, voice embedding dimension `256`.
-
-Build a starter bundle:
-
-```bash
-python3 scripts/download_models.py \
-  --repo-id mattmireles/kokoro-coreml \
-  --revision <hf-artifact-revision> \
-  --sdk-profile starter \
-  --manifest-out /tmp/kokoro-download-manifest.json
-
-node scripts/build_sdk_bundle.mjs \
-  --profile starter \
-  --compile-models 1 \
-  --output /tmp/kokoro-sdk-starter \
-  --repo-id mattmireles/kokoro-coreml \
-  --revision <hf-artifact-revision> \
-  --download-manifest /tmp/kokoro-download-manifest.json
-
-node scripts/validate_sdk_bundle.mjs /tmp/kokoro-sdk-starter
-```
-
-Downloaded-resource apps can hydrate the top-level starter
-`HostedManifest.json` with `KokoroDownloadedModelStore`. Pass
-`expectedManifestSHA256` for the exact manifest bytes (current public starter
-digest: `13c4f51bec6113debe658bcdeaad0a3063ca148c565d06405b61ff01b3431bb1`;
-pin the commit that published it, as above).
-Production apps must serve manifests over HTTPS. Bundled-resource apps can use
-`KokoroResourceProvider.directory`, `.appBundle`, or `.packageBundle`, and
-should supply a writable `compiledModelsDirectory` so compilation does not write
-into the app resource tree.
-
-Previous snippets that used `KokoroPipeline` directly are now low-level
-examples. Keep them for benchmarking and graph work; use `KokoroTTS` for app
-integration.
-
-## Tensor shapes (3s bucket)
-
-```
-kokoro_duration_t128:
-  in   input_ids       [1, 128]        int32     phoneme token IDs (padded)
-  in   attention_mask  [1, 128]        float16
-  in   ref_s           [1, 256]        float16   voice embedding
-  in   speed           [1]             float16
-  out  pred_dur        [1, 128]                  per-token frame counts
-  out  t_en, d, s, ref_s_out                     encodings for downstream stages
-
-kokoro_f0ntrain_t120:
-  in   en [1, 640, 120]  s [1, 128]  mask [1, 1, 120]
-  out  F0_pred [1, 240], N_pred [1, 240]
-
-kokoro_decoder_pre_3s:
-  in   asr [1, 512, 120]  f0 [1, 1, 240]  n_input [1, 1, 240]  ref_s [1, 256]  mask [1, 1, 120]
-  out  x_pre [1, 512, 240]
-
-kokoro_decoder_har_post_3s:
-  in   x_pre [1, 512, 240]  ref_s [1, 256]  har [1, 22, 14401]  mask [1, 1, 240]
-  out  waveform [1, 1, 72000]   -- 3s @ 24 kHz
-```
-
-`mask` marks the valid frames of a padded bucket (1 = real, 0 = padding) and is required. Everything is static and float16 except the optional flexible generator (`kokoro_decoder_har_post_range`, `RangeDim`, GPU only, macOS 15 / iOS 18). No dynamic ops. No `non_zero` kernels.
+Pin the commit that published the manifests: the one that last changed `HostedManifest.json` in the Files history. Every file a manifest lists is byte-identical there. The Swift SDK's `KokoroHostedModels` carries the current pin and the manifest's SHA-256. Bundles use manifest schema 2; older SDK commits reject them with `unsupportedManifestSchema`, so use the latest GitHub `main` SDK commit.
 
 ## Requirements
 
-- **iOS 18.0+ / macOS 15.0+** for the drop-in raw-text `KokoroTTS` SDK
-- **Apple Silicon** (M1+) or **A15+** for Neural Engine acceleration
-- macOS `arm64` and `x86_64` build targets are supported; Intel Macs run without
-  ANE acceleration and should be treated as CPU/GPU Core ML targets
-- watchOS is not supported in this SDK snapshot because the MisakiSwift/MLX
-  raw-text dependency does not build for the watchOS SDK
+- iOS 18.0+ / macOS 15.0+, Apple Silicon. Intel Macs are untested and have no Neural Engine.
+- watchOS is not supported: the MisakiSwift/MLX phonemizer does not build for it.
 
 ## License
 
-Apache 2.0, inherited from [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M). Ship it. Sell it. Fork it.
-The `g2p/` assets are Apache 2.0 from
-[FluidInference/kokoro-82m-coreml](https://huggingface.co/FluidInference/kokoro-82m-coreml).
+Apache 2.0, inherited from [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M). The `g2p/` assets are Apache 2.0 from [FluidInference/kokoro-82m-coreml](https://huggingface.co/FluidInference/kokoro-82m-coreml) (commit `c032f6d05d2a58179b817201a443fbbcef06f962`).
 
 ## Credits
 

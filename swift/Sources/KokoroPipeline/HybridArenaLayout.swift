@@ -1,3 +1,8 @@
+// Compiled only with -DKOKORO_E5, off by default: the private e5rt path names
+// private frameworks (Espresso), which App Store builds must not contain.
+// Benchmarks: swift build -c release --package-path swift -Xswiftc -DKOKORO_E5,
+// then run kokoro-bench with KOKORO_HYBRID_GENERATOR=1 KOKORO_HYBRID_E5=1.
+#if KOKORO_E5
 import Foundation
 
 /// Byte offsets of the hybrid generator's pooled tensors in one arena, laid
@@ -108,3 +113,4 @@ struct HybridArenaLayout {
         return sharesMemory(machine: String(cString: machine), override: ProcessInfo.processInfo.environment["KOKORO_E5_SHARE"])
     }
 }
+#endif

@@ -99,6 +99,18 @@ final class DownloadResumeTests: XCTestCase {
         assertNoPartialTransferRemains(for: target)
     }
 
+    /// Verifies an HTTP failure names the status and the file instead of a bare -1011.
+    func testHTTPErrorNamesStatusAndFile() async throws {
+        let target = try makeTargetURL()
+        StubTransport.shared.handler = { _ in StubHTTPResponse(statusCode: 404, headers: [:], body: Data()) }
+        do {
+            try await makeDownloader(target: target).download(from: Self.remoteURL)
+            XCTFail("a 404 must fail the download")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("HTTP 404 downloading voices/af_heart.bin"), "\(error)")
+        }
+    }
+
     /// Remote URL used by every fixture.
     private static let remoteURL = URL(string: "https://models.example.test/voices/af_heart.bin")!
 

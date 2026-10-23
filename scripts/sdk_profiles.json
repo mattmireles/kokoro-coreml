@@ -1,0 +1,87 @@
+{
+  "_comment": "Single source of truth for SDK bundle contents, read by scripts/download_models.py and scripts/build_sdk_bundle.mjs. Paths are bundle paths, which equal Hugging Face repo paths and local checkout paths. Ships exactly the plan 014 measured pipeline: split duration t128, split F0Ntrain, ANE DecoderPre, folded generator, and the coreml/hybrid generator directory. custom expands the template per bucket.",
+  "duration_token_sizes": [128],
+  "profiles": {
+    "starter": {
+      "voices": ["af_heart"],
+      "buckets": [15],
+      "paths": [
+        "coreml/kokoro_duration_ane_front_t128.mlpackage",
+        "coreml/kokoro_duration_back_t128.mlpackage",
+        "coreml/kokoro_f0ntrain_front_t600.mlpackage",
+        "coreml/kokoro_f0ntrain_ane_back_t600.mlpackage",
+        "coreml/kokoro_decoder_pre_15s.mlpackage",
+        "coreml/kokoro_generator_fold_poly_15s.mlpackage",
+        "coreml/hybrid/plan.json",
+        "coreml/hybrid/adain.bin",
+        "coreml/hybrid/hybrid_generator_r6.mlpackage"
+      ]
+    },
+    "full": {
+      "voices": [
+        "af_alloy", "af_aoede", "af_bella", "af_heart", "af_jessica", "af_kore", "af_nicole",
+        "af_nova", "af_river", "af_sarah", "af_sky", "am_adam", "am_echo", "am_eric",
+        "am_fenrir", "am_liam", "am_michael", "am_onyx", "am_puck", "am_santa", "bf_alice",
+        "bf_emma", "bf_isabella", "bf_lily", "bm_daniel", "bm_fable", "bm_george", "bm_lewis"
+      ],
+      "buckets": [3, 7, 10, 15, 30],
+      "paths": [
+        "coreml/kokoro_duration_ane_front_t128.mlpackage",
+        "coreml/kokoro_duration_back_t128.mlpackage",
+        "coreml/kokoro_f0ntrain_front_t120.mlpackage",
+        "coreml/kokoro_f0ntrain_ane_back_t120.mlpackage",
+        "coreml/kokoro_f0ntrain_front_t280.mlpackage",
+        "coreml/kokoro_f0ntrain_ane_back_t280.mlpackage",
+        "coreml/kokoro_f0ntrain_front_t400.mlpackage",
+        "coreml/kokoro_f0ntrain_ane_back_t400.mlpackage",
+        "coreml/kokoro_f0ntrain_front_t600.mlpackage",
+        "coreml/kokoro_f0ntrain_ane_back_t600.mlpackage",
+        "coreml/kokoro_f0ntrain_front_t1200.mlpackage",
+        "coreml/kokoro_f0ntrain_ane_back_t1200.mlpackage",
+        "coreml/kokoro_decoder_pre_3s.mlpackage",
+        "coreml/kokoro_decoder_pre_7s.mlpackage",
+        "coreml/kokoro_decoder_pre_10s.mlpackage",
+        "coreml/kokoro_decoder_pre_15s.mlpackage",
+        "coreml/kokoro_decoder_pre_30s.mlpackage",
+        "coreml/kokoro_generator_fold_3s.mlpackage",
+        "coreml/kokoro_generator_fold_7s.mlpackage",
+        "coreml/kokoro_generator_fold_10s.mlpackage",
+        "coreml/kokoro_generator_fold_15s.mlpackage",
+        "coreml/kokoro_generator_fold_30s.mlpackage",
+        "coreml/kokoro_generator_fold_poly_3s.mlpackage",
+        "coreml/kokoro_generator_fold_poly_7s.mlpackage",
+        "coreml/kokoro_generator_fold_poly_10s.mlpackage",
+        "coreml/kokoro_generator_fold_poly_15s.mlpackage",
+        "coreml/kokoro_generator_fold_poly_30s.mlpackage",
+        "coreml/hybrid/plan.json",
+        "coreml/hybrid/adain.bin",
+        "coreml/hybrid/hybrid_generator_r2.mlpackage",
+        "coreml/hybrid/hybrid_generator_r3.mlpackage",
+        "coreml/hybrid/hybrid_generator_r4.mlpackage",
+        "coreml/hybrid/hybrid_generator_r6.mlpackage",
+        "coreml/hybrid/hybrid_generator_r10.mlpackage",
+        "coreml/hybrid/hybrid_generator_r11.mlpackage",
+        "g2p/us_lexicon_cache.json",
+        "g2p/g2p_vocab.json",
+        "g2p/G2PEncoder.mlmodelc",
+        "g2p/G2PDecoder.mlmodelc"
+      ]
+    }
+  },
+  "custom": {
+    "paths": [
+      "coreml/kokoro_duration_ane_front_t128.mlpackage",
+      "coreml/kokoro_duration_back_t128.mlpackage"
+    ],
+    "bucket_paths": [
+      "coreml/kokoro_f0ntrain_front_t{t_frames}.mlpackage",
+      "coreml/kokoro_f0ntrain_ane_back_t{t_frames}.mlpackage",
+      "coreml/kokoro_decoder_pre_{bucket}s.mlpackage",
+      "coreml/kokoro_generator_fold_poly_{bucket}s.mlpackage"
+    ],
+    "t_frames": {"3": 120, "7": 280, "10": 400, "15": 600, "30": 1200},
+    "hybrid_paths": ["coreml/hybrid/plan.json", "coreml/hybrid/adain.bin"],
+    "hybrid_row_path": "coreml/hybrid/hybrid_generator_r{rows}.mlpackage",
+    "hybrid_rows": {"7": 3, "10": 4, "15": 6, "30": 11}
+  }
+}

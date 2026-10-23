@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inspect Hugging Face Kokoro Core ML artifacts without downloading them."""
+"""Inspect Hugging Face Kokoro Core ML artifacts; exits non-zero if a profile manifest names a file HF lacks."""
 
 from __future__ import annotations
 
@@ -14,8 +14,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from hf_common import DEFAULT_REPO_ID, INVENTORY_MANIFESTS, load_sdk_profiles
 
-DEFAULT_REPO_ID = "mattmireles/kokoro-coreml"
+# Files the metadata commit publishes; the root voices are the starter's.
+SDK_METADATA = {
+    "KokoroRuntimeManifest.json",
+    "HostedManifest.json",
+    "runtime/kokoro-vocab.json",
+    "runtime/hnsf_weights.json",
+    "sdk/SDKReleaseManifest.json",
+    "sdk/starter/KokoroRuntimeManifest.json",
+    "sdk/full/KokoroRuntimeManifest.json",
+    *(f"voices/{voice}.bin" for voice in load_sdk_profiles()["profiles"]["starter"]["voices"]),
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -28,7 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--verify-hosted-digests",
         action="store_true",
-        help="Download hosted-manifest files and verify their byte counts and SHA-256 digests.",
+        help="Verify every file the starter hosted manifest and full runtime manifest name (LFS by HF sha256, others by download).",
     )
     return parser.parse_args()
 
@@ -76,36 +87,68 @@ def fetch_repo_bytes(repo_id: str, revision: str, path: str) -> bytes | None:
         raise
 
 
-def verify_hosted_digests(repo_id: str, revision: str, hosted_manifest: dict[str, Any] | None) -> list[dict[str, Any]]:
-    """Return hosted-manifest entries whose live bytes do not match the manifest."""
+def manifest_entries(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the {path, bytes, sha256} HF files a hosted or runtime manifest names.
+
+    A hosted manifest lists them directly. A runtime manifest names model
+    directories (coreml/<x>.mlpackage, coreml/hybrid) with per-file digests and
+    g2p assets at their HF paths; its voices/<v>.bin live at kokoro.js/voices/.
+    """
+
+    if "files" in manifest:
+        return list(manifest["files"])
+    entries = []
+    for pkg in manifest.get("model_packages") or []:
+        for item in pkg.get("files") or []:
+            entries.append({"path": f"{pkg['path']}/{item['path']}", "bytes": item["bytes"], "sha256": item["sha256"]})
+    for voice in manifest.get("voices") or []:
+        entries.append({**voice, "path": "kokoro.js/" + voice["path"]})
+    return entries + list(manifest.get("g2p_assets") or [])
+
+
+def digest_mismatches(
+    repo_id: str, revision: str, entries: list[dict[str, Any]], siblings: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Return entries whose bytes at `revision` differ from the manifest.
+
+    LFS files are checked from the HF-reported size and sha256; any other file
+    (plan.json, Manifest.json, small JSON) is downloaded and hashed.
+    """
 
     mismatches = []
-    for entry in (hosted_manifest or {}).get("files") or []:
-        path = entry.get("path")
-        if not isinstance(path, str):
+    for entry in entries:
+        path = entry["path"]
+        lfs = (siblings.get(path) or {}).get("lfs") or {}
+        if lfs.get("sha256") == entry["sha256"] and lfs.get("size") == entry["bytes"]:
             continue
         data = fetch_repo_bytes(repo_id, revision, path)
         if data is None:
             mismatches.append({"path": path, "reason": "missing"})
             continue
-        expected_bytes = entry.get("bytes")
-        expected_sha256 = entry.get("sha256")
         observed_sha256 = hashlib.sha256(data).hexdigest()
-        if len(data) != expected_bytes or observed_sha256 != expected_sha256:
+        if len(data) != entry["bytes"] or observed_sha256 != entry["sha256"]:
             mismatches.append({
                 "path": path,
                 "reason": "digest_mismatch",
-                "expected_bytes": expected_bytes,
+                "expected_bytes": entry["bytes"],
                 "observed_bytes": len(data),
-                "expected_sha256": expected_sha256,
+                "expected_sha256": entry["sha256"],
                 "observed_sha256": observed_sha256,
             })
     return mismatches
 
 
-def package_name(path: str) -> str | None:
-    """Return the `.mlpackage` path prefix for a repo file path."""
+def model_entry(path: str) -> str | None:
+    """Return the model directory a repo file belongs to.
 
+    Under coreml/ that is coreml/<first segment>, so coreml/hybrid groups its
+    plan.json, adain.bin and row packages. Elsewhere (the paper's coreml-*/
+    record) it is the enclosing `.mlpackage`.
+    """
+
+    parts = path.split("/")
+    if parts[0] == "coreml" and len(parts) >= 3:
+        return "/".join(parts[:2])
     marker = ".mlpackage/"
     if marker not in path:
         return None
@@ -127,80 +170,45 @@ def inspect_artifacts(
         "files": [],
     })
     voices = []
-    sdk_metadata = set()
-    sibling_paths = set()
+    by_path = {}
 
     for sibling in siblings:
         path = sibling.get("rfilename")
         if not isinstance(path, str):
             continue
-        sibling_paths.add(path)
+        by_path[path] = sibling
         size = int(sibling.get("size") or sibling.get("lfs", {}).get("size") or 0)
-        pkg = package_name(path)
+        sha256 = sibling.get("lfs", {}).get("sha256")
+        pkg = model_entry(path)
         if pkg:
             packages[pkg]["file_count"] += 1
             packages[pkg]["bytes"] += size
-            packages[pkg]["files"].append({
-                "path": path,
-                "bytes": size,
-                "sha256": sibling.get("lfs", {}).get("sha256"),
-            })
+            packages[pkg]["files"].append({"path": path, "bytes": size, "sha256": sha256, "blob_id": sibling.get("blobId")})
         elif path.startswith("kokoro.js/voices/") and path.endswith(".bin"):
-            voices.append({
-                "path": path,
-                "voice": Path(path).stem,
-                "bytes": size,
-                "sha256": sibling.get("lfs", {}).get("sha256"),
-            })
-        elif path in {
-            "KokoroRuntimeManifest.json",
-            "HostedManifest.json",
-            "runtime/kokoro-vocab.json",
-            "runtime/hnsf_weights.json",
-            "voices/af_heart.bin",
-            "sdk/SDKReleaseManifest.json",
-            "sdk/starter/KokoroRuntimeManifest.json",
-            "sdk/full/KokoroRuntimeManifest.json",
-            "sdk/full/HostedManifest.json",
-        }:
-            sdk_metadata.add(path)
+            voices.append({"path": path, "voice": Path(path).stem, "bytes": size, "sha256": sha256})
 
     resolved_revision = info.get("sha")
-    hosted_manifest = None
+    manifest_checks = {}
+    for profile, manifest_path in INVENTORY_MANIFESTS.items():
+        manifest = None
+        if isinstance(resolved_revision, str) and manifest_path in by_path:
+            manifest = fetch_repo_json(repo_id, resolved_revision, manifest_path)
+        entries = manifest_entries(manifest) if manifest else []
+        check = {
+            "manifest": manifest_path,
+            "present": manifest is not None,
+            "file_count": len(entries),
+            "unresolved_files": sorted(entry["path"] for entry in entries if entry["path"] not in by_path),
+        }
+        if verify_digests and isinstance(resolved_revision, str):
+            check["digest_mismatches"] = digest_mismatches(repo_id, resolved_revision, entries, by_path)
+        manifest_checks[profile] = check
     sdk_release_manifest = None
-    unresolved_hosted_files = []
-    unexpected_sdk_hosted_manifests = sorted(
-        path for path in sibling_paths
-        if path.startswith("sdk/") and path.endswith("/HostedManifest.json")
-        and path != "sdk/full/HostedManifest.json"
-    )
-    if isinstance(resolved_revision, str) and "HostedManifest.json" in sibling_paths:
-        hosted_manifest = fetch_repo_json(repo_id, resolved_revision, "HostedManifest.json")
-        if hosted_manifest:
-            for entry in hosted_manifest.get("files") or []:
-                hosted_path = entry.get("path")
-                if isinstance(hosted_path, str) and hosted_path not in sibling_paths:
-                    unresolved_hosted_files.append(hosted_path)
-    if isinstance(resolved_revision, str) and "sdk/SDKReleaseManifest.json" in sibling_paths:
+    if isinstance(resolved_revision, str) and "sdk/SDKReleaseManifest.json" in by_path:
         sdk_release_manifest = fetch_repo_json(repo_id, resolved_revision, "sdk/SDKReleaseManifest.json")
-    hosted_digest_mismatches = []
-    if verify_digests and isinstance(resolved_revision, str):
-        hosted_digest_mismatches = verify_hosted_digests(repo_id, resolved_revision, hosted_manifest)
-
-    required_sdk_metadata = {
-        "KokoroRuntimeManifest.json",
-        "HostedManifest.json",
-        "runtime/kokoro-vocab.json",
-        "runtime/hnsf_weights.json",
-        "voices/af_heart.bin",
-        "sdk/SDKReleaseManifest.json",
-        "sdk/starter/KokoroRuntimeManifest.json",
-        "sdk/full/KokoroRuntimeManifest.json",
-        "sdk/full/HostedManifest.json",
-    }
 
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "repo_id": repo_id,
         "requested_revision": revision,
@@ -219,15 +227,28 @@ def inspect_artifacts(
             for path, value in sorted(packages.items())
         ],
         "voices": sorted(voices, key=lambda item: item["path"]),
-        "missing_sdk_metadata": sorted(required_sdk_metadata - sdk_metadata),
-        "hosted_manifest_file_count": len((hosted_manifest or {}).get("files") or []),
-        "unresolved_hosted_files": sorted(unresolved_hosted_files),
-        "unexpected_sdk_hosted_manifests": unexpected_sdk_hosted_manifests,
-        "hosted_digest_mismatches": hosted_digest_mismatches,
+        "missing_sdk_metadata": sorted(SDK_METADATA - set(by_path)),
+        # Only the root HostedManifest.json is hydratable; any sdk/** copy
+        # would resolve paths under its own folder and 404.
+        "unexpected_sdk_hosted_manifests": sorted(
+            path for path in by_path if path.startswith("sdk/") and path.endswith("HostedManifest.json")
+        ),
+        "manifest_checks": manifest_checks,
         "hosted_digests_verified": verify_digests,
         "sdk_release_manifest": sdk_release_manifest,
     }
     return report
+
+
+def inventory_problems(report: dict[str, Any]) -> list[str]:
+    """One line per inventory manifest that is missing, unresolved or mismatched."""
+
+    return [
+        f"{profile}: " + ("manifest missing" if not check["present"] else
+            f"{len(check['unresolved_files'])} unresolved, {len(check.get('digest_mismatches', []))} mismatched")
+        for profile, check in report["manifest_checks"].items()
+        if not check["present"] or check["unresolved_files"] or check.get("digest_mismatches")
+    ]
 
 
 def main() -> None:
@@ -242,6 +263,9 @@ def main() -> None:
         args.output.write_text(payload, encoding="utf-8")
     else:
         print(payload, end="")
+    bad = inventory_problems(report)
+    if bad:
+        raise SystemExit("HF inventory problems: " + "; ".join(bad))
 
 
 if __name__ == "__main__":

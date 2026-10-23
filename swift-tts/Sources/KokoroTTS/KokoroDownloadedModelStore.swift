@@ -55,6 +55,14 @@ private struct KokoroHostedManifest: Decodable {
 
 /// Downloads a hosted-manifest SDK bundle into a local cache directory.
 public struct KokoroDownloadedModelStore: Sendable {
+    /// A non-2xx reply as an error that names the status and file, because
+    /// "NSURLErrorDomain -1011" alone tells a user nothing.
+    static func httpStatusError(_ http: HTTPURLResponse, label: String) -> URLError {
+        var info: [String: Any] = [NSLocalizedDescriptionKey: "HTTP \(http.statusCode) downloading \(label)"]
+        if let url = http.url { info[NSURLErrorFailingURLErrorKey] = url }
+        return URLError(.badServerResponse, userInfo: info)
+    }
+
     /// Bump when the shipped runtime's compiled-model contract changes.
     private static let compiledCacheDirectoryName = "compiled-v2"
 
@@ -150,9 +158,9 @@ public struct KokoroDownloadedModelStore: Sendable {
         let totalBytes = max(1, manifest.files.reduce(0) { $0 + $1.bytes })
         var completedBytes = 0
         reporter.report(fraction: 0)
-        try Self.rejectRootSymlink(rootURL: cacheDirectory)
+        try KokoroPathGuard.rejectRootSymlink(rootURL: cacheDirectory)
         try FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
-        try Self.rejectRootSymlink(rootURL: cacheDirectory)
+        try KokoroPathGuard.rejectRootSymlink(rootURL: cacheDirectory)
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
         var mutableCache = cacheDirectory
@@ -163,7 +171,7 @@ public struct KokoroDownloadedModelStore: Sendable {
             Self.compiledCacheDirectoryName,
             isDirectory: true
         )
-        try Self.rejectExistingSymlinkComponents(
+        try KokoroPathGuard.rejectExistingSymlinkComponents(
             rootURL: cacheDirectory,
             targetURL: legacyCompiledCache
         )
@@ -171,7 +179,7 @@ public struct KokoroDownloadedModelStore: Sendable {
             try FileManager.default.removeItem(at: legacyCompiledCache)
         }
         let versionURL = cacheDirectory.appendingPathComponent(".kokoro-hosted-version")
-        try Self.rejectExistingSymlinkComponents(rootURL: cacheDirectory, targetURL: versionURL)
+        try KokoroPathGuard.rejectExistingSymlinkComponents(rootURL: cacheDirectory, targetURL: versionURL)
         if let version = manifest.version,
            cachedVersion(versionURL: versionURL) != version,
            FileManager.default.fileExists(atPath: compiledCache.path) {
@@ -180,8 +188,8 @@ public struct KokoroDownloadedModelStore: Sendable {
 
         for file in manifest.files {
             try Task.checkCancellation()
-            let target = try Self.containedURL(rootURL: cacheDirectory, relativePath: file.path)
-            try Self.rejectExistingSymlinkComponents(rootURL: cacheDirectory, targetURL: target)
+            let target = try KokoroPathGuard.containedURL(rootURL: cacheDirectory, relativePath: file.path)
+            try KokoroPathGuard.rejectExistingSymlinkComponents(rootURL: cacheDirectory, targetURL: target)
             if try await isValidFile(url: target, bytes: file.bytes, sha256: file.sha256) {
                 // A complete cached file makes any leftover partial transfer
                 // dead weight; nothing else ever reclaims it.
@@ -190,9 +198,9 @@ public struct KokoroDownloadedModelStore: Sendable {
                 reporter.report(fraction: Double(completedBytes) / Double(totalBytes))
                 continue
             }
-            try Self.rejectExistingSymlinkComponents(rootURL: cacheDirectory, targetURL: target.deletingLastPathComponent())
+            try KokoroPathGuard.rejectExistingSymlinkComponents(rootURL: cacheDirectory, targetURL: target.deletingLastPathComponent())
             try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try Self.rejectExistingSymlinkComponents(rootURL: cacheDirectory, targetURL: target.deletingLastPathComponent())
+            try KokoroPathGuard.rejectExistingSymlinkComponents(rootURL: cacheDirectory, targetURL: target.deletingLastPathComponent())
             let fileURL = try Self.remoteURL(manifestURL: manifestURL, relativePath: file.path)
             let completedBeforeFile = completedBytes
             // Committing to a fetch is what turns this into a download, so the
@@ -216,7 +224,7 @@ public struct KokoroDownloadedModelStore: Sendable {
             reporter.report(fraction: Double(completedBytes) / Double(totalBytes))
         }
         if let version = manifest.version {
-            try Self.rejectExistingSymlinkComponents(rootURL: cacheDirectory, targetURL: versionURL)
+            try KokoroPathGuard.rejectExistingSymlinkComponents(rootURL: cacheDirectory, targetURL: versionURL)
             try Data(version.utf8).write(
                 to: versionURL,
                 options: .atomic
@@ -452,7 +460,7 @@ public struct KokoroDownloadedModelStore: Sendable {
         ) {
             if let http = response as? HTTPURLResponse,
                !(200..<300).contains(http.statusCode) {
-                terminalError = URLError(.badServerResponse)
+                terminalError = KokoroDownloadedModelStore.httpStatusError(http, label: label)
                 completionHandler(.cancel)
                 return
             }
@@ -563,26 +571,6 @@ public struct KokoroDownloadedModelStore: Sendable {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
-    /// Resolves a hosted-manifest path under the cache root.
-    static func containedURL(rootURL: URL, relativePath: String) throws -> URL {
-        let components = relativePath.split(separator: "/", omittingEmptySubsequences: false)
-        guard !relativePath.hasPrefix("/"),
-              !relativePath.contains("\\"),
-              !components.isEmpty,
-              components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
-            throw KokoroError.pathEscape(relativePath)
-        }
-        let url = components.reduce(rootURL) { partial, component in
-            partial.appendingPathComponent(String(component))
-        }
-        let root = rootURL.standardizedFileURL.path
-        let target = url.standardizedFileURL.path
-        guard target == root || target.hasPrefix("\(root)/") else {
-            throw KokoroError.pathEscape(relativePath)
-        }
-        return url
-    }
-
     /// Resolves a hosted-manifest path against the manifest URL.
     static func remoteURL(manifestURL: URL, relativePath: String) throws -> URL {
         let components = relativePath.split(separator: "/", omittingEmptySubsequences: false)
@@ -595,41 +583,5 @@ public struct KokoroDownloadedModelStore: Sendable {
         return components.reduce(manifestURL.deletingLastPathComponent()) { partial, component in
             partial.appendingPathComponent(String(component))
         }
-    }
-
-    /// Rejects symlinked cache components before reads or writes can follow them.
-    static func rejectExistingSymlinkComponents(rootURL: URL, targetURL: URL) throws {
-        let root = rootURL.standardizedFileURL.path
-        let target = targetURL.standardizedFileURL.path
-        guard target == root || target.hasPrefix("\(root)/") else {
-            throw KokoroError.pathEscape(target)
-        }
-        try rejectRootSymlink(rootURL: rootURL)
-        let suffix = String(target.dropFirst(root.count)).split(separator: "/")
-        var current = rootURL
-        for component in suffix {
-            current = current.appendingPathComponent(String(component))
-            if Self.isSymbolicLink(current) {
-                throw KokoroError.pathEscape(current.path)
-            }
-            guard FileManager.default.fileExists(atPath: current.path) else {
-                continue
-            }
-        }
-    }
-
-    /// Rejects a cache root that is itself a symlink.
-    static func rejectRootSymlink(rootURL: URL) throws {
-        if Self.isSymbolicLink(rootURL) {
-            throw KokoroError.pathEscape(rootURL.path)
-        }
-        guard FileManager.default.fileExists(atPath: rootURL.path) else {
-            return
-        }
-    }
-
-    /// Returns true when a URL is itself a symbolic link.
-    private static func isSymbolicLink(_ url: URL) -> Bool {
-        (try? FileManager.default.destinationOfSymbolicLink(atPath: url.path)) != nil
     }
 }

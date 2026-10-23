@@ -280,7 +280,7 @@ extension KokoroDownloadedModelStore {
                 KokoroDownloadedModelStore.discardPartialTransfer(for: target)
                 resumeOffset = 0
             default:
-                throw URLError(.badServerResponse)
+                throw KokoroDownloadedModelStore.httpStatusError(http, label: label)
             }
             let declared = response.expectedContentLength
             if declared > 0, resumeOffset + Int(declared) > maxBytes {

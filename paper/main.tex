@@ -1,6 +1,7 @@
 \ifdefined\XeTeXversion\else\pdfoutput=1\fi % arXiv: pdfLaTeX output; skipped under XeTeX (tectonic)
 % Surgical Inference: Decomposing Generative Models for Heterogeneous On-Device SoC Inference.
 % Build: ./build_arxiv.sh (tectonic), or pdflatex + bibtex + pdflatex x2.
+% Release gate: `grep -c '\\tbd{' main.tex` must print 1 (the macro definition).
 \documentclass[11pt]{article}
 
 \usepackage[margin=1in]{geometry}
@@ -28,665 +29,384 @@
 % Absorb the occasional unbreakable code token in prose without a visible overrun.
 \setlength{\emergencystretch}{3em}
 
-% Inline code styling consistent with the markdown draft's backticks
 \newcommand{\code}[1]{\texttt{#1}}
 % Breakable variant for long file paths (used inside the appendix listings).
 \newcommand{\pth}[1]{\texttt{\seqsplit{#1}}}
+% Placeholder for a number the frozen rerun will supply. Must be gone before submission.
+\newcommand{\tbd}[1]{\textcolor{red}{\textbf{[#1]}}}
 
 % Guarded figure include: build succeeds even when a figure PDF is not yet present.
 \newcommand{\pendingfig}[1]{\fbox{\parbox{0.85\linewidth}{\centering\vspace{2em}PENDING FIGURE: \texttt{#1}\vspace{2em}}}}
 
 \title{Surgical Inference: Decomposing Generative Models for\\Heterogeneous On-Device SoC Inference}
 \author{Matt Mireles\\Independent Researcher\\\texttt{mattmireles@gmail.com}}
-\date{October 21, 2026}
+\date{October 23, 2026}
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
-On-device generative inference usually means choosing one backend: CPU for compatibility, GPU for throughput, or an NPU when the compiler accepts the graph. Modern SoCs are heterogeneous, and single-backend deployment leaves most of the chip idle. We present \emph{Surgical Inference}, a deployment methodology that changes the unit of compilation from ``the model'' to a set of fixed-shape neural submodels and native stages, each classified by computational motif and assigned to the SoC engine that measurement selects.
+On-device generative inference usually means choosing one backend, and single-backend deployment leaves most of a heterogeneous SoC idle. We present \emph{Surgical Inference}: compile a generative model as a set of fixed-shape submodels and native stages, reshape each stage --- without changing its math --- until the engine that should run it admits it, and place every stage on the CPU, GPU or Neural Engine (ANE) by measurement.
 
-We evaluate it on two structurally opposite generative workloads. Kokoro-82M, a text-to-speech pipeline decomposed into four Core ML model families and three native Swift stages, is 1.8--2.4$\times$ faster than MLX, 2.7--6.5$\times$ faster than PyTorch MPS where MPS completes, and 3.2--6.8$\times$ faster than PyTorch CPU on three Macs. On an iPhone 15 Pro Max it synthesizes a 27 s clip in 1.7 s, 2.6--3.2$\times$ faster than the MLX Swift port. Magenta RealTime 2 (230M parameters), a live-music model with a 40 ms/frame streaming deadline, runs faster than real time on the same phone and yields three findings: the ANE admission cliff for streaming transformers is in-graph state mutation, not attention math; tensor layout decides FP16 numerical survival per compute unit; and per-call cost on weight-bound stages tracks weight bytes $\div$ DRAM bandwidth.
+On Kokoro-82M text-to-speech, the ANE rejects the vocoder, 89\% of the model's FLOPs, on tensor geometry. Folding its time axis into overlapping rows, rewriting each rejected op into an admitted equivalent and keeping exact global normalization statistics puts all but one of its 1,928 ops on the ANE. Splitting each vocoder stage so the ANE runs the convolutions while the GPU runs normalization and activations, over shared memory, keeps both engines busy at once. The pipeline synthesizes 27 s of speech in 309 ms on an M1 Mac Mini, 9.8$\times$ faster than MLX on the same machine, and in 319 ms on an iPhone 15 Pro Max, at 40.8--45.8 dB SNR against the fp32 reference. On Magenta RealTime 2, a streaming music model with a 40 ms frame deadline, the same procedure runs faster than real time on an iPhone 15 Pro Max in bounded runs, though not yet in a 10-minute soak, and finds two more structural admission rules: in-graph state mutation, not attention, is the ANE compile cliff, and tensor layout decides whether FP16 output stays finite on each engine.
 
-Negative results are central. We could not produce a valid monolithic Core ML export of Kokoro: conversion fails at the data-dependent alignment, and the strongest partial monolith is numerically invalid. The ANE rejected Kokoro's largest dense stage on tensor geometry and every stateful variant of the music transformer, and the decomposed pipelines win anyway. The active ingredients are decomposition, static per-stage compilation, deliberate placement and validated host glue, not any single accelerator. Kokoro code, models and benchmarks are open source.
+Negative results are reported as results: no valid monolithic export, a list of optimizations that failed, and an estimated ceiling for the exact model below 90\% of the hardware floor. Code, models and benchmarks are open source.
 \end{abstract}
 
-%% Keywords
-\noindent\textbf{Keywords:} on-device inference, heterogeneous computing, Apple Silicon, Neural Engine, Core ML, model decomposition, generative models, text-to-speech, music generation, autoregressive streaming, MLX
+\noindent\textbf{Keywords:} on-device inference, heterogeneous computing, Apple Silicon, Neural Engine, Core ML, model decomposition, text-to-speech, vocoder, autoregressive streaming
 
 \section{Introduction}\label{sec:intro}
 
-The deployment of generative models on edge devices has emerged as a critical research direction, motivated by privacy, latency, network independence, energy cost, and user experience. The hardware is already heterogeneous. Apple Silicon integrates CPU cores, GPU cores, and a dedicated neural network accelerator (the Apple Neural Engine, or ANE) on a single die with unified memory. Similar CPU/GPU/NPU structures now exist across phones, laptops, tablets, and embedded systems.
+Apple Silicon puts CPU cores, a GPU and a neural accelerator (the Apple Neural Engine, ANE) on one die with unified memory, and similar CPU/GPU/NPU designs now ship in most phones and laptops. Local generative inference nonetheless runs almost entirely on the GPU, through llama.cpp, MLX and PyTorch MPS. The GPU is programmable and forgiving, but a GPU-only model competes with rendering, media and any concurrent local LLM, while the ANE sits idle.
 
-Despite this hardware heterogeneity, the dominant approach to local AI inference on Apple Silicon uses Metal-based engines (Ollama/llama.cpp, MLX, PyTorch MPS) that target the GPU. That default is rational: the GPU is programmable, high-throughput, and forgiving. But it also creates a systems bottleneck. A GPU-only model competes with the user interface, rendering, media pipelines, and any concurrent local LLM. The neural accelerator remains mostly idle, CPU vector units are underused, and the application has fewer ways to trade latency, energy, and thermals.
+The obvious alternative --- compile the whole model for the ANE --- fails for most generative models. ANE compilers impose static shapes, an op set and per-axis tensor limits, and a generative model is rarely one homogeneous graph: it mixes dense convolutions, recurrence, data-dependent indexing, DSP and sampling. When the compiler rejects part of the graph, Core ML falls back silently to another engine, and the developer learns nothing.
 
-The common alternative --- compile the whole model to a neural accelerator --- is too simple. Neural accelerators are fast and power-efficient for the graphs they admit, but their compilers impose static-shape, op-set, and tensor-geometry constraints. A modern generative model is rarely one homogeneous graph. It often contains dense feed-forward blocks, small recurrent or autoregressive components, data-dependent indexing, masking, DSP, sampling, and post-processing. Some of these parts are excellent neural-accelerator candidates. Some are better as native CPU code. Some should stay on GPU. Treating the model as a single scheduling unit hides this structure.
+We argue that the unit of deployment should be the inference pipeline, not the model file, and that a rejection by the accelerator is a statement about a tensor's \emph{shape}, not about the model. \emph{Surgical Inference} cuts a pipeline at its dataflow seams into fixed-shape Core ML submodels and native stages, reshapes stages the ANE rejects into equivalent forms it admits, and places each stage by measurement. We test it on two workloads chosen to be structural opposites: Kokoro-82M, a batch text-to-speech pipeline, and Magenta RealTime 2 (MRT2), an autoregressive music model that streams under a 40 ms per-frame deadline on a phone.
 
-We argue that the deployment unit should be the \emph{inference pipeline}, not the original model file. Surgical Inference decomposes a generative pipeline into smaller compiled submodels and native stages, then schedules them deliberately across the SoC. The procedure assumes only a heterogeneous SoC whose accelerators impose admission constraints, and applies when a model contains separable stages whose dataflow can be made explicit; the constraint catalog we document is Apple-specific, and all measurements in this paper are on Apple Silicon (\S\ref{sec:disc-limitations}). We measure it on two case studies chosen to stress different regimes. Text-to-speech (Kokoro-82M) is a clean batch example: recurrent prosody prediction, duration-dependent expansion, pitch/noise prediction, harmonic DSP, and dense convolutional waveform generation all coexist in one reference model. Live music generation (Magenta RealTime 2) adds the constraint the first lacks: a hard 40 ms autoregressive deadline that never pauses, on a phone, where a missed frame is an audible dropout rather than a slower benchmark row.
+The paper's thesis emerged from the two case studies rather than preceding them. \textbf{In both workloads, what decided whether the ANE admitted a stage --- and whether its output stayed correct --- was structure the developer controls: tensor geometry, state boundaries and memory layout, not which ops the model uses.} Kokoro's vocoder was rejected on geometry and admitted after folding; MRT2's transformer was rejected for mutating state in-graph and admitted as a stateless step; MRT2's codec produced NaNs in one layout and correct audio in another. Op-level rewrites suggested by ANE folklore changed nothing in either.
 
-The systems objective is broader than raw latency. A decomposed pipeline can reduce wall-clock time, avoid GPU-only memory blowups, overlap CPU work with neural inference, and lower GPU residency so other workloads --- including a local LLM --- can run concurrently. This paper measures latency and completion behavior directly for both case studies, and --- for the second --- power and placement directly: paired Power Profiler captures and Instruments residency traces on physical iPhones (\S\ref{sec:cs2-power}), including a thermal-soak result that currently fails and is reported as such. Shorter end-to-end execution, bounded memory use, and partial use of CPU/ANE instead of continuous GPU occupancy are the deployment properties that make lower-energy, cooler on-device inference plausible; the second case study turns part of that plausibility argument into measurement.
-
-We introduce \emph{Surgical Inference} and make five contributions:
+We make five contributions:
 
 \begin{enumerate}[leftmargin=*]
-\item \textbf{A decomposition methodology} for multi-stage generative pipelines on heterogeneous SoCs: a three-motif classification --- Sequential-Dynamic, Data-Dependent Logic, Dense-Static --- a decomposition procedure, and a per-stage placement ablation whose results overrode intuition in both case studies, in opposite directions (\S\ref{sec:method}, \S\ref{sec:disc-ane}). The methodology is a systematization of practice, not a new technique: per-model and per-stage Core ML packages already ship in Apple's Stable Diffusion conversion and in WhisperKit (\S\ref{sec:related}). We make the classification, the placement ablation and the host-glue validation rules explicit, and test them on two opposite workloads.
+\item \textbf{A decomposition methodology} for multi-stage generative pipelines: a three-motif classification (Sequential-Dynamic, Data-Dependent Logic, Dense-Static), a decomposition procedure with a per-stage placement ablation, and host-glue validation rules (\S\ref{sec:method}). It systematizes practice already visible in per-stage Core ML deployments such as Apple's Stable Diffusion port and WhisperKit (\S\ref{sec:related}); we make the procedure explicit and test it on two opposite workloads.
 
-\item \textbf{Two complete implementations with cross-device empirical validation.} A Kokoro-82M pipeline --- four Core ML model families, three native Swift stages, zero Python at inference time --- benchmarked on three Macs (M1 Mini, M2 Air, M2 Ultra) and two iPhones (A14, A17 Pro) against MLX, PyTorch MPS, PyTorch CPU, and two independent Core ML Kokoro ports (\S\ref{sec:cs1}--\ref{sec:cs1-eval}); and a Magenta RealTime 2 streaming pipeline holding a 25 Hz autoregressive deadline on a phone (\S\ref{sec:cs2}).
+\item \textbf{Folding an audio-rate vocoder onto the ANE without changing its math} (\S\ref{sec:cs1-fold}). Kokoro's vocoder carries time axes of up to 720,000 elements against a 16,384-element per-axis limit. Folding time into rows with overlapping halos, five op rewrites and exact global AdaIN statistics make it ANE-resident and exact (68 dB against the unfolded generator in fp32).
 
-\item \textbf{Negative results, reported as results.} We could not produce a valid monolithic Core ML export of Kokoro-82M with coremltools 8.3: conversion fails at the data-dependent alignment and the strongest partial monolith is numerically invalid (\S\ref{sec:cs1-monolith}). The vocoder is rejected by the ANE on tensor geometry (\code{ANECCompile() FAILED} on every Mac tested). \code{.all} falls back silently on macOS; on iOS it hard-failed on iOS 26.5 and runs on iOS 27.0.1. The GPU frameworks fail on our workloads: PyTorch MPS hits a 65,536-output-channel limit on the 15 s and 30 s inputs on every Mac, and MLX is killed by the memory watchdog (jetsam) on the 4 GB phone. And naive native DSP ports regress until engineered (a 12$\times$ hn-nsf speedup in an early port from eliminating protocol-dispatched RNG, \S\ref{sec:dsp}).
+\item \textbf{One stage, two engines} (\S\ref{sec:cs1-hybrid}). Measured per op class, the ANE is bound by the vocoder's elementwise work and the GPU by its convolutions. A hybrid generator runs every convolution on the ANE and normalization and activations in Metal, over shared IOSurface tensors, with both engines busy at once. It beats the all-ANE form by 16--78\% at every input of 7 s and longer on all five devices, at a measured cost in phone memory and GPU time (\S\ref{sec:cs1-fold-vs-hybrid}).
 
-\item \textbf{Three ANE admission findings} from the streaming case study: in-graph \emph{state mutation} --- not attention math --- is the compile-time cliff for streaming transformers, located by a falsification ladder and escaped by restructuring the transformer as a stateless step function (\S\ref{sec:cs2-state}); tensor layout governs FP16 \emph{numerical survival} per compute unit --- after a channels-first rewrite the ANE was the only engine producing finite codec output (\S\ref{sec:cs2-layout}); and on weight-bandwidth-bound stages the ordinary roofline argument --- per-call cost $\approx$ weight bytes $\div$ DRAM bandwidth --- holds for Core ML predictions on the phone, which reshaped the sampling loop from twelve predictions per frame into one (\S\ref{sec:cs2-bandwidth}).
+\item \textbf{Structural ANE admission findings} from the streaming case study (\S\ref{sec:cs2}): in-graph state mutation, not attention math, is the compile cliff for streaming transformers; internal layout decides FP16 numerical survival per compute unit; and weight-bound stages cost weight bytes $\div$ DRAM bandwidth per call on every engine.
 
-\item \textbf{Direct residency and energy instrumentation}, addressing what model-level scheduling claims usually leave unproven: Instruments Core ML traces showing per-model ANE hardware intervals and \emph{zero} app-attributed Metal GPU intervals, turned into a machine-checkable placement-evidence artifact, plus paired Power Profiler captures showing the all-ANE policy removes process GPU impact and roughly halves CPU instructions versus a temporal-GPU control (\S\ref{sec:cs2-power}). These traces cover the earlier all-ANE configuration; the corrected pipeline that ships today runs the temporal stage on the GPU and the depth stage on the CPU (\S\ref{sec:cs2-power}).
+\item \textbf{Measured results, a cumulative ablation and negative results} on three Macs and two iPhones under a frozen protocol (\S\ref{sec:cs1-eval}): a one-change-at-a-time ladder from the previous pipeline to the current one, a lab estimate of the remaining distance to the hardware floor, a monolithic-export control that fails, and the optimizations that did not work.
 \end{enumerate}
 
-All code, pre-converted Core ML models, and benchmark data for the first case study are available at:
-\begin{itemize}[leftmargin=*]
-\item \url{https://github.com/mattmireles/kokoro-coreml}
-\item \url{https://huggingface.co/mattmireles/kokoro-coreml}
-\end{itemize}
-
-The second case study's conversion and validation layer is public at \url{https://github.com/mattmireles/magenta-realtime-2-iphone} --- including the corrected exporters that reproduce the \S\ref{sec:cs2-state}--\S\ref{sec:cs2-bandwidth} findings, the superseded exporters retained as negative-result artifacts, numerical-parity validators, reference fixtures, and validation receipts, with pre-converted packages mirrored on \href{https://huggingface.co/mattmireles/magenta-realtime-2-iphone}{Hugging Face} (generation status per artifact in Appendix~\ref{app:artifacts}). The streaming runtime and instrumentation live in the Crossfade repository, a fork of \href{https://github.com/magenta/magenta-realtime}{magenta/magenta-realtime} that is private at the time of writing; the full artifact and reproduction map is given in Appendix~\ref{app:artifacts}.
+Code, pre-converted Core ML models and benchmark data for Kokoro are at \url{https://github.com/mattmireles/kokoro-coreml} and \url{https://huggingface.co/mattmireles/kokoro-coreml}. MRT2's conversion and validation layer is at \url{https://github.com/mattmireles/magenta-realtime-2-iphone}; its streaming runtime lives in a fork that is private at the time of writing (Appendix~\ref{app:artifacts}).
 
 \section{Background}\label{sec:background}
 
-\subsection{Heterogeneous SoCs as Inference Targets}\label{sec:soc}
+\textbf{The SoC.} Apple's M- and A-series chips share one DRAM pool among three engines with different admission rules and power profiles. The \emph{CPU} handles branching, dynamic shapes and DSP (Accelerate/vDSP). The \emph{GPU} runs arbitrary compute through Metal and handles dynamic shapes. The \emph{ANE} is a fixed-function accelerator for convolutions, matrix multiplies, elementwise ops, pooling and normalization, under strict constraints: static shapes, a restricted op set, no data-dependent control flow, and per-axis tensor limits (16,384 elements per axis, by community documentation~\citep{ane-field-guide,orion} and our own compiler errors). Core ML~\citep{coremltools} dispatches to all three, but a compute-unit setting is a \emph{request}: subgraphs the ANE rejects run elsewhere without an error.
 
-Apple's M-series and A-series SoCs integrate three relevant compute units on a single die with unified memory architecture (UMA). All three compute units access the same physical memory pool, which removes explicit device-to-device copy costs but does not make the compute units interchangeable. Each engine has a different instruction model, scheduling overhead, admission policy, and power profile.
+\textbf{GPU-centric practice.} llama.cpp~\citep{llamacpp}, MLX~\citep{mlx} and PyTorch MPS~\citep{pytorch-mps-metal,pytorch-mps-notes} target only the CPU and GPU. The common view that Core ML offers little for generative inference is often right for large language models, which are bandwidth-bound; the ANE adds no bandwidth. It does not transfer to pipelines with separable dense, sequential and data-dependent regions.
 
-\textbf{CPU.} Performance and efficiency cores optimized for sequential and branching workloads. Excellent at data-dependent control flow, dynamic shapes, and small-batch operations. The Accelerate framework provides vectorized DSP routines (vDSP) and BLAS operations.
+\textbf{Kokoro-82M}~\citep{kokoro-model,kokoro-lib} is an Apache-2.0 text-to-speech model built on StyleTTS~2~\citep{styletts2} with an iSTFTNet-style vocoder~\citep{istftnet}. Its reference inference path has seven stages: duration prediction (a BERT encoder and an LSTM prosody predictor), duration-dependent expansion of tokens to frames, pitch and noise (F0/N) prediction, decoder pre-processing (\emph{DecoderPre}), a harmonic source (hn-nsf: SineGen plus STFT), the vocoder (\emph{generator}), and trim. The generator holds 1,348 of the model's 1,520 GFLOP for a 27 s utterance (89\%).
 
-\textbf{GPU.} Tile-based deferred renderer with compute shader support via Metal. Optimized for parallelizable workloads with flexible kernel programming through Metal Performance Shaders (MPS) and the MLX framework. Handles dynamic shapes and arbitrary computation graphs.
+\textbf{Magenta RealTime 2}~\citep{magenta-rt,magenta-rt-repo} is Google's open-weights live-music model. A decoder-only transformer generates one frame of 12 residual-vector-quantized (RVQ) tokens every 40 ms, and a SpectroStream codec decoder in the SoundStream lineage~\citep{soundstream} turns each frame into 48 kHz stereo audio. Upstream real-time inference runs through MLX on M-series Macs only. We use \code{mrt2\_small} (230M parameters).
 
-\textbf{Neural Engine (ANE).} Fixed-function matrix accelerator designed for high-throughput, low-power neural network inference. Accelerates a constrained subset of operations --- convolutions, matrix multiplications, elementwise ops, pooling, normalization --- under strict requirements:
+\section{Surgical Inference}\label{sec:method}
 
-\begin{itemize}[leftmargin=*]
-\item \textbf{Static shapes.} All tensor dimensions must be known at compile time.
-\item \textbf{Supported op set.} Operations outside the ANE-accepted set trigger fallback to CPU/GPU.
-\item \textbf{No data-dependent control flow.} Loops and conditionals depending on tensor values cannot execute on ANE.
-\item \textbf{Tensor geometry limits.} Per-axis dimensions are bounded (community documentation and our own compiler errors place the limit at 16,384 elements per axis); large intermediate activations that exceed ANE SRAM incur DRAM round-trips.
-\end{itemize}
-
-These constraints make the ANE ideal for dense, regular, feed-forward computation at moderate tensor sizes --- but, as we show in \S\ref{sec:disc-ane}, ``dense and static'' is necessary, not sufficient. Audio-rate tensors (hundreds of thousands of samples on the last axis) can categorically exceed ANE admission limits, in-graph state mutation can fail compilation outright (\S\ref{sec:cs2-state}), and FP16 numerical health can depend on internal layout (\S\ref{sec:cs2-layout}). The practical inference target is therefore not ``the ANE'' or ``the GPU''; it is the whole SoC, with stages mapped to engines according to what the compiler accepts and what measurement validates.
-
-\subsection{GPU-Centric Deployment and Its Blind Spot}\label{sec:gpu-centric}
-
-The prevailing practice for local ML inference on Apple Silicon has converged on GPU-centric execution through Metal-based frameworks:
-
-\begin{itemize}[leftmargin=*]
-\item \textbf{llama.cpp / GGML}~\citep{llamacpp}. The engine underlying Ollama and many local LLM tools. Uses Metal shaders directly. CPU and GPU only.
-\item \textbf{MLX}~\citep{mlx}. Apple's own NumPy-like framework for Apple Silicon. Purpose-built for the architecture but GPU-only; it cannot dispatch to the ANE.
-\item \textbf{PyTorch MPS}~\citep{pytorch-mps-metal,pytorch-mps-notes}. Apple's Metal Performance Shaders backend for PyTorch. GPU only. Transparent fallback to CPU for unsupported operations.
-\item \textbf{Core ML}~\citep{coremltools}. Apple's conversion and runtime framework. Capable of dispatching to CPU, GPU, or ANE. Used extensively for small on-device models but rarely for generative workloads. Its scheduler partitions graphs across compute units opaquely, and rejected ANE subgraphs fall back \emph{silently} --- a model ``running on the ANE'' may not be.
-\end{itemize}
-
-The conventional wisdom --- reinforced by LLM-dominated discussion in the on-device ML community --- holds that Core ML provides no meaningful benefit for generative inference. This is often true for large autoregressive language models: they are memory-bandwidth-bound, and the ANE does not create additional memory bandwidth beyond unified memory. But that conclusion does not transfer to all generative systems. Many models are not one uniform transformer loop. They are pipelines with separable dense, sequential, and data-dependent regions. GPU-only deployment collapses these regions back into a single queue on the GPU, monopolizing the most generally useful accelerator even when other SoC engines could do part of the work.
-
-\subsection{Kokoro-82M: The First Case Study}\label{sec:kokoro-bg}
-
-Kokoro-82M~\citep{kokoro-model,kokoro-lib} is a lightweight text-to-speech model released by hexgrad under Apache 2.0, based on the StyleTTS 2 architecture~\citep{styletts2}. Despite only 82 million parameters, it achieves quality competitive with much larger models in community evaluations by leveraging efficient StyleTTS 2 components and an iSTFTNet-based decoder~\citep{istftnet}.
-
-We use Kokoro-82M as a case study because it is small enough to ship on phones, high quality enough to matter, and structurally heterogeneous. The reference inference path contains seven conceptual stages:
-
-\begin{enumerate}[leftmargin=*]
-\item \textbf{Duration prediction.} A BERT-based text encoder feeds a prosody predictor (LSTM + CNN stack) that produces per-phoneme durations, text encodings, and style features.
-\item \textbf{Duration-dependent expansion.} Predicted durations expand token-level features into acoustic frames.
-\item \textbf{Prosody (F0/N) prediction.} A small convolutional network predicts pitch (F0) and noise (N) contours from aligned features and style embedding.
-\item \textbf{Decoder pre-processing.} The decoder's encode and decode blocks (convolutional residual stacks with style-conditioned AdaIN normalization) produce pre-vocoder features.
-\item \textbf{Harmonic source generation (hn-nsf).} A SineGen-based module converts the F0 contour into a harmonic waveform, then applies STFT to produce spectral features used by the vocoder.
-\item \textbf{Vocoder (GeneratorFromHar).} The final convolutional stack combines pre-vocoder features with harmonic features and produces the output waveform via iSTFT.
-\item \textbf{Trim.} Output is trimmed to the target audio length.
-\end{enumerate}
-
-The original PyTorch reference implementation executes all seven stages on CPU or GPU/MPS through one eager runtime, with significant Python overhead between stages. Surgical Inference asks a different question: which of these stages should remain a model, which should become native code, and which SoC engine should each stage use?
-
-\subsection{Magenta RealTime 2: The Second Case Study}\label{sec:mrt2-bg}
-
-Magenta RealTime 2 (MRT2)~\citep{magenta-rt,magenta-rt-repo} is Google's open-weights live-music model. Unlike a TTS model that renders a finished utterance, MRT2 \emph{streams}: a decoder-only transformer autoregressively generates one frame of 12 residual-vector-quantization (RVQ) tokens every 40 ms, and a SpectroStream codec decoder --- in the RVQ lineage of SoundStream~\citep{soundstream} --- converts each token frame into 1,920 samples of 48 kHz stereo PCM. Generation is steerable in real time by text, audio, and MIDI conditioning. The upstream project ships real-time inference through MLX --- GPU-only --- and supports it exclusively on M-series Macs; there is no phone target.
-
-We use the smallest configuration, \code{mrt2\_small} (230M parameters), as the second case study because it is the structural complement of the first. Kokoro is feed-forward and batch: the deployment metric is wall time for a finished artifact, and every stage runs once per utterance. MRT2 is autoregressive and streaming: frame \emph{N+1} cannot start before frame \emph{N}'s tokens exist, the audio clock never pauses, and the deployment metric is sustained p99 frame time against a 40 ms deadline. It also exercises the one motif the first case study could route around: a stateful transformer with per-frame K/V-cache updates on the hot path (41-frame local-attention windows across 12 temporal layers, plus a 12-level serial depth sampler per frame). If the methodology only works when the Sequential-Dynamic motif can be left on the CPU, this workload exposes that.
-
-\section{Surgical Inference Methodology}\label{sec:method}
-
-Surgical Inference is a deployment-time graph partitioning method. It does not change model weights or retrain the network. It changes the compiled artifact boundary. A single reference model becomes a small number of fixed-shape neural packages plus native kernels for dynamic or irregular work. The method is intentionally simple:
-
-\begin{itemize}[leftmargin=*]
-\item Cut only at real dataflow boundaries.
-\item Preserve numerical equivalence at each cut.
-\item Let measured stage placement override intuition.
-\item Optimize the host glue because it becomes part of the model.
-\item Use concurrency only where the data dependencies prove it is safe.
-\end{itemize}
+Surgical Inference changes the compiled artifact boundary, not the weights. A reference model becomes a few fixed-shape neural packages plus native code for dynamic or irregular work. The rules are short: cut only at real dataflow boundaries; preserve numerical equivalence at each cut; when the accelerator rejects a stage, change the stage's shape before giving up on the accelerator; let measured placement override intuition; and treat host glue as part of the model.
 
 \subsection{Computational Motifs}\label{sec:motifs}
 
-We classify stages into three motifs, each with a characteristic hardware affinity:
+\textbf{Sequential-Dynamic (SD)}: recurrence, autoregressive decoding, sampling loops. Candidate engines: CPU or GPU. The motif belongs to the boundary drawn, not to the stage inherited: when the only recurrence is cache state, the per-step math is Dense-Static and the bookkeeping is host logic (\S\ref{sec:cs2-state}).
 
-\textbf{Motif 1: Sequential-Dynamic (SD).}
-Characterized by recurrent layers (LSTMs, GRUs), autoregressive decoding with KV-cache, sampling loops, beam search, or computations where step \emph{t} depends on step \emph{t$-$1}. Tensor shapes may vary across inputs. Examples: LSTM-based duration prediction in Kokoro, autoregressive transformer decoding in LLMs, diffusion samplers with step-wise scheduler state.
+\textbf{Data-Dependent Logic (DDL)}: computation whose structure depends on tensor values --- duration expansion, masking, top-k, trimming. Candidate engine: native CPU code; too irregular for an accelerator to amortize.
 
-\emph{Hardware affinity:} \textbf{CPU or GPU} --- as inherited. But the motif is a property of the boundary you draw, not the stage you inherit: when the sequential dependency is only cache state, the per-step math is Dense-Static and the recurrence is Data-Dependent Logic that can move to the host. Case study 2 shows this decomposition-within-a-stage unlocking ANE compilation for a streaming transformer (\S\ref{sec:cs2-state}).
+\textbf{Dense-Static (DS)}: convolutions, matrix multiplies, normalization and elementwise ops with compile-time shapes. Candidate engines: Core ML, with placement measured. Dense-Static is the candidate set for the ANE, not a guarantee of admission (\S\ref{sec:disc-admission}).
 
-\textbf{Motif 2: Data-Dependent Logic (DDL).}
-Computations whose \emph{structure} depends on tensor values, not just their shapes. Examples: duration-dependent expansion, top-k filtering, token suppression, dynamic masking, bucketing, ragged sequence packing, audio trimming, or branchy post-processing.
-
-\emph{Hardware affinity:} \textbf{CPU (native Swift/C).} Too small and too irregular for GPU or ANE dispatch to amortize. Best implemented directly, not through a tensor runtime.
-
-\textbf{Motif 3: Dense-Static (DS).}
-Large blocks of convolutions, matrix multiplications, attention with fixed shapes, normalization, upsampling, or elementwise ops with shapes fully known at compile time and no data-dependent branching. Examples: convolutional vocoders, image decoders, denoisers, fixed-shape encoders, codec decoders, and BERT-style encoders with fixed input sizes.
-
-\emph{Hardware affinity:} \textbf{Core ML, with placement determined empirically.} Dense-Static work is the candidate set for ANE acceleration, but the ANE's admission constraints (op set, tensor geometry limits, SRAM budget) are checked at compile time per stage. A Dense-Static stage that the ANE rejects still benefits from Core ML compilation --- fused fp16 kernels and ahead-of-time graph optimization on CPU+GPU --- relative to eager-mode GPU frameworks. Placement is a measurement, not an assumption.
-
-\subsection{Decomposition Procedure}\label{sec:procedure}
-
-Given a generative pipeline, apply the following procedure:
+\subsection{Procedure}\label{sec:procedure}
 
 \begin{enumerate}[leftmargin=*,label=\arabic*.]
-\item Trace or instrument the reference forward pass and identify real dataflow boundaries:
-  \begin{itemize}[leftmargin=1.5em]
-  \item values whose shape or semantics are stable enough to validate
-  \item boundaries where data-dependent logic enters or leaves the graph
-  \item independent branches that can run concurrently
-  \end{itemize}
-
-\item For each stage, classify its computational motif (SD, DDL, DS).
-
-\item For stages classified as Dense-Static:
-  \begin{itemize}[leftmargin=1.5em]
-  \item Enforce static shapes via bucketing if necessary
-  \item Export as a Core ML \code{.mlpackage}
-  \item Validate numerical equivalence against a native-length fp32 PyTorch reference, across bucket fills (we score SNR; per-stage correlation on padded inputs proved too weak a gate, \S\ref{sec:cs1-export})
-  \item Ablate compute-unit placement per stage: try \code{.cpuAndNeuralEngine}, \code{.cpuAndGPU}, and \code{.all}; keep the fastest placement that passes the task validation gate. Do not trust \code{.all} to mean ``ANE'': rejected subgraphs fall back silently.
-  \end{itemize}
-
-\item For stages classified as Data-Dependent Logic:
-  \begin{itemize}[leftmargin=1.5em]
-  \item Implement natively in Swift (or C)
-  \item Use Accelerate/vDSP for vectorizable DSP
-  \item Profile the native implementation: a naive port is often slower than PyTorch until optimized
-  \end{itemize}
-
-\item For stages classified as Sequential-Dynamic:
-  \begin{itemize}[leftmargin=1.5em]
-  \item If the recurrence is only cache state, restructure as a stateless step function: caches as ordinary inputs, current-step updates as ordinary outputs, host owns mutation and continuity. The remaining graph is Dense-Static; classify it as such (\S\ref{sec:cs2-state})
-  \item If small, export as Core ML and measure CPU/GPU/ANE-adjacent policies anyway; the compiler may fuse useful subgraphs
-  \item If large and memory-bandwidth-bound, expect per-call cost $\approx$ weight bytes $\div$ DRAM bandwidth whichever compute unit runs it, since all of them share one DRAM; minimize weight re-streaming (fewer calls, lower precision) before chasing placement (\S\ref{sec:cs2-bandwidth})
-  \item If latency is dominated by host dispatch, prefer fewer calls
-  \end{itemize}
-
-\item Orchestrate the pipeline in Swift, with explicit model loading, tensor handoff via \code{MLMultiArray}, and inline timing of each stage. Profile the host-side glue: tensor materialization and padding are real costs. Where the dataflow allows, run CPU stages concurrently with Core ML predicts --- heterogeneous units can genuinely overlap, and the decomposition makes the independence explicit.
-
-\item Benchmark the assembled pipeline against:
-  \begin{itemize}[leftmargin=1.5em]
-  \item The original PyTorch baseline (CPU and GPU/MPS)
-  \item GPU-native frameworks (MLX)
-  \item Any existing Core ML implementations of the same model
-  \item A monolithic conversion of the full model, if one can be built at all --- the attempt itself is evidence (\S\ref{sec:cs1-monolith})
-  \item Across a range of input lengths and target hardware
-  \item With power/thermal instrumentation when energy claims are made
-  \end{itemize}
+\item Trace the reference forward pass; mark boundaries where data-dependent logic enters or leaves the graph, values stable enough to validate, and independent branches.
+\item Classify each stage by motif.
+\item \textbf{Dense-Static stages:} make shapes static (bucketing with masks), export to Core ML, and validate against a native-length fp32 reference across bucket fills, by SNR over the valid region (per-stage correlation on padded inputs proved too weak, \S\ref{sec:cs1-decomp}). If the ANE rejects the stage, find the binding structural property (\S\ref{sec:disc-admission}) and reshape: fold long axes into rows, move state to host-owned inputs and outputs, change internal layout. Then ablate placement per stage --- \code{.cpuAndNeuralEngine}, \code{.cpuAndGPU}, and splits within the stage by op class --- and keep the fastest variant that passes validation. Prove placement with \code{MLComputePlan} or Instruments; never trust \code{.all}.
+\item \textbf{Data-Dependent stages:} implement natively (Swift/C, Accelerate). Profile them: a naive port is often slower than PyTorch.
+\item \textbf{Sequential-Dynamic stages:} if the recurrence is only cache state, export a stateless step function with caches as inputs and updates as outputs. If the stage is weight-bound, expect per-call cost $\approx$ weight bytes $\div$ DRAM bandwidth on any engine and reduce calls before chasing placement (\S\ref{sec:cs2-bandwidth}).
+\item Orchestrate natively. Overlap independent stages across engines where the dataflow proves it safe. Validate every host-side consumer of a model output against the reference at least once, read tensors through their strides, and prove that stateful graphs read their state (\S\ref{sec:cs2-host}).
+\item Benchmark end to end against the original framework, GPU-native frameworks, other ports, and a monolithic conversion if one can be built (\S\ref{sec:cs1-monolith}), across input lengths and devices; change one thing at a time when attributing gains.
 \end{enumerate}
 
-Step 3's ablation clause is load-bearing. In the first case study it changed the shipped configuration: only DecoderPre ships on the ANE, as a single policy for every machine (\S\ref{sec:disc-ane}). Per-machine sweeps show the ANE also wins some smaller stages on some machines --- on an M1, the Duration buckets from t128 up and the F0Ntrain buckets up to t600, by a few milliseconds each --- but we ship one policy everywhere for simplicity. In the second case study the same clause ran the other way --- measurement moved stages \emph{onto} the ANE that the motif taxonomy had written off (\S\ref{sec:cs2-state}) and revealed that for one stage the ANE was the only numerically correct placement (\S\ref{sec:cs2-layout}). A paper that merely says ``we used the Neural Engine'' would be wrong in both directions; the correct statement is that each pipeline uses the whole SoC deliberately.
+\textbf{Host glue is part of the model.} Several of the largest costs we found were outside any model graph: a one-hot alignment implemented as a dense matrix multiply, boxed element reads over strided FP16 outputs (about 1 s per 30 s clip on an M1 until replaced by vectorized run conversion), and Core ML repacking pointer-backed inputs on every call, which doubled the per-call cost of ANE convolutions until the tensors were backed by IOSurfaces (\S\ref{sec:cs1-hybrid}). In MRT2, host glue silently destroyed correctness (\S\ref{sec:cs2-host}). End-to-end wall time is the primary metric; per-stage times are diagnostics.
 
-\subsection{CPU-Side DSP: A Non-Obvious Optimization Challenge}\label{sec:dsp}
+\section{Case Study 1: Kokoro-82M}\label{sec:cs1}
 
-A subtle consequence of the decomposition procedure: when a stage is classified as DDL or must remain on CPU due to Core ML incompatibility, the naive Swift implementation is often \emph{slower} than the PyTorch CPU reference. PyTorch's underlying numerical libraries are highly optimized; a direct Swift port without equivalent optimization will regress.
+\subsection{Decomposition}\label{sec:cs1-decomp}
 
-We observed this acutely with the hn-nsf harmonic source module. In an early port, the Swift implementation ran at 166 ms for 3 s of audio --- nearly 4$\times$ slower than PyTorch. Profiling identified per-sample Gaussian RNG, dispatched through Swift's \code{RandomNumberGenerator} protocol, as the dominant cost (154 ms across 648k calls). Replacing this with a bulk pre-allocated noise buffer using direct xorshift64 reduced that early port's hn-nsf to 14 ms --- a 12$\times$ speedup with identical numerical output. Subsequent vDSP vectorization of the noise/mask path and a frame-rate source-phase reformulation reduced it further; in the October 2026 pipeline hn-nsf costs 4.3 ms at the 3 s bucket and 40 ms at the 30 s bucket on M2 Ultra (\S\ref{sec:cs1-stages}).
-
-This observation generalizes: \textbf{any Swift DSP port must be profiled and optimized with the same rigor as neural network inference.} Use Accelerate/vDSP for vectorizable operations. Use double precision for quantities that accumulate (phase, in cumulative sine generation). Pre-allocate buffers. Eliminate protocol dispatch in hot loops. The methodology explicitly incorporates this optimization pass; skipping it produces pipelines that are worse than the PyTorch baseline they are meant to replace.
-
-\subsection{Host-Side Materialization Cost}\label{sec:host-cost}
-
-Decomposing a pipeline across multiple Core ML models and Swift stages introduces host-side overhead: model dispatch, tensor format conversion, padding to bucket geometry, and Swift-level control flow between stages. This cost is not negligible and it is easy to get wrong. Two host-side bugs in early versions of the Kokoro pipeline each cost more than any model stage: a one-hot alignment expansion implemented as a dense matrix multiply through zeros (later made sparse, and ultimately eliminated --- the shipped code expands token vectors directly into frame buffers with no matrix at all), and boxed \code{MLMultiArray} element reads over a strided \code{Float16} waveform during trim. Both were invisible to model-level profiling and were found only by timing the full synthesize call. The methodology therefore times the \emph{end-to-end} wall clock as the primary metric, with per-stage timings as diagnostics.
-
-The second case study escalates this from a performance concern to a correctness concern: host glue that misreads strided Core ML outputs, or feeds a stateful graph inputs it silently ignores, can pass every model-level validation and still destroy output quality (\S\ref{sec:cs2-host}). The procedure's validation step therefore extends past the graph boundary --- every host-side consumer of a model output must be validated against the reference at least once, and stateful graphs need cross-prediction tests proving the state is actually read.
-
-\section{Case Study 1: Kokoro-82M Pipeline}\label{sec:cs1}
-
-\subsection{Applying the Procedure}\label{sec:cs1-procedure}
-
-We apply the decomposition procedure from \S\ref{sec:procedure} to Kokoro-82M. The resulting pipeline is shown in Figure~\ref{fig:kokoro-pipeline}.
+Figure~\ref{fig:kokoro-pipeline} shows the decomposed pipeline: four Core ML model families --- duration, F0Ntrain, DecoderPre and the generator --- and three Swift stages, with no Python at inference time. Table~\ref{tab:cs1-placement} gives the shipped placement.
 
 \begin{figure}[H]
 \centering
 \IfFileExists{figures/fig-kokoro-pipeline.pdf}{\includegraphics[width=0.8\linewidth]{fig-kokoro-pipeline}}{\pendingfig{fig-kokoro-pipeline}}
-\caption{The decomposed Kokoro-82M pipeline: four Core ML model families and three native Swift stages, zero Python at inference time. Each stage is classified by computational motif and placed on the SoC engine that measurement selects (color = placement); only DecoderPre ships on the ANE, while GeneratorFromHar (geometry-rejected), F0Ntrain and the sequential Duration model run Core ML on CPU+GPU. The decomposition also exposes cross-unit parallelism a monolithic graph cannot express: DecoderPre (ANE) and the hn-nsf harmonic source (background CPU thread) execute concurrently.}
+\caption{The decomposed Kokoro-82M pipeline: four Core ML model families and three native Swift stages. Color is placement. Duration and F0Ntrain are split between the CPU and the ANE; the generator runs its convolutions on the ANE and its normalization and activations on the GPU (hybrid, 7 s and longer) or entirely on the ANE (folded, below 7 s). DecoderPre and the hn-nsf harmonic source run concurrently on different engines.}
 \label{fig:kokoro-pipeline}
 \end{figure}
 
-\textbf{Four Core ML model families, three Swift stages, zero Python at inference time.} The per-stage compute-unit annotations above are the shipped \emph{staged} policy, hard-coded in the pipeline's model loading: DecoderPre loads with \code{.cpuAndNeuralEngine}; Duration, F0Ntrain, and GeneratorFromHar load with \code{.cpuAndGPU}. The same policy applies on every machine. Section~\ref{sec:disc-ane} explains why it is not an all-ANE plan.
-
-Two structural points the diagram encodes. First, the alignment ``matrix'' no longer exists in the hot path: predicted durations drive a direct token-vector-to-frame expansion, so neither the one-hot matrix nor the matrix multiplies (\code{en = d @ align}, \code{asr = t\_en @ align}) are ever materialized (the matrix construction survives only as a debug-dump path). Second, DecoderPre and hn-nsf execute \emph{concurrently}: the harmonic source depends only on the padded F0 contour, so it runs on a background CPU thread while the DecoderPre Core ML predict is in flight, and the pipeline accounts for the overlap explicitly in its stage timings. The decomposition does not just place stages on the right compute unit --- it exposes cross-unit parallelism a monolithic graph cannot express.
-
-For texts longer than one bucket, a caller-side chunking layer splits input at a fixed token cap and joins the per-chunk PCM; the benchmarks in \S\ref{sec:cs1-eval} time single synthesize calls.
-
-\subsection{Core ML Export Details}\label{sec:cs1-export}
-
-The published Core ML models were exported with \code{coremltools} 8.3.0~\citep{coremltools,coremltools-pytorch} and PyTorch 2.6.0, with \code{compute\_precision=FLOAT16}. Key export decisions:
-
-\begin{itemize}[leftmargin=*]
-\item \textbf{Duration model} is exported at enumerated token sizes (32, 64, 128, 256, 320, 384, 512) to accommodate inputs up to 30 seconds. Flexible shapes do not suit this stage or F0Ntrain: the ANE rejects flexible shapes, an \code{lstm} over a symbolic length runs about 5$\times$ slower on the CPU (51 vs 10.8 ms at 1,200 frames), and \code{EnumeratedShapes} costs about 140 ms on every call whose shape differs from the previous one. Both stages therefore keep per-size packages with masks. An environment-gated opt-in can load unpublished packages built for one exact token length; the library default, and every benchmark in \S\ref{sec:cs1-eval}, uses the padded mask-aware packages. Padded duration graphs were once expensive: in an early benchmark configuration the padded duration stage alone cost 82--733 ms per call on M2 Ultra, because its bidirectional LSTM was unrolled into up to 134,397 ops. Replacing the unrolled LSTM with two stock \code{lstm} ops (989 ops at t512) brought the padded stage to 11--45 ms on M2 Ultra (\S\ref{sec:cs1-stages}).
-
-\item \textbf{F0Ntrain, DecoderPre, and GeneratorFromHar} are exported at five bucket sizes targeting 3 s, 7 s, 10 s, 15 s, and 30 s of audio (F0Ntrain at frame counts t120/t280/t400/t600/t1200). The bucket is selected at runtime as the smallest that fits the predicted duration. GeneratorFromHar also ships as one flexible-length program: its time axis is a bounded \code{RangeDim} (40--2,400 \code{x\_pre} frames), it runs on the GPU at the real length rounded up to a 0.5 s granule, and it keeps the mask. It is the runtime default on OS releases before 27; on OS 27 the runtime uses the fixed-bucket generators instead (\S\ref{sec:cs1-setup}).
-
-\item \textbf{AdaIN compatibility.} Early decoder-only exports failed due to MIL broadcast issues with AdaIN layers, forcing IdentityAdaIN workarounds that degraded quality. Re-export with the decomposed DecoderPre model succeeded with full AdaIN and correlation 1.000000 vs PyTorch --- suggesting the earlier failure was graph-size dependent rather than an AdaIN-specific issue.
-
-\item \textbf{Numerical validation.} Earlier packages were validated by per-stage correlation ($>$ 0.9999) on padded test inputs. That gate proved too weak: bucket padding contaminated normalization statistics while per-stage correlation stayed high, and a blind perceptual evaluation found further defects it could not see (\S\ref{sec:disc-limitations}). Current packages are scored by SNR over the valid region against fp32 PyTorch of the same masked export wrapper, on real tensors from the frozen inputs: F0Ntrain 66.6--71.0 dB, DecoderPre \code{x\_pre} 54.5--58.7 dB, fixed-bucket generators 46.1--46.8 dB, flexible generator 44.4--45.1 dB. The masking itself was checked by forcing one utterance through every bucket and scoring each fill against a native-length fp32 PyTorch run. The benchmark harness additionally enforces a waveform health gate.
-\end{itemize}
-
-\subsection{Swift Stages}\label{sec:cs1-swift}
-
-\begin{itemize}[leftmargin=*]
-\item \textbf{Alignment} replaces PyTorch's \code{repeat\_interleave} $\rightarrow$ one-hot $\rightarrow$ matmul chain with direct expansion: each token's hidden vector is copied into its \code{pred\_dur[i]} frame slots, in both token-major (\code{d} $\rightarrow$ \code{en}) and channel-major (\code{t\_en} $\rightarrow$ \code{asr}) layouts, with raw-pointer fast paths for contiguous \code{float32} arrays. This evolved in two steps --- a dense matmul (the \S\ref{sec:host-cost} bug), then a sparse formulation, then no matrix at all.
-
-\item \textbf{hn-nsf} implements SineGen (harmonic sine wave generation from F0) and STFT natively using Accelerate/vDSP. Key implementation details, each visible in the shipped source:
-  \begin{itemize}[leftmargin=1.5em]
-  \item Double precision (\code{Double}) for phase accumulation; single precision (\code{Float}) for output. Phase drift compounds over hundreds of thousands of samples; double precision is load-bearing.
-  \item A \emph{frame-source phase} fast path: the original port upsampled F0 by 300$\times$ and immediately downsampled the phase increments back --- for the model's exact nearest-neighbor geometry these cancel, so the current code computes phase increments directly per F0 frame (waveform-preserving, with the legacy RNG draw order kept for bit-compatible noise).
-  \item Bulk noise generation into a pre-allocated buffer using xorshift64 directly, rather than Swift's \code{RandomNumberGenerator} protocol; the Gaussian noise and voiced/unvoiced mask paths are vDSP-vectorized.
-  \item The 20-point Hann-window STFT uses a precomputed windowed DFT basis (built once, cached) and vectorized decimated dot products, matching PyTorch's \code{center=True} replicate padding.
-  \item Runs concurrently with DecoderPre (\S\ref{sec:cs1-procedure}), so its remaining cost is partly hidden behind the Core ML predict.
-  \item Checked against PyTorch's STFT of the same source: after the DC/Nyquist sign fix (\S\ref{sec:disc-limitations}), no valid frame of the frozen 15 s input differs at the Nyquist bin, down from 10,658 of 66,720.
-  \end{itemize}
-
-\item \textbf{Trim} slices the output waveform to the natural utterance length, reading the strided \code{Float16} output buffer directly; no post-processing follows.
-\end{itemize}
-
-The pipeline also pools and reuses input \code{MLMultiArray} buffers across calls (zeroed, then filled via \code{memcpy} over contiguous strides) rather than allocating fresh feature arrays per synthesis --- part of the host-materialization discipline from \S\ref{sec:host-cost}.
-
-\section{Case Study 1 Evaluation}\label{sec:cs1-eval}
-
-\subsection{Experimental Setup}\label{sec:cs1-setup}
-
-\textbf{Hardware.} Three Apple Silicon Macs spanning the consumer-to-workstation range (Table~\ref{tab:cs1-hw}), plus two iPhones (\S\ref{sec:cs1-iphone}):
-
-\begin{table}[h]
-\centering
-\caption{Case Study 1 evaluation hardware: three Apple Silicon Macs spanning the consumer-to-workstation range.}
-\label{tab:cs1-hw}
-\begin{tabular}{llllrr}
-\toprule
-Machine & CPU & GPU & ANE & Memory & Bandwidth \\
-\midrule
-M1 Mac Mini & 8-core (4P+4E) & 8-core & 16-core & 16 GB & 68 GB/s \\
-M2 MacBook Air & 8-core (4P+4E) & 10-core & 16-core & 24 GB & 100 GB/s \\
-M2 Ultra Mac Studio & 24-core (16P+8E) & 76-core & 32-core & 64 GB & 800 GB/s \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\textbf{Software.} Swift 6.x; PyTorch 2.5.0 for the PyTorch arms; coremltools 8.3.0. Every Mac result in \S\ref{sec:cs1-headline}--\S\ref{sec:cs1-scaling} comes from October 2026 runs on repository commit \code{d32ef0d3} with the published model set at Hugging Face revision \code{dadebca4}. The M2 Air and M1 Mini rows come from one run per machine. The M2 Ultra rows come from a second, quiet overnight pass, because the first pass failed the load gate below; the one exception is the M2 Ultra soniqo ratio, which comes from the loaded first pass (\S\ref{sec:cs1-coreml-ports}). The M2 Ultra ran macOS 26.7.1 (25G241); the M2 Air and M1 Mini ran macOS 27.0.1 (26A434). All benchmarks run with the machine plugged in and background services paused.
-
-\textbf{Inputs.} Five frozen text inputs targeting the five runtime buckets, all using the same voice preset (\code{af\_heart}), speed = 1.0:
-
-\begin{table}[h]
-\centering
-\caption{Frozen text inputs and their target runtime buckets for Case Study 1.}
-\label{tab:cs1-inputs}
-\begin{tabular}{lrl}
-\toprule
-Key & Audio duration & Bucket \\
-\midrule
-3s  & 2.80 s  & 3s \\
-7s  & 6.75 s  & 7s \\
-10s & 9.60 s  & 10s \\
-15s & 13.90 s & 15s \\
-30s & 27.38 s & 30s \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\textbf{Timing boundary.} From immediately before the synthesis call until full PCM audio is materialized in memory --- token IDs in, 24 kHz waveform out (Table~\ref{tab:cs1-inputs} gives the five frozen inputs targeting these buckets; Appendix~\ref{app:boundaries} gives the exact boundary shared across all comparison implementations). Process startup, model download, and playback are excluded. All reported numbers are \emph{warm} medians: models preloaded and primed, first-use Core ML compile/cache effects discarded.
-
-\textbf{Configurations.}
-
-\begin{itemize}[leftmargin=*]
-\item \textbf{F. Surgical (this work).} The full Swift + Core ML pipeline: staged compute policy and the padded, masked duration packages (\S\ref{sec:cs1-export}). Every Mac row uses the five fixed-bucket generators, which the runtime uses by default on OS 27. The flexible-length generator can abort the process on macOS 27.0.1 inside Apple's MPSGraph runtime (intermittently), so the runtime disables it on OS 27. On macOS 26 the runtime default is the flexible generator, so on the M2 Ultra (macOS 26.7.1) the benchmark forced the fixed buckets through its models directory and reports the flexible generator as a separate column.
-\item \textbf{MLX.} Blaizzy/mlx-audio~\citep{mlx-audio} 0.4.3 at commit \code{862dfbe}, running \pth{mlx-community/Kokoro-82M-bf16}. The default MLX deployment path for Kokoro.
-\item \textbf{A. Python HAR-post hybrid.} The prior production pipeline: Python/PyTorch prefix + Core ML vocoder. State of the art for Kokoro-specific Core ML optimization prior to this work.
-\item \textbf{D. PyTorch MPS.} End-to-end PyTorch with \code{device=mps} and \pth{PYTORCH\_ENABLE\_MPS\_FALLBACK=1}. The default Apple Silicon GPU deployment path.
-\item \textbf{E. PyTorch CPU.} End-to-end PyTorch with \code{device=cpu}. Floor baseline.
-\end{itemize}
-
-Configuration letters are stable identifiers inherited from the repository's benchmark harness so that published tables remain traceable to archived result files. Configs B and C --- a naive decoder-only Core ML artifact under \code{.all} and \code{.cpuAndGPU}, from an earlier April 2026 bakeoff generation with a different input set --- are superseded by the decomposed pipeline and omitted here.
-
-On each machine the arms ran in a fixed order (F, MLX, the external ports, then A/D/E); on the 16 GB M1 Mini, A and D/E ran as separate invocations. Configuration F discards three preflight calls, records one cold call, and reports the median of ten warm calls; MLX and the external ports report the median of ten warm calls after one cold call; the PyTorch arms run five counterbalanced iterations (config and input order shuffled per repetition, \code{torch.mps.synchronize()} before stopping the MPS timer). Tables report medians; the raw per-iteration timings for every cell are archived in the repository (Appendix~\ref{app:artifacts}).
-
-Before each arm the harness waited up to 20 minutes for the one-minute load average to fall to 1.5. The M2 Ultra was re-run overnight and cleared the gate for every arm. The M1 Mini cleared it for every arm except Configuration F (load 2.3). The M2 Air did not clear it (load 2.2--2.9), so its rows are mild upper bounds.
-
-\subsection{Headline Results: Current Pipeline}\label{sec:cs1-headline}
-
-Warm median end-to-end wall time, Configuration F, October 2026 (Table~\ref{tab:cs1-headline}):
-
-\begin{table}[h]
-\centering
-\caption{Warm median end-to-end wall time (IQR), Configuration F (Surgical), fixed-bucket generator, $n=10$, October 2026. The last column is the M2 Ultra with the flexible-length generator.}
-\label{tab:cs1-headline}
-\begin{tabular}{llrrrr}
-\toprule
-Input & Audio & M2 Ultra Studio & M2 Air & M1 Mini & M2 Ultra, flexible \\
-\midrule
-3s  & 2.80 s  & \textbf{44.5} (0.6) ms  & 123.4 (0.8) ms  & 205.3 (1.9) ms  & 44.7 ms \\
-7s  & 6.75 s  & \textbf{80.0} (0.9) ms  & 273.6 (3.3) ms  & 410.3 (2.4) ms  & 79.6 ms \\
-10s & 9.60 s  & \textbf{111.8} (1.2) ms & 397.2 (0.7) ms  & 589.8 (2.4) ms  & 109.9 ms \\
-15s & 13.90 s & \textbf{147.6} (1.5) ms & 589.1 (7.2) ms & 834.9 (9.8) ms  & 141.1 ms \\
-30s & 27.38 s & \textbf{286.5} (3.3) ms & 1175.5 (9.4) ms & 1635.5 (10.2) ms & 271.8 ms \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-Real-time factor (audio duration $\div$ wall time) is given in Table~\ref{tab:cs1-rtf}:
-
-\begin{table}[h]
-\centering
-\caption{Real-time factor (audio duration $\div$ wall time) for Configuration F.}
-\label{tab:cs1-rtf}
-\begin{tabular}{lrrr}
-\toprule
-Input & M2 Ultra & M2 Air & M1 Mini \\
-\midrule
-3s  & 63$\times$ RT & 23$\times$ RT & 14$\times$ RT \\
-7s  & 84$\times$ RT & 25$\times$ RT & 16$\times$ RT \\
-10s & 86$\times$ RT & 24$\times$ RT & 16$\times$ RT \\
-15s & 94$\times$ RT & 24$\times$ RT & 17$\times$ RT \\
-30s & \textbf{96$\times$ RT} & 23$\times$ RT & \textbf{17$\times$ RT} \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-The M2 Ultra synthesizes the 27 s clip in the 30 s bucket in 287 milliseconds, and in 272 ms with the flexible generator. The M1 Mini --- the least expensive Mac in our set --- completes the same workload in 1.64 seconds, 17$\times$ faster than real-time. Every machine at every duration operates far above real-time, sufficient for streaming TTS with headroom for concurrent workloads. These rows use the padded duration packages the library ships by default; the fixed-bucket generator is the runtime default on the macOS 27 machines, while the M2 Ultra's macOS 26 default is the flexible generator in the last column. Against our June 2026 run, which used per-length exact-duration packages, the three Macs are 1.13--1.32$\times$ faster at every bucket; the OS also changed between the two runs, so we do not attribute the whole gain to the pipeline.
-
-\subsection{vs MLX}\label{sec:cs1-mlx}
-
-Same machines, same frozen inputs, same voice, same timing boundary, median of warm calls (Table~\ref{tab:cs1-mlx}); Figure~\ref{fig:cs1-latency} plots the same data:
-
-\begin{figure}[H]
-\centering
-\IfFileExists{figures/fig-cs1-latency.pdf}{\includegraphics[width=\linewidth]{fig-cs1-latency}}{\pendingfig{fig-cs1-latency}}
-\caption{Kokoro-82M end-to-end latency, the Surgical pipeline (Config F) vs.\ MLX, warm medians across three Macs and five input buckets (log axis; \S\ref{sec:cs1-mlx}). The Surgical pipeline is faster on every completed cell, by 1.8--2.4$\times$ (annotated). The pinned MLX build fails every 3 s input with a broadcast-shape error, so no 3 s comparison exists.}
-\label{fig:cs1-latency}
-\end{figure}
-
 \begin{table}[h]
 \centering
 \small
-\caption{Warm median wall time, Configuration F vs MLX, October 2026; MLX 3 s inputs fail with a broadcast-shape error.}
-\label{tab:cs1-mlx}
-\begin{tabular}{llll}
+\caption{Shipped placement per stage. October 2026 is the previous pipeline (the ablation's R0, \S\ref{sec:cs1-ablation}).}
+\label{tab:cs1-placement}
+\begin{tabularx}{\linewidth}{llXl}
 \toprule
-Input & M2 Ultra (F vs MLX) & M2 Air & M1 Mini \\
+Stage & Motif & Now & October 2026 \\
 \midrule
-3s  & 44.5 ms vs \emph{error} & 123.4 ms vs \emph{error} & 205.3 ms vs \emph{error} \\
-7s  & 80.0 vs 183.8 ms --- \textbf{2.3$\times$} & 273.6 vs 566.0 ms --- \textbf{2.1$\times$} & 410.3 vs 797.4 ms --- \textbf{1.9$\times$} \\
-10s & 111.8 vs 242.7 ms --- \textbf{2.2$\times$} & 397.2 vs 764.5 ms --- \textbf{1.9$\times$} & 589.8 vs 1100.3 ms --- \textbf{1.9$\times$} \\
-15s & 147.6 vs 329.7 ms --- \textbf{2.2$\times$} & 589.1 vs 1073.8 ms --- \textbf{1.8$\times$} & 834.9 vs 1540.0 ms --- \textbf{1.8$\times$} \\
-30s & 286.5 vs 685.3 ms --- \textbf{2.4$\times$} & 1175.5 vs 2150.0 ms --- \textbf{1.8$\times$} & 1635.5 vs 3003.7 ms --- \textbf{1.8$\times$} \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-The Surgical pipeline is faster on every bucket on every machine, by \textbf{1.8--2.4$\times$}, with the gap widest on the M2 Ultra (2.2--2.4$\times$) and nearly flat on the M2 Air (1.8--2.1$\times$) and M1 Mini (1.8--1.9$\times$). The pinned MLX version fails all 3-second inputs with a broadcast-shape error, so no 3 s comparison is reportable.
-
-\subsection{vs PyTorch}\label{sec:cs1-pytorch}
-
-Warm median wall time, milliseconds, counterbalanced A/D/E run with Configuration F from the same session (Tables~\ref{tab:cs1-pt-ultra}--\ref{tab:cs1-pt-mini}). The harness's PyTorch input set has four lengths, so these tables have no 10 s row. ``err'' marks cells where PyTorch MPS raised \code{Output channels > 65536 not supported at the MPS device} (torch 2.5.0) on every iteration.
-
-\begin{table}[h]
-\centering
-\caption{PyTorch comparison, M2 Ultra (64 GB), October 2026.}
-\label{tab:cs1-pt-ultra}
-\begin{tabular}{lrrrrrrr}
-\toprule
-Input & A (Python HAR) & D (MPS) & E (CPU) & F (Surgical) & F vs A & F vs D & F vs E \\
-\midrule
-3s  & 124 ms & 193 ms & 259 ms  & \textbf{45 ms}  & 2.8$\times$ & 4.3$\times$ & 5.8$\times$ \\
-7s  & 222 ms & 376 ms & 530 ms  & \textbf{80 ms}  & 2.8$\times$ & 4.7$\times$ & 6.6$\times$ \\
-15s & 387 ms & err    & 1010 ms & \textbf{148 ms} & 2.6$\times$ & ---    & 6.8$\times$ \\
-30s & 631 ms & err    & 1921 ms & \textbf{287 ms} & 2.2$\times$ & ---    & 6.7$\times$ \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\begin{table}[h]
-\centering
-\caption{PyTorch comparison, M2 MacBook Air (24 GB), October 2026. D completed 2 of 5 iterations at 3 s and 7 s.}
-\label{tab:cs1-pt-air}
-\begin{tabular}{lrrrrrrr}
-\toprule
-Input & A (Python HAR) & D (MPS) & E (CPU) & F (Surgical) & F vs A & F vs D & F vs E \\
-\midrule
-3s  & 236 ms  & 367 ms  & 615 ms  & \textbf{123 ms}  & 1.9$\times$ & 3.0$\times$ & 5.0$\times$ \\
-7s  & 616 ms  & 1765 ms & 1460 ms & \textbf{274 ms}  & 2.3$\times$ & 6.5$\times$ & 5.3$\times$ \\
-15s & 945 ms  & err     & 3023 ms & \textbf{589 ms}  & 1.6$\times$ & ---    & 5.1$\times$ \\
-30s & 3381 ms & err     & 6114 ms & \textbf{1176 ms} & 2.9$\times$ & ---    & 5.2$\times$ \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\begin{table}[h]
-\centering
-\caption{PyTorch comparison, M1 Mac Mini (16 GB), October 2026.}
-\label{tab:cs1-pt-mini}
-\begin{tabular}{lrrrrrrr}
-\toprule
-Input & A (Python HAR) & D (MPS) & E (CPU) & F (Surgical) & F vs A & F vs D & F vs E \\
-\midrule
-3s  & 281 ms  & 553 ms  & 654 ms  & \textbf{205 ms}  & 1.4$\times$ & 2.7$\times$ & 3.2$\times$ \\
-7s  & 543 ms  & 1815 ms & 1632 ms & \textbf{410 ms}  & 1.3$\times$ & 4.4$\times$ & 4.0$\times$ \\
-15s & 1058 ms & err     & 3235 ms & \textbf{835 ms}  & 1.3$\times$ & ---    & 3.9$\times$ \\
-30s & 2066 ms & err     & 6487 ms & \textbf{1636 ms} & 1.3$\times$ & ---    & 4.0$\times$ \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-Config F wins every cell where the competitor completes. Three observations:
-
-\begin{enumerate}[leftmargin=*]
-\item \textbf{vs MPS: 2.7--6.5$\times$ where MPS finishes at all.} PyTorch MPS no longer completes the 15 s and 30 s inputs on any of the three machines: an op exceeds the MPS backend's 65,536 output-channel limit, and \code{PYTORCH\_ENABLE\_MPS\_FALLBACK=1} (set for every run) does not route it to the CPU. (In our April 2026 run on older OS releases it ran out of memory on the 24 GB Air.) The ``just use the GPU'' default is not merely slower; it does not complete the longer workloads. The 6.5$\times$ Air cell rests on two completed iterations.
-
-\item \textbf{vs CPU: 3.2--6.8$\times$}, largest on the M2 Ultra and roughly flat across lengths on each machine.
-
-\item \textbf{vs the Python+Core ML hybrid (A): 1.3--2.9$\times$.} The narrowest margin is on the M1 Mini, where Config A's Core ML vocoder dominates both pipelines' wall time; Config F's advantage comes from replacing the Python prefix with Core ML + Swift and from eliminating host-side materialization costs.
-\end{enumerate}
-
-\subsection{vs Other Core ML Ports}\label{sec:cs1-coreml-ports}
-
-The same run also benchmarked two independent Core ML Kokoro implementations on the same machines and inputs. Both comparisons require boundary caveats, which we state because they change the interpretation:
-
-\begin{itemize}[leftmargin=*]
-\item \textbf{laishere/kokoro-coreml} (pinned \code{484907d}) runs a seven-package Core ML chain. Its public benchmark boundary \emph{excludes} G2P and feed preparation, timing only the Core ML chain --- narrower than our token-IDs-to-PCM boundary. On the M2 Ultra its chain-only times are 88 / 163 / 211 / 295 / 532 ms across the five buckets, and the Surgical pipeline is 1.9--2.0$\times$ faster on every bucket. On macOS 27.0.1 its converter aborts with the same MPSGraph assertion that disables our flexible generator (\S\ref{sec:cs1-setup}), so it has no M2 Air or M1 Mini rows. In our June 2026 run on macOS 15.7.7, its chain-only numbers were 1.1--1.3$\times$ faster than ours on the M1 Mini's short and medium buckets; that comparison cannot currently be repeated.
-
-\item \textbf{soniqo/speech-swift} (pinned \code{0d09a2e}) still emits a fixed $\approx$5.0 s audio artifact for every input of 7 s or longer, so its long-bucket timings are not full-duration synthesis and are not comparable. On the only comparable cell (3 s), the Surgical pipeline is 1.6$\times$ faster on the M2 Ultra (measured in a loaded session, against Configuration F from the same session; the overnight soniqo run failed), 2.0$\times$ on the M2 Air, and 1.8$\times$ on the M1 Mini.
-\end{itemize}
-
-\subsection{On iPhone}\label{sec:cs1-iphone}
-
-The same model families deploy to iOS. The iPhone runs use the flexible-length generator, which ran correctly on iOS 27.0.1 on both phones, together with the padded duration packages and the staged compute policy. The shipped library currently disables the flexible generator on all OS 27 releases, iOS included, as a precaution against the macOS 27.0.1 abort (\S\ref{sec:cs1-setup}), and falls back to the fixed-bucket generators. Release-build results on iOS 27.0.1, October 2026, are given in Table~\ref{tab:iphone}. Each cell is one app launch running one arm on one bucket: 3 preflight calls discarded, 1 cold call, and the median of 10 warm calls. The phone cooled for at least 10 minutes before every launch, and arm order alternated by bucket.
-
-\begin{table}[h]
-\centering
-\small
-\caption{iPhone Release-build warm medians, iOS 27.0.1, October 2026: Configuration F (staged policy, flexible generator) vs the MLX Swift port (kokoro-ios 1.0.8). $^\dagger$MLX 15 s on the A17 Pro started at thermal state \emph{fair} and ended \emph{serious}, so its time is an upper bound. $^\ddagger$Killed by the iOS memory watchdog (jetsam).}
-\label{tab:iphone}
-\begin{tabular}{lrrrrrr}
-\toprule
- & \multicolumn{3}{c}{iPhone 15 Pro Max (A17 Pro)} & \multicolumn{3}{c}{iPhone 12 Pro (A14)} \\
-Input & F & MLX & F vs MLX & F & MLX & F vs MLX \\
-\midrule
-3s  & \textbf{195 ms}  & 543 ms             & 2.8$\times$ & \textbf{421 ms}  & 926 ms            & 2.2$\times$ \\
-7s  & \textbf{417 ms}  & 1198 ms            & 2.9$\times$ & \textbf{917 ms}  & 2050 ms           & 2.2$\times$ \\
-10s & \textbf{609 ms}  & 1634 ms            & 2.7$\times$ & \textbf{1391 ms} & 2809 ms           & 2.0$\times$ \\
-15s & \textbf{881 ms}  & 2802 ms$^\dagger$  & 3.2$\times$ & \textbf{1984 ms} & 4062 ms           & 2.0$\times$ \\
-30s & \textbf{1721 ms} & 4508 ms            & 2.6$\times$ & \textbf{4017 ms} & OOM$^\ddagger$    & ---         \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-The Surgical pipeline beats the MLX Swift Kokoro port (mlalma/kokoro-ios~\citep{kokoro-ios} 1.0.8 --- the Python mlx-audio above does not run on iOS) on every bucket on both phones: by \textbf{2.6--3.2$\times$} on the A17 Pro and \textbf{2.0--2.2$\times$} on the A14. The A17 Pro synthesizes the 27 s clip in 1.72 s (15.9$\times$ real time) and the A14 in 4.02 s (6.8$\times$). Both phones run Configuration F about twice as fast as our July 2026 measurement on iOS 26.5 (A17 Pro 30 s: 3742 ms then, 1721 ms now), which used the fixed-bucket generator; the MLX arm moved far less, so the margin widened from 1.25--1.44$\times$ to 2.6--3.2$\times$. OS and pipeline changed together, so we do not attribute the gain to either alone.
-
-Two methodological findings from the July rerun still govern the protocol. First, Debug builds are not usable for cross-framework ratios: the MLX arm gained 1.4--1.6$\times$ from Release compilation while the Core ML arm barely moved. Second, on a fanless phone the run \emph{order} is a thermal treatment, so each arm runs alone after a cooldown and the October run records thermal state on every call. The kokoro-ios API takes raw text, so its timings include a G2P pass ours excludes; measured in isolation, that pass costs 0.17--1.05 ms per input --- a disclosed asymmetry far below every observed margin.
-
-On the 4 GB iPhone 12 Pro, MLX still cannot complete the 30 s input: the iOS memory watchdog kills it while loading weights, while the Surgical pipeline synthesizes the same input in 4.0 s. Bounded memory is a first-class constraint on phones --- fixed-bucket and flexible Core ML synthesis both ran inside the 4 GB jetsam budget where the GPU framework did not.
-
-The \code{.all} compute policy, which hard-failed on both phones on iOS 26.5 (Core ML error $-$9 at the duration stage), now runs the 3 s input on both phones on iOS 27.0.1 (200 ms on the A17 Pro, 412 ms on the A14). The library still ships the explicit staged policy, which the benchmarks above use.
-
-\subsection{Stage-Level Breakdown}\label{sec:cs1-stages}
-
-Per-stage times for Configuration F, from the last warm call of each input in the October 2026 run, are given in Table~\ref{tab:cs1-stages}. ``Generator'' is the Core ML total minus the three other model calls. hn-nsf runs on a CPU thread concurrently with DecoderPre, so its time overlaps DecoderPre's.
-
-\begin{table}[h]
-\centering
-\caption{Per-stage times, Configuration F with the fixed-bucket generator, last warm call per input, October 2026 (ms).}
-\label{tab:cs1-stages}
-\begin{tabular}{llrrrrrr}
-\toprule
-Machine & Input & Duration & F0Ntrain & DecoderPre & hn-nsf & Generator & Wall \\
-\midrule
-M2 Ultra & 3s  & 11.4 & 5.5  & 4.5  & 4.3  & 2.2    & 45.5 \\
-M2 Ultra & 30s & 44.9 & 19.4 & 51.9 & 40.0 & 52.1   & 288.7 \\
-M2 Air   & 3s  & 12.8 & 4.7  & 4.0  & 5.4  & 79.4   & 124.3 \\
-M2 Air   & 30s & 70.3 & 27.3 & 32.7 & 48.7 & 888.5  & 1168.4 \\
-M1 Mini  & 3s  & 40.0 & 10.5 & 5.2  & 9.2  & 86.9   & 204.0 \\
-M1 Mini  & 30s & 174.3 & 51.0 & 45.7 & 48.3 & 1083.0 & 1639.1 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-Three observations:
-
-\begin{enumerate}[leftmargin=*]
-\item \textbf{On the M2 Ultra the pipeline is balanced; on base chips the generator dominates.} No stage on the M2 Ultra exceeds 53 ms at 30 s. On the M2 Air and M1 Mini the fixed-bucket GPU generator is 43--76\% of wall time, consistent with their 10- and 8-core GPUs against the Ultra's 76. The next optimization target on consumer hardware is the generator, not the stages around it.
-
-\item \textbf{The largest CPU stage is hidden behind the DecoderPre predict it overlaps.} hn-nsf cannot be effectively placed on Core ML (export attempts yielded correlation $\approx$ 0.00 due to SineGen's cumulative phase sensitivity), so the methodology routes it to optimized Swift DSP. After the \S\ref{sec:dsp} optimization pass it costs 40--49 ms at 30 s, and it runs on a CPU thread while DecoderPre (33--52 ms at 30 s) predicts.
-
-\item \textbf{The gap between summed stages and end-to-end wall time is host-side work} --- bucket padding, tensor materialization, dispatch --- which is why the methodology treats full-wall-clock as the primary metric (\S\ref{sec:host-cost}).
-\end{enumerate}
-
-\subsection{Cross-Machine Scaling}\label{sec:cs1-scaling}
-
-Config F wall time relative to M2 Ultra is given in Table~\ref{tab:cs1-scaling}:
-
-\begin{table}[h]
-\centering
-\caption{Configuration F wall time relative to M2 Ultra, October 2026.}
-\label{tab:cs1-scaling}
-\begin{tabular}{lrrr}
-\toprule
-Input & M2 Ultra & M2 Air & M1 Mini \\
-\midrule
-3s  & 1.0$\times$ & 2.8$\times$ & 4.6$\times$ \\
-7s  & 1.0$\times$ & 3.4$\times$ & 5.1$\times$ \\
-10s & 1.0$\times$ & 3.6$\times$ & 5.3$\times$ \\
-15s & 1.0$\times$ & 4.0$\times$ & 5.7$\times$ \\
-30s & 1.0$\times$ & 4.1$\times$ & 5.7$\times$ \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-The gap widens with input length: at 3 s fixed per-call costs dominate on every machine, while at 30 s the generator's GPU work dominates on the base chips (\S\ref{sec:cs1-stages}). Per-bucket RTF is still nearly flat on each machine (\S\ref{sec:cs1-headline}). The load-bearing finding is that the Surgical pipeline remains comfortably real-time on the lowest-specification machine for inputs up to 30 seconds.
-
-\subsection{Control: We Could Not Produce a Valid Monolithic Core ML Export}\label{sec:cs1-monolith}
-
-The natural null hypothesis against decomposition is the monolith: convert the whole model to a single Core ML package, load it under one compute policy, and let the scheduler partition the graph. We tested it directly (coremltools 8.3.0, torch 2.6.0, M2 Ultra; full protocol and verbatim logs in the repository's experiment note, Appendix~\ref{app:artifacts}). It fails at two independent seams --- each one a boundary the decomposed pipeline already cuts:
-
-\begin{itemize}[leftmargin=*]
-\item \textbf{The full token-IDs-to-waveform graph does not convert.} The duration-dependent expansion (\code{torch.repeat\_interleave} driven by per-token \emph{predicted} durations) has no static-shape lowering; \code{coremltools} aborts with \code{ValueError: Cannot add const [None]} while converting the op. \code{torch.jit.trace} appears to succeed only by baking one utterance's alignment into constants: the traced graph reproduces its own trace input at correlation 1.000 and hard-crashes on a same-shape input with different predicted durations (\code{The size of tensor a (65400) must match the size of tensor b (67200)}). It is a recording of one utterance's geometry, not a model.
-
-\item \textbf{The strongest partial monolith is numerically invalid.} Fusing every stage downstream of alignment into one package --- aligned features to waveform, including the hn-nsf harmonic source and iSTFT --- converts cleanly and produces wrong audio: correlation 0.27 (FP16) and 0.25 (FP32) against the PyTorch reference. FP32 being equally wrong rules out precision; eager-PyTorch cross-seed correlation of 0.996 rules out RNG mismatch. The divergence is structural, in Core ML's execution of the SineGen cumulative-phase path --- the same failure that forced hn-nsf into native Swift (\S\ref{sec:cs1-swift}, \S\ref{sec:cs1-stages}).
-\end{itemize}
-
-There is therefore no single-package latency row to report. We could not produce a valid monolithic export with coremltools 8.3; with that toolchain, decomposition was not one deployment option among several but the move that gave us a correct, compilable on-device Core ML artifact at all. The comparisons in \S\ref{sec:cs1-mlx}--\S\ref{sec:cs1-coreml-ports} (GPU frameworks and other \emph{decomposed} Core ML ports) are the strongest baselines we could build or find.
-
-\section{Case Study 2: Magenta RealTime 2 --- Autoregressive Streaming Under a 40 ms Deadline}\label{sec:cs2}
-
-\subsection{The Workload and the Real-Time Contract}\label{sec:cs2-workload}
-
-MRT2's per-frame loop (\S\ref{sec:mrt2-bg}) must complete in under 40 ms, every frame, indefinitely. The targets were fixed before any conversion work: p50 $<$ 30 ms and p99 $<$ 40 ms per frame, $\ge$ 10 minutes of sustained generation with zero audible dropouts, and sub-200 ms response to control changes. Note what changes relative to Case Study 1: there is no ``bucket'' to finish and no real-time \emph{factor} to maximize. The success metric is a sustained zero-underrun stream, p99 against a wall-clock deadline, and thermal behavior over minutes --- the regime where the ANE's power profile is supposed to beat the GPU.
-
-Applying \S\ref{sec:procedure}'s classification to the per-frame graph (Table~\ref{tab:cs2-motifs}):
-
-\begin{table}[h]
-\centering
-\caption{Per-frame motif classification of the MRT2 graph.}
-\label{tab:cs2-motifs}
-\begin{tabularx}{\linewidth}{lXl}
-\toprule
-Stage & Structure & Motif \\
-\midrule
-Temporal transformer & 12 layers, d=1024, 8 heads; 41-frame local-attention K/V caches (self + cross) per layer & Sequential-Dynamic \\
-Depth transformer & 2 layers, d=768; 12 \emph{serial} RVQ levels per frame, each conditioned on the previous level's sampled token & Sequential-Dynamic \\
-Sampling & temperature, top-k, Gumbel noise, per-level valid-range masks, RNG state & Data-Dependent Logic \\
-RVQ detokenization & 12 codebook gathers + summation & Data-Dependent Logic \\
-SpectroStream decoder & 17 conv2d + 7 conv2d\_transpose, fixed shapes, tokens $\rightarrow$ STFT-rate features & Dense-Static \\
-iSTFT / overlap-add & windowed synthesis to PCM, streaming carry & DDL / DSP \\
-MusicCoCa prompt encoding & text $\rightarrow$ embedding $\rightarrow$ 12 RVQ style tokens $\rightarrow$ conditioning & off the hot path (control-rate) \\
+Duration (BERT + LSTM) & SD & BERT on ANE, LSTMs on CPU (ANE-layout split) & CPU+GPU \\
+Alignment & DDL & Swift: direct token-to-frame expansion & same \\
+F0Ntrain & DS & split CPU + ANE & CPU+GPU \\
+DecoderPre & DS & ANE, ANE-friendly layout & ANE \\
+hn-nsf harmonic source & DDL/DSP & Swift/vDSP, concurrent with DecoderPre; noise made during F0Ntrain & concurrent with DecoderPre \\
+Generator & DS & hybrid: convolutions on ANE, AdaIN, Snake and joins on GPU ($\geq$7 s); folded, all ANE, below 7 s & GPU (fixed buckets; flexible on iPhone) \\
+iSTFT tail and trim & DSP & Swift, parallel & in the generator graph \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
-One structural decision was made before any export and pays off throughout: \textbf{audio-rate tensors never enter a Core ML graph.} The codec decoder stops at STFT-rate features and host code (Accelerate) performs iSTFT and overlap-add. The Kokoro vocoder's fatal geometry problem (\S\ref{sec:disc-ane}) --- waveform-length axes that exceed ANE admission limits --- is designed out rather than fought.
+\textbf{Export.} Packages are exported with coremltools 8.3~\citep{coremltools,coremltools-pytorch} in FP16. Duration and F0Ntrain ship at enumerated sizes with masks: the ANE rejects flexible shapes, an LSTM over a symbolic length ran about 5$\times$ slower on the CPU, and \code{EnumeratedShapes} cost about 140 ms whenever the shape changed. Replacing an unrolled bidirectional LSTM (up to 134,397 ops) with two stock \code{lstm} ops cut the padded duration stage from 82--733 ms to 11--45 ms on an M2 Ultra. Masking matters for correctness, not just speed: bucket padding had contaminated normalization statistics (one 2.8 s utterance forced through every bucket sat at 15 dB F0 SNR against a native-length run), which per-stage correlation above 0.9999 had not revealed. Current packages are scored by SNR over the valid region against fp32 PyTorch on real inputs.
 
-\textbf{Setup.} The same two iPhones as \S\ref{sec:cs1-iphone}: iPhone 12 Pro (A14) and iPhone 15 Pro Max (A17 Pro). Every Case Study 2 measurement ran on iOS 26.5; the Case Study 1 iPhone runs above used iOS 27.0.1. Conversion went through minimal PyTorch wrappers reconstructed from the released safetensors and validated against the upstream MLX reference, then \code{torch.jit.trace} $\rightarrow$ \code{mlprogram}, FP16 except where noted, minimum deployment target iOS 18. Every export was gated on numerical parity against MLX before any timing was trusted (transformer output correlations $>$ 0.9999; codec decoder SNR $\ge$ 115 dB; token-level sampling parity checked separately). Placement claims below come from \code{MLComputePlan} per-op reports and, for the composed runtime, Instruments traces on the physical phones --- never from the requested compute-unit policy alone.
+\textbf{Native stages.} Alignment copies each token's vector into its predicted frame slots; no alignment matrix exists in the hot path. The harmonic source runs in Swift with vDSP: double-precision phase accumulation, phase increments computed per F0 frame instead of upsampling by 300 and back, bulk noise generation, and a cached windowed-DFT STFT. An early port was 4$\times$ slower than PyTorch until per-sample RNG calls through Swift's protocol dispatch were replaced (a 12$\times$ speedup); that and an absorbing zero state in its xorshift RNG are the kind of defect the procedure's profiling and validation steps exist to catch. hn-nsf cannot itself be exported: Core ML's execution of SineGen's cumulative phase gives correlation near zero.
 
-\subsection{The Pipeline}\label{sec:cs2-pipeline}
+\subsection{The Vocoder Wall}\label{sec:cs1-wall}
 
-Per frame, the shipped pipeline runs: host conditioning assembly $\rightarrow$ Core ML temporal transformer step $\rightarrow$ Core ML depth rollout (samples all 12 RVQ levels in one prediction from host-supplied noise; \S\ref{sec:cs2-bandwidth}) $\rightarrow$ host RVQ codebook summation $\rightarrow$ Core ML codec decoder (overlapping 5- or 25-frame buckets) $\rightarrow$ host iSTFT/overlap-add $\rightarrow$ lock-free SPSC ring $\rightarrow$ \code{AVAudioSourceNode}. The pipeline is shown in Figure~\ref{fig:mrt2-pipeline}. The render callback makes one C call into the ring and never blocks on the model. Generation runs ahead of playback behind a PCM reservoir with high-watermark backpressure: the producer sleeps when the ring is full instead of generating unboundedly.
+The generator's harmonic input has a last axis of 14,401--144,001 elements across buckets, and its waveform output 72,000--720,000. Loaded for the ANE, it fails compilation on every Mac we tested (\code{ANECCompile() FAILED}; \code{Tensor width goes beyond limit supported (16390 > 16384)}); under \code{.all}, macOS reroutes it silently, and in an April 2026 ablation the fallback ran 54$\times$ slower than CPU+GPU. Source rewrites suggested by ANE reverse-engineering literature~\citep{orion,ane-field-guide} --- \code{Linear} to 1$\times$1 convolution, native instance-norm lowering, broadcast AdaIN, FP16 inputs, palettization --- all validated and none changed runtime. The October 2026 pipeline therefore ran the generator on the GPU, where at 30 s it took 88.5\% of end-to-end time on the M2 Air and 92.7\% on the A14 (R0 in Table~\ref{tab:cs1-stages}). laishere/kokoro-coreml~\citep{laishere} splits the vocoder into several Core ML packages; under \code{.cpuAndNeuralEngine} on an M1, \code{MLComputePlan} assigns about 47.5\% of its estimated vocoder cost to the ANE and the rest to the CPU.
 
-\begin{figure}[H]
-\centering
-\IfFileExists{figures/fig-mrt2-pipeline.pdf}{\includegraphics[width=\linewidth]{fig-mrt2-pipeline}}{\pendingfig{fig-mrt2-pipeline}}
-\caption{The Magenta RealTime 2 per-frame streaming loop. Every frame must complete within the 40 ms (25 Hz) audio deadline, which never pauses. Audio-rate tensors never enter a Core ML graph --- the codec decoder stops at STFT-rate features and the host synthesizes PCM --- and the three Core ML stages ship on three different engines (temporal on GPU, depth rollout FP16 on CPU, NCHW codec decoder on ANE; per-stage p50 on A17 Pro shown). Generation runs ahead of playback through a lock-free SPSC ring feeding an \code{AVAudioSourceNode}; the render callback never blocks on the model.}
-\label{fig:mrt2-pipeline}
-\end{figure}
+\subsection{Folding the Vocoder onto the ANE}\label{sec:cs1-fold}
 
-Prompt conditioning is a separate control-rate chain compiled entirely on device --- SentencePiece tokenizer $\rightarrow$ TFLite text encoder $\rightarrow$ embedding mapper $\rightarrow$ RVQ quantizer $\rightarrow$ Core ML conditioning encoder --- running in 0.20--0.27 s steady state per prompt change on both phones, on a background task off the render path. The chain is byte-identical across A14 and A17 Pro at every integer token stage, an unusually strong cross-device determinism property that made it possible to certify with fixture parity rather than statistical testing. A quantization footnote with a generalizable lesson: FP16 on the text encoder preserved all 28/28 test prompts' RVQ tokens byte-exactly (mapped-space drift $7\times10^{-5}$), while int8 dynamic quantization shifted tokens on 8/28 prompts (drift $2\times10^{-3}$) --- \textbf{integer token boundaries downstream of an encoder are the real quantization gate}, not embedding-space error norms.
-
-The per-stage placement story, unlike Case Study 1's, cannot be stated as one clean table --- it is the subject of the next three subsections, and the honest answer differs between ``what was proven possible'' and ``what ships today.''
-
-\subsection{Finding: State Mutation, Not Attention, Is the ANE Cliff}\label{sec:cs2-state}
-
-The \S\ref{sec:motifs} taxonomy assigns the temporal transformer to CPU/GPU. The 25 Hz deadline made that assignment worth attacking, and the attack produced what we consider the paper's sharpest finding --- with the caveat that the ladder below was measured on one phone, the A14.
-
-The obvious route is Core ML's mutable state (\code{MLState}) holding the K/V caches. It fails in two ways. A one-frame stateful step \emph{does} compile, with a real ANE island (\code{MLComputePlan}: $\approx$70\% of estimated cost on ANE) --- but every multi-frame unroll fails ANE compilation (\code{MILCompilerForANE ... ANECCompile() FAILED}, error $-$14): the full 2/4/8/16/25-frame matrix on the A17 Pro, and the 25-frame artifact on both phones. And the one-frame graph that compiles is not even a latency win under streaming pressure: 25 sequential \code{MLState} predictions on the A14 measure p99 29.7 ms per call, against 14.7 ms for the same graph CPU-only. A first host-owned-cache export --- which still assembled cache updates in-graph --- also failed ANE compilation. At this point the folklore conclusion (``streaming transformers don't fit the ANE'') was fully available, and wrong.
-
-Instead of concluding, we ran a falsification ladder: strip the graph to one suspect mechanism, prove it on device, add the next suspect back. Each rung is a separate \code{.mlmodelc}, measured on the iPhone 12 Pro with \code{MLComputePlan} placement evidence (FP16, p99 over warmed runs), summarized in Table~\ref{tab:cs2-ladder} and Figure~\ref{fig:ane-ladder}:
-
-\begin{figure}[H]
-\centering
-\IfFileExists{figures/fig-ane-ladder.pdf}{\includegraphics[width=\linewidth]{fig-ane-ladder}}{\pendingfig{fig-ane-ladder}}
-\caption{The falsification ladder that located the ANE admission cliff for streaming transformers (p99 per frame, iPhone 12 Pro / A14, FP16; \S\ref{sec:cs2-state}). Every rung is ANE-clean (ANE cost share 1.000) and the ANE placement beats both CPU-only and CPU+GPU --- including the complete 12-layer stack with all 48 K/V caches read in and 48 one-token updates written out, at 15.0 ms. The one thing that must be absent is in-graph cache mutation: attention, softmax, concatenation, and update outputs are all admissible; the state write is the cliff.}
-\label{fig:ane-ladder}
-\end{figure}
+The limit is on one axis's length, not on the work. The generator is a stack of 1-D convolutions with a receptive field of about 8 \code{x\_pre} frames, so its time axis can be cut into rows that the ANE processes in a batch axis. Each row carries \code{core} frames plus a \code{halo} of 8 frames on each side; outputs are taken from the core and stitched back. Table~\ref{tab:cs1-fold-ops} lists what else had to change; every rewrite is exact in fp32 (68 dB against the unfolded generator).
 
 \begin{table}[h]
 \centering
 \small
-\caption{Falsification ladder: p99 per rung across compute-unit policies, iPhone 12 Pro (A14), FP16; every rung ANE cost share 1.000.}
-\label{tab:cs2-ladder}
-\begin{tabular}{@{}p{5.6cm}rrrr@{}}
+\caption{Making the folded generator admissible. Op admission found by bisection with \code{MLComputePlan}, one op per model, on an M2-generation ANE.}
+\label{tab:cs1-fold-ops}
+\begin{tabularx}{\linewidth}{lX}
 \toprule
-Graph & ANE cost share & p99 ANE & p99 CPU-only & p99 CPU+GPU \\
+Obstacle & Exact rewrite \\
 \midrule
-12-layer FFN stack, stateless & 1.000 & 7.3 ms & 8.9 ms & 14.9 ms \\
-12-layer attention math, no state & 1.000 & 6.4 ms & 6.5 ms & 6.8 ms \\
-1 layer + cache reads as inputs & 1.000 & 1.9 ms & 2.1 ms & 11.9 ms \\
-1 layer + current-token K/V update outputs & 1.000 & 1.9 ms & 2.2 ms & 10.6 ms \\
-4 layers, caches in / updates out & 1.000 & 5.2 ms & 6.5 ms & 11.6 ms \\
-8 layers, caches in / updates out & 1.000 & 10.0 ms & 12.1 ms & 20.1 ms \\
-\textbf{12 layers, 48 caches in / 48 one-token updates out} & \textbf{1.000} & \textbf{15.0 ms} & 15.4 ms & 26.7 ms \\
+Time axis $>$ 16,384 & Rows of \code{core} frames plus 8-frame halos in the batch axis; a 15,605-wide single row still failed, 8,165 compiles \\
+\code{ConvTranspose} upsamplers rejected & Polyphase convolution to $C_\text{out}\cdot s$ channels plus a width shuffle \\
+Stride-6 noise convolution rejected & Space-to-depth, then a plain convolution \\
+Dilation-5 convolution rejected & Reshape width to $(W/5, 5)$ with rows in the batch axis and a $(11,1)$ kernel; later, phase-major storage turns every dilated convolution into a plain one \\
+\code{sin} rejected on M1/M2/A14 ANEs & Snake folded to $z + \sin^2(z)$ (the scale moves into the next convolution's weights); a degree-3 polynomial on chips without ANE \code{sin} \\
+AdaIN over rows & Statistics mask (each global position counted once, by its owner row) and zero mask; exact \emph{global} statistics per channel \\
+iSTFT tail & Graph stops at \code{conv\_post} logits; exp/sin/iSTFT run in Swift \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Two numerical problems surfaced only on the ANE. First, some channels have mean $\approx$3 and standard deviation $\approx$0.08; the ANE's FP16 masked mean was about $10^{-3}$ relative off (the GPU's $2\times10^{-4}$), shifting whole channels by 0.04$\sigma$ and holding the first build to 38.7 dB. Two-pass centring ($c = x - \bar x$; $c = c - \bar c$) fixed it. A pre-scaling meant to avoid FP16 overflow instead pushed small variances into subnormals, which the ANE flushes to zero, and the output fell to 16 dB --- visible only when blocks were composed. Second, AdaIN statistics must be exact and global: estimating them from every $k$-th row, which would have allowed streaming rows with bounded memory, gave 1--4 dB for every $k$ from 2 to 10.
+
+The frozen folded package (polynomial Snake, 30 s) places 1,927 of its 1,928 ops on the ANE of both an M2 Air and an A14, and scores 40.8--44.1 dB against the fp32 PyTorch generator on the frozen test clips; the native-\code{sin} variant, which the runtime picks only on A17-class ANEs, leaves 96 \code{sin} and multiply ops on the CPU of an M2. Admission did not make it fast everywhere. In the rerun's ablation the folded generator beat the GPU generator on the A14 (30 s pipeline: 1,556 against 3,679 ms) and on the M2 Air (821 against 1,091 ms), but on the M2 Ultra, whose GPU is large, the folded pipeline took 706 ms at 30 s, against 373 ms for the October GPU pipeline under similar load in another session (287 ms in its quiet pass). Admission was necessary, not sufficient.
+
+\subsection{One Stage, Two Engines}\label{sec:cs1-hybrid}
+
+Ablating the folded graph op class by op class explains why. In lab runs on earlier builds, on an M1 ANE Snake activations took about 43\% of the generator's time, AdaIN 23\% and the convolutions 23\%; on the A17 Pro, the convolutions alone ran in 514 ms on the ANE and 1,677 ms on the GPU. The ANE is bound by the vocoder's elementwise work; the GPU by its convolutions. The engines have complementary weaknesses inside one stage.
+
+The hybrid generator assigns each op class to the engine that is fast at it. The ANE runs every convolution, as 53 small Core ML functions per row count; Metal kernels run AdaIN statistics, the affine, Snake and the branch joins. Three engineering points made it work:
+
+\begin{itemize}[leftmargin=*]
+\item \textbf{Shared memory without repacking.} With pointer-backed \code{MLMultiArray} inputs, Core ML repacked tensors on every call and an ANE convolution took 10.2 ms on an M1; backed by IOSurface pixel buffers, which Metal reads in place, it took 5.7 ms. The ``wake-up'' penalty we had attributed to ANE power gating was this copy.
+\item \textbf{Layouts both engines like.} Dilated convolutions read and write rows phase-major (sample $q\cdot d + p$ stored at $p\cdot W/d + q$), so on the ANE they become plain convolutions, and the Metal passes convert layout inside work they already do. Vectorizing those passes to \code{half4} brought them to about the memory-bandwidth floor.
+\item \textbf{Overlap.} Independent chains keep the ANE and GPU busy at once: on the A14, a 30 s generator call on the frozen build spans 375 ms with the ANE busy for 292 ms and the GPU for 268 ms, both at once for 192 ms.
+\end{itemize}
+
+The hybrid scores 40.8--45.8 dB; its worst clip, a 1.2 s ``Hi.'', runs on the folded generator. It serves buckets of 7 s and longer; at 3 s its roughly 100 ANE/GPU round trips lose to the single folded call. If a Metal command buffer fails --- as when an iOS app is backgrounded and loses GPU access --- the executor re-runs that clip on the folded generator.
+
+\subsection{Evaluation}\label{sec:cs1-eval}
+
+\textbf{Hardware.} M1 Mac Mini (16 GB, 68 GB/s), M2 MacBook Air (24 GB, 100 GB/s), M2 Ultra Mac Studio (64 GB, 800 GB/s), iPhone 12 Pro (A14, 4 GB) and iPhone 15 Pro Max (A17 Pro). The M2 Ultra ran macOS 26.7.1, the M2 Air and M1 macOS 27.0.1, and both iPhones iOS 27.0.1.
+
+\textbf{Inputs and boundary.} Five frozen inputs targeting the runtime buckets (2.80, 6.75, 9.60, 13.90 and 27.38 s of audio), voice \code{af\_heart}, speed 1.0. Timing runs from token IDs and voice embedding in to a 24 kHz waveform in memory (Appendix~\ref{app:boundaries}).
+
+\textbf{Protocol} (plan 014, fixed before the run, Appendix~\ref{app:artifacts}; deviations below). Release builds. Each Surgical cell discards three preflight calls, records one cold call, and reports the median of ten warm calls; the Mac MLX harness records one cold call and ten warm calls with no preflight. Macs: plugged in, fleet worker paused, and each arm waits for the one-minute load average to fall to 1.5. No Mac reached that gate (one-minute load 2--7 from background apps, with no fleet jobs running), so every Mac row is an upper bound. iPhones: one app launch per arm per bucket, a cooldown before each launch, a nominal thermal state at launch, thermal state recorded per call, and arm order alternated by bucket. Six cells ended above nominal and are marked where they appear: the A14's R0, R1 and R2 cells at 30 s (old generator) and the A17's MLX cells at 10, 15 and 30 s. \emph{Deviations,} made mid-run to finish in one day: the phone cooldown fell from ten minutes to three (six for the A17's last six cells) and the Mac gate wait from 20 minutes to two. On the A14, the folded 3 s cell at three minutes took 98.5 ms against 92.0 and 98.2 ms for two same-pipeline cells at ten minutes, so the A14's launch-to-launch noise is at least 6.7\%; the A17 had no clean ten-minute reference. The A17's first cells, taken while the phone was in use, were discarded and rerun, and the iPhone app was rebuilt once to restore MLX's model files, with Core ML code and packages unchanged. Phones are reported in this sustained regime; a single request after idle is slower (\S\ref{sec:cs1-limits}). MLX runs in the same session as the Surgical pipeline. Raw per-call timings, package hashes, commit and host state for every cell are archived (Appendix~\ref{app:artifacts}).
+
+\textbf{Configurations.} \emph{Surgical} is the shipped pipeline (Table~\ref{tab:cs1-placement}) with its default generator, hybrid (folded below 7 s), chosen by a rule fixed before the run: hybrid becomes the default only if it is faster than folded on every device, at equal quality, with no crash in the matrix. \emph{MLX} is mlx-audio~\citep{mlx-audio} 0.4.3 (commit \code{862dfbe}) on Macs and mlalma/kokoro-ios~\citep{kokoro-ios} 1.0.8 on iPhones. Only public Core ML APIs are used, except in the one column labeled \emph{e5rt} (\S\ref{sec:cs1-e5rt}).
+
+\subsubsection{Headline results}\label{sec:cs1-headline}
+
+\begin{table}[h]
+\centering
+\small
+\caption{Warm median end-to-end wall time (ms), Surgical (hybrid default; folded below 7 s) vs MLX, Macs. $\times$ is MLX time over Surgical time. Every Mac missed the load gate, so all rows are upper bounds. ``err'': the pinned mlx-audio fails every 3 s input with a broadcast-shape error. $^\ddagger$The M2 Air was the noisiest host (load 3--5) and its MLX ran about 2.4$\times$ slower than in October 2026, so its ratios are not comparable and are not used in any claim.}
+\label{tab:cs1-mac}
+\begin{tabular}{lrrrrrrrrr}
+\toprule
+ & \multicolumn{3}{c}{M2 Ultra} & \multicolumn{3}{c}{M2 Air} & \multicolumn{3}{c}{M1 Mini} \\
+Input & Surg. & MLX & $\times$ & Surg. & MLX & $\times$ & Surg. & MLX & $\times$ \\
+\midrule
+3s  & 73.6 & err & -- & 73.0 & err & -- & 94.9 & err & -- \\
+7s  & 53.7 & 189.1 & 3.5 & 71.9 & 1431.6 & 19.9$^\ddagger$ & 98.9 & 800.5 & 8.1 \\
+10s & 70.6 & 272.5 & 3.9 & 240.1 & 1817.5 & 7.6$^\ddagger$ & 123.8 & 1102.9 & 8.9 \\
+15s & 88.9 & 340.4 & 3.8 & 272.9 & 2426.3 & 8.9$^\ddagger$ & 168.5 & 1542.3 & 9.2 \\
+30s & 158.9 & 769.8 & 4.8 & 377.4 & 5186.7 & 13.7$^\ddagger$ & 308.5 & 3014.6 & 9.8 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Every rung is ANE-clean. The complete temporal stack --- all attention, all FFN, all cache reads, all per-token cache-update outputs --- compiles to a single ANE-resident graph (the only CPU ops are zero-cost casts) and beats both CPU-only and GPU placement, provided one thing is absent: \emph{in-graph cache mutation}. Attention matmuls, softmax, concatenation against cache tensors, even forty-eight update outputs are all admissible; the cliff is the state write. Restated for the taxonomy: the recurrence in a streaming transformer is cache \emph{bookkeeping} --- Data-Dependent Logic that belongs to the host --- wrapped around per-step math that is Dense-Static. Cut at that boundary and the motif assignment inverts. Core ML becomes a stateless temporal-math accelerator; Swift/C++ owns cache storage, the shift-and-append, and continuity.
+\begin{table}[h]
+\centering
+\small
+\caption{iPhone Release-build warm medians (ms), sustained regime. e5rt is the private-API path (\S\ref{sec:cs1-e5rt}); it is not used in any ratio. ``OOM'': the memory watchdog killed kokoro-ios on the 4 GB A14, twice. $^\S$The MLX cell ended above a nominal thermal state (``fair'' at 10 and 15 s, ``serious'' at 30 s), so MLX was throttled and the ratio is an upper bound.}
+\label{tab:cs1-iphone}
+\begin{tabular}{lrrrrrrrr}
+\toprule
+ & \multicolumn{4}{c}{iPhone 15 Pro Max (A17 Pro)} & \multicolumn{4}{c}{iPhone 12 Pro (A14)} \\
+Input & Surg. & MLX & $\times$ & e5rt & Surg. & MLX & $\times$ & e5rt \\
+\midrule
+3s  & 61.8 & 551.0 & 8.9 & 58.7 & 98.2 & 911.1 & 9.3 & 97.7 \\
+7s  & 103.2 & 1226.8 & 11.9 & 125.6 & 144.8 & 2050.3 & 14.2 & 142.1 \\
+10s & 155.9 & 1717.1$^\S$ & 11.0$^\S$ & 188.6 & 185.7 & 2814.4 & 15.2 & 187.8 \\
+15s & 223.8 & 2319.3$^\S$ & 10.4$^\S$ & 245.3 & 260.9 & 3950.8 & 15.1 & 264.3 \\
+30s & 318.5 & 4797.3$^\S$ & 15.1$^\S$ & 335.0 & 479.9 & OOM & -- & 454.7 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-Honesty about where this stands in the shipped app: the cliff has teeth beyond compile time. The stateless-boundary artifact that ran cleanly in the headless runtime host (including a 10-minute zero-underrun streaming proof, \S\ref{sec:cs2-power}) later hit a compiler failure with silent CPU fallback ($\approx$640 ms/frame) inside the full application context, and the numerically \emph{correct} rolling-cache stateful graph that replaced it during a correctness overhaul (\S\ref{sec:cs2-host}) reproduces ANECCompile $-$14 on the A14 in both of its variants --- both of which mutate caches in-graph, consistent with the finding. The shipped temporal placement is therefore \code{.cpuAndGPU} today, with the proven stateless boundary as the documented escape to re-land. Every graph that mutated cache state inside Core ML failed admission; every graph that did not, passed --- but admission is also \emph{instance-fragile}, and a placement that passed in a test harness must be re-proven in the shipping process.
+The 27.38 s input synthesizes in 159 ms on the M2 Ultra, 309 ms on the M1 Mini, 319 ms on the iPhone 15 Pro Max and 480 ms on the iPhone 12 Pro: 172, 89, 86 and 57$\times$ real time. Against MLX on the same device and session, the pipeline is 3.5--4.8$\times$ faster on the M2 Ultra, 8.1--9.8$\times$ on the M1, 8.9--15.1$\times$ on the A17 Pro and 9.3--15.2$\times$ on the A14 (Figure~\ref{fig:cs1-latency}). The pinned mlx-audio fails every 3 s Mac input, and kokoro-ios is killed by the memory watchdog at 30 s on the 4 GB A14; both failures reproduce the October 2026 run. Against the October 2026 run (another session, quieter Macs, so indicative only), one cell regressed: on the M2 Ultra the 3 s input, which runs the folded generator, takes 74 ms against 64 ms for October's GPU generator under similar load (45 ms in its quiet pass; Appendix~\ref{app:october}); on every other device the 3 s input got faster. The A17 Pro's ratios at 10 s and longer are upper bounds, because its MLX cells ran hot.
 
-\subsection{Finding: Layout Determines Numerical Survival, Not Just Placement}\label{sec:cs2-layout}
+\begin{figure}[t]
+\centering
+\IfFileExists{figures/fig-cs1-latency.pdf}{\includegraphics[width=\linewidth]{fig-cs1-latency}}{\pendingfig{fig-cs1-latency}}
+\caption{End-to-end warm median latency, the shipped pipeline vs MLX on the same device and session (log scale), from Tables~\ref{tab:cs1-mac} and~\ref{tab:cs1-iphone}. The M2 Air is omitted because its host was too loaded for a fair ratio. The pinned mlx-audio fails every 3 s Mac input, and kokoro-ios is killed by the memory watchdog at 30 s on the A14.}
+\label{fig:cs1-latency}
+\end{figure}
 
-The SpectroStream decoder is textbook Dense-Static: fixed-shape 2D convolutions and transposed convolutions. The naive FP16 export compiled --- and produced non-finite output (finite ratio 0.71). The failure localized to the large parallel transposed-convolution upsampling tail; an FP32 variant was numerically clean but scheduled entirely onto the CPU at roughly 8$\times$ the latency the ANE would eventually deliver. The fix was neither precision nor op rewriting but \emph{internal memory layout}: converting the upsampling block to channels-first (NCHW) internally while preserving the public channel-last I/O contract. The result, on the iPhone 12 Pro (FP16, \code{MLComputePlan} + on-device output-health checks), is given in Table~\ref{tab:cs2-decoder}:
+\subsubsection{Where the gain comes from: a cumulative ablation}\label{sec:cs1-ablation}
+
+About five changes separate the October 2026 pipeline from the current one. To attribute the gain, the rerun adds them one at a time on the M2 Air and the A14, at 3 s and 30 s, under the same protocol (Table~\ref{tab:cs1-ablation}). Three host-code changes (parallel hn-nsf, vectorized sine, parallel iSTFT tail) have no runtime switch, so every rung, R0 included, runs them. The hypothesis, written into the draft of this paper before the rerun, is that admitting the generator to the ANE (R2$\rightarrow$R3) accounts for most of the gain; if it accounts for well under half, the paper's claim is that folding admits the vocoder while pipeline engineering supplies most of the speed. Steps that could not be isolated are merged with their neighbor and marked.
+
+\begin{table}[h]
+\centering
+\small
+\caption{Cumulative ablation, warm medians (ms). Each row adds one change to the row above; R4 replaces R3's generator. $^\dagger$On the current host code (parallel hn-nsf, vectorized sine, parallel iSTFT tail), which has no runtime switch; R0 is therefore faster than the October 2026 run itself. The M2 Air rows are upper bounds (load 3--5). $^\S$Ended above a nominal thermal state (R0 ``serious'', R1 and R2 ``fair''): the old generator's 3.8 s calls heat the A14 within a cell.}
+\label{tab:cs1-ablation}
+\begin{tabular}{llrrrr}
+\toprule
+ & Change & M2 Air 3s & M2 Air 30s & A14 3s & A14 30s \\
+\midrule
+R0 & October 2026 packages (GPU generator)$^\dagger$ & 122.5 & 1162.8 & 410.1 & 3829.2$^\S$ \\
+R1 & + duration and F0Ntrain split & 115.3 & 1118.6 & 395.2 & 3715.2$^\S$ \\
+R2 & + DecoderPre in ANE layout & 115.5 & 1090.9 & 394.1 & 3678.9$^\S$ \\
+R3 & + folded generator (all ANE) & 72.2 & 821.3 & 98.5 & 1555.7 \\
+R4 & hybrid generator instead (ANE + GPU) & 73.0 & 377.4 & 98.2 & 479.9 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+By that rule the A14 supports the hypothesis and the M2 Air does not. On the A14 at 30 s, admitting the generator to the ANE (R2$\rightarrow$R3) supplies 63\% of the total gain, the hybrid split (R3$\rightarrow$R4) 32\% and the front-stage changes (R0$\rightarrow$R2) 4.5\%; at 3 s, folding alone supplies 95\%. On the M2 Air at 30 s, folding supplies 34\% and the hybrid split 57\%. On the M2 Air the alternative holds: folding admits the vocoder, and pipeline engineering --- splitting the generator between the engines --- supplies most of the speed. Folding is still necessary on both devices, because the hybrid's convolutions are folded ANE functions. Under the old pipeline the A14 also heats: its R0 30 s cell started at a nominal thermal state and ended ``serious'', while the hybrid's cell started and ended nominal.
+
+Placement is checked, not assumed. On the M2 Air, Core ML's compute plan (\code{MLComputePlan}) assigns all 53 generator convolutions to the ANE in both the folded (R3) and hybrid (R4) packages. On the A14, on device, the folded 30 s package places 1,927 of its 1,928 ops on the ANE, and all 53 hybrid functions place their 83 ops on the ANE, none on the CPU or GPU.
+
+\subsubsection{Folded or hybrid?}\label{sec:cs1-fold-vs-hybrid}
+
+\begin{table}[h]
+\centering
+\small
+\caption{Folded vs hybrid generator, 30 s, per device. A tie is a warm-median difference within 5\% or overlapping run-to-run ranges. Below 7 s the hybrid configuration runs the folded generator, so shorter buckets tie by construction and are omitted. Those identical 3 s cells differ by 0.3--1.7\%; on the A14, two same-pipeline cells at the original ten-minute cooldown differed by 6.7\%, so its noise floor is at least that. Every 30 s gap exceeds both. RAM is peak resident set size on Macs and peak \code{phys\_footprint} on iPhones, in MB. GPU busy share is the GPU's occupancy of the generator's span, from one separate instrumented launch per phone, not from the timed runs. Mac rows are upper bounds (load gate missed).}
+\label{tab:cs1-fvh}
+\begin{tabular}{lrrrrrrl}
+\toprule
+Device & Folded & Hybrid & $\Delta$ & RAM fold & RAM hybrid & GPU busy (hybrid) & Verdict \\
+\midrule
+M2 Ultra & 706.4 & 158.9 & $-$78\% & 415 & 434 & -- & hybrid \\
+M2 Air   & 821.3 & 377.4 & $-$54\% & 393 & 376 & -- & hybrid \\
+M1 Mini  & 1091.7 & 308.5 & $-$72\% & 404 & 375 & -- & hybrid \\
+A17 Pro  & 780.9 & 318.5 & $-$59\% & 780 & 1338 & 71\% & hybrid \\
+A14      & 1555.7 & 479.9 & $-$69\% & 284 & 831 & 71\% & hybrid \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The result is not close: the hybrid is faster at every bucket of 7 s and longer on all five devices, by 16--78\%, with no overlapping ranges, no crashes and higher SNR (45.4--45.7 against 43.7--44.0 dB on the 7--30 s inputs, measured on the M2 Ultra), so it ships as the default under the rule. Its costs are measured too. On the phones it raises peak memory (831 against 284 MB on the A14, 1,338 against 780 MB on the A17 Pro), while on the Macs the two are within 10\% of each other. It keeps the GPU 61--72\% busy during the generator, so an app that needs the GPU at the same moment --- rendering, a game, another model --- is better served by the folded generator, which uses no GPU and is the only form that runs when Metal is unavailable. The executor falls back to it on any hybrid failure.
+
+\subsubsection{Stage breakdown}\label{sec:cs1-stages}
+
+\begin{table}[h]
+\centering
+\small
+\caption{Per-stage times (ms), 30 s input, median of ten warm calls, same session. R0 is the October 2026 packages on the current host code (Table~\ref{tab:cs1-ablation}). hn-nsf runs on the CPU concurrently with DecoderPre, so stages do not sum to wall time. M2 Air rows are upper bounds (load 3--5).}
+\label{tab:cs1-stages}
+\begin{tabular}{llrrrrrr}
+\toprule
+Device & Pipeline & Duration & F0Ntrain & DecoderPre & hn-nsf & Generator & Wall \\
+\midrule
+M2 Air & R0 (October packages) & 64.0 & 32.7 & 32.7 & 17.4 & 1029.6 & 1162.8 \\
+M2 Air & shipped (hybrid) & 54.2 & 25.1 & 23.6 & 22.0 & 265.6 & 377.4 \\
+A14 & R0 (October packages) & 154.2 & 51.1 & 59.4 & 61.9 & 3550.6 & 3829.2 \\
+A14 & shipped (hybrid) & 50.8 & 23.6 & 26.5 & 23.8 & 378.1 & 479.9 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The generator fell from 92.7\% of wall time to 78.8\% on the A14 (3,551 to 378 ms) and from 88.5\% to 70.4\% on the M2 Air. The front stages also got faster --- duration from 154 to 51 ms on the A14 with the split --- and together they are now about 100 ms on both devices, 21--27\% of wall time and the next lever. On a quiet M2 Air the hybrid's 30 s wall time was 223 ms (generator about 151 ms) in a lab run the day before (lab packages, not the frozen set), which bounds how much of the loaded row is host noise.
+
+\subsubsection{How close to the hardware?}\label{sec:cs1-ceiling}
+
+We estimate a floor for the 30 s input from first principles: every convolution and matrix multiply on the ANE at its measured marginal rate (from per-function fits $t = a + b\cdot\text{GFLOP}$: M1 $\approx$9.8 TFLOPS, A14 4.2--5.2, A17 Pro 7--9), elementwise and AdaIN traffic hidden under it on the GPU, and the sequential LSTMs on the CPU ($\approx$30 ms). Because the hybrid moves about 8 GB through DRAM per 30 s call, a second floor takes the maximum of the compute time and bytes $\div$ bandwidth. We have not recomputed the floors against the frozen build; in lab runs on the same hybrid generator the pipeline sat at roughly 62--80\% of them. The remaining gap is mostly a fixed cost per ANE call that is I/O rather than dispatch (fusing three convolutions into one call saved 0.5--0.85 ms per removed call; a k3 convolution plus residual moves about 117 MB in 6 ms on the A14), plus fold overhead (1.78 vs 1.35 TFLOP, from halos and row padding) and ANE/GPU hand-offs. We estimate the exact model cannot reach much above 75--85\% of the floor with public APIs; exceeding 90\% would require moving fewer bytes than the model does, for example a distilled generator, which would break the exactness contract. These are estimates, not measurements.
+
+\subsubsection{The private API buys almost nothing}\label{sec:cs1-e5rt}
+
+Core ML's own calls into Espresso's private \code{e5rt} C API can be traced and replayed directly, from a command-line tool or a sandboxed iOS app, with output bit-identical to Core ML. In lab measurements it saves at most about 0.2 ms per ANE call (A14 k3 convolution: 5.91 ms Core ML, 5.70 ms e5rt), because the calls are bound by ANE I/O, which the private path does not change. In the rerun it lowered peak memory at 30 s by 15--23\% on the M2 Ultra and the phones (A14: 643 against 831 MB) and by 3--4\% on the M2 Air and M1, and it did not reliably lower latency: at 7 s and longer, e5rt was slower on the A17 Pro and 32--64\% slower on the M2 Ultra, within 6\% of the public path on the A14 and M1, and 39--60\% faster at 10--30 s only on the M2 Air, the noisiest host. An app that uses it cannot ship in the App Store and may break with any OS update; we report it in one labeled column (Table~\ref{tab:cs1-iphone}) and use only the public path for every claim. The SDK compiles it out by default.
+
+\subsubsection{Control: no valid monolithic export}\label{sec:cs1-monolith}
+
+The null hypothesis against decomposition is one Core ML package for the whole model. With coremltools 8.3 it fails at two seams the pipeline already cuts. The full graph does not convert: duration-driven \code{repeat\_interleave} has no static lowering (\code{ValueError: Cannot add const [None]}), and \code{torch.jit.trace} ``succeeds'' only by baking one utterance's alignment into constants --- the traced graph crashes on a same-shape input with different durations. The strongest partial monolith, everything downstream of alignment, converts and produces wrong audio: correlation 0.27 in FP16 and 0.25 in FP32 against PyTorch, from Core ML's execution of SineGen's cumulative phase. For this model, decomposition was the precondition for any correct Core ML artifact we could build.
+
+\subsubsection{Audio quality}\label{sec:cs1-quality}
+
+Every package is gated on SNR over the valid region against fp32 PyTorch; the frozen generators score 40.8--44.1 dB (folded) and 40.8--45.8 dB (hybrid) per clip against the fp32 PyTorch generator on the same inputs, above the 40 dB gate fixed before the run. The worst clip is the shortest input, ``Hi.'' (1.2 s); numbers score 44.1/45.8 dB and heavy punctuation 43.4/44.9 dB (folded/hybrid). The split duration model predicts the same frame counts as the unsplit one on all eight clips. SNR alone has failed us before: in July 2026 a blind model-judged listening evaluation (Gemini, paired lineups with a known-bad control) caught three defects that every numerical gate had passed --- a post-process that silenced real speech near punctuation, an inverse STFT at half amplitude for interior bins, and an RNG with an absorbing zero state. For the frozen build, the author listened to five clips (seed 42) covering the longest bucket, numbers, heavy punctuation, the shortest input and the folded generator, and heard no artifacts; per-clip hashes are archived (Appendix~\ref{app:artifacts}). The plan called for the same automated judge; its cloud project failed on billing (HTTP 403), so the author listened instead. This is one unblinded listener, not a rated or blind study, and not a human MOS evaluation.
+
+\subsection{Limitations of Case Study 1}\label{sec:cs1-limits}
+
+\textbf{Regime.} Phone numbers are sustained (three warm-ups, then ten back-to-back calls). A single request after idle is slower: the A14 generator pays a cold penalty after any break from its own work, which we could not remove with public or private APIs. Short bursts are faster than the sustained median. The rerun's ``cold'' call follows three preflight calls and lands within a few percent of the warm median (A14 hybrid 30 s: 485 vs 480 ms); it does not measure the after-idle penalty, which we did not re-measure on the frozen build.
+
+\textbf{OS state.} The flexible-length GPU generator of the October pipeline can abort inside MPSGraph on macOS 27.0.1; it is disabled on OS 27 and not used here.
+
+\textbf{No concurrent-workload benchmark.} We have not measured synthesis while a local LLM uses the GPU. In a lab run on an earlier build, a GPU blit kernel moving 51 GB/s on an M1 slowed the hybrid generator by 34\%; the blit also takes GPU time, so this mixes DRAM and GPU contention, and the frozen build has not been measured under load.
+
+\textbf{Coverage.} One vendor; M1, M2 and M2 Ultra Macs; A14 and A17 Pro phones.
+
+\section{Case Study 2: Magenta RealTime 2 Under a 40 ms Deadline}\label{sec:cs2}
+
+MRT2 is Kokoro's structural complement. Kokoro renders a finished utterance once; MRT2 generates one frame every 40 ms indefinitely, frame $N+1$ depends on frame $N$'s tokens, and success is a sustained zero-underrun stream with p99 frame time under the deadline. It also has the motif Kokoro could route around: a stateful transformer (12 temporal layers, 41-frame local-attention K/V caches) plus a 12-level serial depth sampler on the hot path.
+
+\textbf{Pipeline and setup.} Per frame: host conditioning $\rightarrow$ Core ML temporal step $\rightarrow$ Core ML depth rollout (all 12 RVQ levels in one prediction) $\rightarrow$ host codebook summation $\rightarrow$ Core ML codec decoder $\rightarrow$ host iSTFT and overlap-add $\rightarrow$ lock-free ring $\rightarrow$ \code{AVAudioSourceNode} (Figure~\ref{fig:mrt2-pipeline}). Audio-rate tensors never enter a Core ML graph: the codec stops at STFT-rate features --- the geometry problem Kokoro's vocoder had to be folded to escape is designed out here. Measurements are on the same two iPhones, iOS 26.5, after numerical-parity gates against the MLX reference (transformer correlation $>$ 0.9999, codec SNR $\ge$ 115 dB); placement claims come from \code{MLComputePlan} and Instruments, never from the requested policy.
+
+\begin{figure}[H]
+\centering
+\IfFileExists{figures/fig-mrt2-pipeline.pdf}{\includegraphics[width=\linewidth]{fig-mrt2-pipeline}}{\pendingfig{fig-mrt2-pipeline}}
+\caption{The MRT2 per-frame streaming loop. Each frame must finish within 40 ms. The three Core ML stages ship on three engines (temporal on GPU, depth rollout on CPU, codec decoder on ANE; per-stage p50 on the A17 Pro shown). The render callback never blocks on the model.}
+\label{fig:mrt2-pipeline}
+\end{figure}
+
+\subsection{State Mutation, Not Attention, Is the ANE Cliff}\label{sec:cs2-state}
+
+Core ML's mutable state (\code{MLState}) holding the K/V caches fails twice. A one-frame stateful step compiles with an ANE island, but every multi-frame unroll fails ANE compilation (\code{ANECCompile() FAILED}, error $-$14) on both phones; and the one-frame graph that compiles is slower under streaming pressure than the same graph on the CPU (p99 29.7 vs 14.7 ms on the A14). A first host-owned-cache export that still assembled updates in-graph also failed. ``Streaming transformers don't fit the ANE'' was the available conclusion.
+
+Instead we ran a falsification ladder on the A14: strip the graph to one suspect mechanism, prove it on device, add the next back (Table~\ref{tab:cs2-ladder}, Figure~\ref{fig:ane-ladder}).
+
+\begin{table}[h]
+\centering
+\small
+\caption{Falsification ladder, iPhone 12 Pro (A14), FP16, p99 per call; every rung has ANE cost share 1.000.}
+\label{tab:cs2-ladder}
+\begin{tabular}{@{}p{6.4cm}rrr@{}}
+\toprule
+Graph & ANE & CPU only & CPU+GPU \\
+\midrule
+12-layer FFN stack, stateless & 7.3 ms & 8.9 ms & 14.9 ms \\
+12-layer attention math, no state & 6.4 ms & 6.5 ms & 6.8 ms \\
+1 layer + cache reads as inputs & 1.9 ms & 2.1 ms & 11.9 ms \\
+1 layer + current-token K/V update outputs & 1.9 ms & 2.2 ms & 10.6 ms \\
+4 layers, caches in / updates out & 5.2 ms & 6.5 ms & 11.6 ms \\
+8 layers, caches in / updates out & 10.0 ms & 12.1 ms & 20.1 ms \\
+\textbf{12 layers, 48 caches in / 48 updates out} & \textbf{15.0 ms} & 15.4 ms & 26.7 ms \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\IfFileExists{figures/fig-ane-ladder.pdf}{\includegraphics[width=0.9\linewidth]{fig-ane-ladder}}{\pendingfig{fig-ane-ladder}}
+\caption{The falsification ladder (A14, FP16, p99). Every rung is ANE-clean and the ANE beats CPU-only and CPU+GPU, up to the complete 12-layer stack with all caches read in and all updates written out. The one thing that must be absent is in-graph cache mutation.}
+\label{fig:ane-ladder}
+\end{figure}
+
+Every rung is ANE-resident, including the complete temporal stack with all 48 caches in and 48 one-token updates out. Attention, softmax, concatenation against caches and update outputs are all admissible; the state write is the cliff. For the taxonomy, the recurrence in a streaming transformer is cache bookkeeping --- host logic --- around per-step math that is Dense-Static. Cut there and the motif assignment inverts.
+
+Admission is also fragile in a way the ladder does not show. The stateless artifact that ran a 10-minute zero-underrun stream in a headless host later fell back to the CPU ($\approx$640 ms/frame) inside the full app, and the numerically correct rolling-cache graph that replaced it during a correctness overhaul (\S\ref{sec:cs2-host}) mutates state in-graph and fails on the A14, consistent with the finding. The temporal stage therefore ships on \code{.cpuAndGPU} today; placement must be re-proven in the shipping process, not per artifact.
+
+\subsection{Layout Decides Numerical Survival}\label{sec:cs2-layout}
+
+The SpectroStream decoder is textbook Dense-Static, and its naive FP16 export compiled and produced non-finite output. FP32 was clean but ran entirely on the CPU. Converting the upsampling block to channels-first internally, keeping the public I/O layout, fixed it --- on one engine (Table~\ref{tab:cs2-decoder}).
 
 \begin{table}[h]
 \centering
@@ -697,262 +417,151 @@ The SpectroStream decoder is textbook Dense-Static: fixed-shape 2D convolutions 
 \toprule
 Decoder artifact & Policy & p99 & Output finite? \\
 \midrule
-5-frame, channels-last FP16 & any & --- & \textbf{no} (0.71 finite ratio) \\
-5-frame, NCHW FP16 & \code{.cpuAndNeuralEngine} (ANE 1.000) & \textbf{6.7 ms} & \textbf{yes} (30,720/30,720) \\
-5-frame, NCHW FP16 & CPU-only & 27.8 ms & no (29,056/30,720) \\
-5-frame, NCHW FP16 & CPU+GPU & 32.2 ms & no (29,056/30,720) \\
-25-frame, NCHW FP16 & \code{.cpuAndNeuralEngine} (ANE 1.000) & \textbf{24.8 ms} & \textbf{yes} (184,320/184,320) \\
-25-frame, NCHW FP16 & CPU-only & 152.7 ms & no \\
+5-frame, channels-last & any & --- & no (0.71 finite) \\
+5-frame, NCHW & ANE (cost share 1.000) & \textbf{6.7 ms} & \textbf{yes} \\
+5-frame, NCHW & CPU only & 27.8 ms & no \\
+5-frame, NCHW & CPU+GPU & 32.2 ms & no \\
+25-frame, NCHW & ANE (cost share 1.000) & \textbf{24.8 ms} & \textbf{yes} \\
+25-frame, NCHW & CPU only & 152.7 ms & no \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Two lessons. First, the placement win is large ($\approx$4--6$\times$ over CPU) and total: the NCHW artifact schedules every executable op onto the ANE, including the \code{slice\_by\_index}/\code{conv\_transpose} pattern that the channels-last version pushed to CPU. Second, channels-first internal layout is documented vendor guidance for ANE \emph{throughput}~\citep{apple-ane-transformers}; what we have not seen documented is the numerical coupling: \textbf{the ANE was the only compute unit that produced finite output from the same FP16 artifact.} Placement and numerics are not independent axes. Our hypothesis for the mechanism is that each engine runs a different lowering of the same MIL program, with different accumulation and layout paths; we did not inspect those lowerings. What we measured is that FP16 survival differed across engines. ``Validate numerically, per placement, on device'' is not paranoia; for this stage it was the difference between music and NaNs.
+Channels-first layout is documented vendor guidance for ANE throughput~\citep{apple-ane-transformers}. What we have not seen documented is the numerical coupling: \textbf{the ANE was the only engine that produced finite output from the same FP16 artifact.} Our hypothesis is that each engine lowers the same MIL program differently; we did not inspect the lowerings.
 
-This finding complements Case Study 1's op-rewrite null result (\S\ref{sec:disc-ane}): there, source-level rewrites suggested by ANE folklore changed nothing because the binding constraint was tensor geometry; here, a layout rewrite changed everything because the binding constraint was the FP16 numerical path. The constant is that only a per-stage, on-device ablation tells you which regime you are in.
+\subsection{Weight Bandwidth Sets the Graph Boundary}\label{sec:cs2-bandwidth}
 
-\subsection{Finding: Weight Bandwidth Is the Invariant That Shapes the Graph}\label{sec:cs2-bandwidth}
+The depth transformer samples 12 RVQ levels serially per frame. Twelve small predictions per frame cost about 40--45 ms on the A14, over the whole budget, whether each call computes twelve positions or one. Every prediction streams the stage's weights from DRAM: 97 MB $\div$ 3.4--3.8 ms $\approx$ 26--29 GB/s, the A14's bandwidth; the 364 MB temporal graph gives the same rate. \textbf{Per-call cost $\approx$ weight bytes $\div$ DRAM bandwidth}, the ordinary roofline bound, and since all engines share one DRAM no placement escapes it. Moving the 12-level rollout inside one prediction --- with host-supplied Gumbel noise~\citep{astar-sampling} and inverse temperature so sampling stays host-seeded and deterministic --- streams the weights once per frame: 37 ms FP32 $\rightarrow$ \textbf{12.7 ms FP16 on the A14, 8.4 ms on the A17 Pro}. The FP32 export is token-exact (0/900 mismatches); FP16 flips near-tie tokens and shipped after listening gates. The same bound reappears in Kokoro: the hybrid generator's ANE calls are bound by I/O, not by dispatch (\S\ref{sec:cs1-ceiling}).
 
-The depth transformer samples 12 RVQ levels per frame, serially --- level $k$ conditions on the token sampled at level $k-1$. The natural deployments are 12 small predictions per frame (full pass or stateful step). Both were built, both validated token-for-token, and both cost the same on device: $\approx$40--45 ms/frame on the A14 --- over the entire frame budget --- whether the call computes 12 positions or one.
+\subsection{Host Glue Can Destroy Correctness}\label{sec:cs2-host}
 
-The explanation is a single number. Every Core ML prediction streams the stage's full weights from DRAM: 97 MB (FP32 depth weights) $\div$ 3.4--3.8 ms per call $\approx$ 26--29 GB/s --- the A14's LPDDR4X bandwidth. Cross-check: the 364 MB FP16 temporal graph measures 13.9 ms isolated, the same $\approx$26 GB/s. \textbf{Per-call cost $\approx$ weight bytes $\div$ DRAM bandwidth.} This is the ordinary roofline bound for a memory-bound stage. We did not sweep it per compute unit, but CPU, GPU and ANE share one DRAM, so no placement escapes it. Twelve calls per frame means twelve weight streams ($\approx$1.2 GB/frame); no scheduler, compute unit, or state representation can fix that. It also reframes the ANE-vs-GPU question for bandwidth-bound stages: neither engine manufactures bandwidth, so latency parity is expected and the ANE's case rests on power (\S\ref{sec:cs2-power}).
+Three bugs shipped in early device builds while every model-level validation passed. Core ML pads output rows for 64-byte alignment, and a Swift sampler that indexed by \code{count / 12} read level $k$'s logits $10k$ positions off --- coarse structure sounded plausible, fine detail was scrambled. The runtime never wrote the temporal feedback input and made one depth prediction per frame instead of twelve. And a stateful graph's baked attention bias masked all 41 history slots, so it wrote state every frame and never read it; parity tests pass on write-only state. These are the source of the procedure's rules (step 6): validate every host consumer of a model output, read through strides, and prove a stateful graph reads its state.
 
-The fix that respects the invariant moves the 12-level autoregressive rollout \emph{inside} one prediction, so weights stream once per frame --- while keeping determinism host-owned, the methodology's standing rule for sampling. The host supplies per-level Gumbel noise \code{[12, 1024]} and inverse temperature as inputs (host RNG and seeds preserved; Gumbel-max~\citep{astar-sampling} over a static top-k set is distributionally identical to top-k softmax sampling); top-k and valid-range masks are constants; the embedder feedback between levels is an in-graph gather reading 12 rows. Measured depth cost per frame: 37 ms FP32 $\rightarrow$ \textbf{12.7 ms FP16 on A14, 8.4 ms on A17 Pro}. Streaming the weights once per frame removed most of the cost, but the rollout does not reach the one-stream floor: 48.5 MB of FP16 weights at $\approx$26 GB/s implies $\approx$1.9 ms, well below the measured 12.7 ms. We have not decomposed the remainder. The FLOAT32 export is token-exact against the reference (0/900 mismatches across autoregressive chains); FP16 flips near-tie tokens without changing the distribution, and was shipped after instrumented and paired-listening gates.
+\subsection{Placement, Power and Status}\label{sec:cs2-power}
 
-This is the methodology absorbing a new rule rather than breaking: \S\ref{sec:procedure}'s ``sampling stays on CPU'' was always about \emph{determinism and dynamism}, not geography. When bandwidth makes call count the binding constraint, sampling logic can move into the graph as long as the entropy source and the validation gates stay host-owned.
-
-\subsection{Finding: Host Glue Can Silently Destroy Correctness}\label{sec:cs2-host}
-
-Case Study 1's host-side bugs cost milliseconds (\S\ref{sec:host-cost}). This case study's cost music, and they motivate the validation rules now folded into the procedure. Three bugs shipped in early device builds while every model-level validation passed:
-
-\begin{itemize}[leftmargin=*]
-\item \textbf{Strided output misread.} Core ML pads output rows for 64-byte alignment: the depth logits tensor \code{[1, 12, 12294]} carries strides \code{[147648, 12304, 1]} --- 10 padding elements per row. The Swift sampler indexed \code{level $\times$ (count / 12)}, so level $k$ read logits shifted by $10\cdot k$ positions. Level 0 was correct (coarse structure always sounded plausible); levels 1--11 sampled from misaligned logit slots --- scrambled fine detail, collapsed stereo. Every Python-side validation passed because \code{coremltools} honors strides; the Swift read path was never validated. Found by an RNG-free argmax A/B that diverged at frame 0, level 1, with matching logit \emph{values} at offset indices.
-\item \textbf{Feedback that never existed.} The runtime allocated the temporal feedback input once, zeroed, and never wrote it; and it made one depth prediction per frame where the contract requires 12 autoregressive levels. The transformer graphs were faithful; the loop around them did not implement the model.
-\item \textbf{Write-only state.} The one-frame stateful temporal graph baked an attention bias that masked \emph{all 41 history slots}: it wrote K/V state every frame and never read it. Teacher-forced parity and within-prediction unroll parity both pass on a write-only state --- the graph ran for weeks with no self-attention history before a fresh-vs-warmed-state bit-identity test exposed it.
-\end{itemize}
-
-The resulting process rules are now part of step 6 of the procedure: every host-side consumer of an \code{MLMultiArray} must be validated against a Python reference at least once, reads must go through \code{strides} rather than \code{count $\div$ dims}, and a stateful graph is not validated until a cross-prediction test proves the state is \emph{read} (same input on fresh vs. warmed state must differ, and an N-prediction stateful drive must match a streaming reference past the window size). After the fixes, the device output joins the reference cluster: left-right correlation 0.99 (matching the MLX reference), prompt-adherence embedding scores within the clean reference band, and blind automated listening gates passing at the shipped temperature with known-bad controls correctly rejected.
-
-\subsection{Placement, Power, and Residency Evidence}\label{sec:cs2-power}
-
-Case Study 1 stated ANE residency as policy intent (a limitation, \S\ref{sec:disc-limitations}). This case study instruments it directly, and the instrumentation is itself a contribution: requested compute units are a \emph{request} (\S\ref{sec:gpu-centric}), and this workload produced multiple concrete demonstrations --- \code{.cpuAndNeuralEngine} artifacts whose compute plan was 100\% CPU, and an \code{.all} policy that mapped a stage entirely to the slower GPU.
-
-\textbf{Residency.} Instruments Core ML traces on both phones, with the earlier all-ANE policy (before the \S\ref{sec:cs2-host} correctness fixes; the shipped placement now differs, see the end of this section), show per-model ANE hardware intervals for all three model families (on the A17 Pro: temporal 1,729 predictions averaging 7.8 ms of ANE time; depth 0.55 ms; decoder 18.9 ms) and a Metal GPU interval table containing \emph{only} the system compositor --- zero rows attributed to the app process. The check is encoded as a machine-readable gate: a placement-evidence artifact that requires ANE prediction intervals for every model family and rejects any app-attributed GPU interval, so future regressions fail a verifier rather than a vibe.
-
-\textbf{Power.} Paired Power Profiler captures on the A14 --- identical graphs and workload, only the temporal stage's compute policy varied --- show the all-ANE policy at process \code{gpuImpact} 0.000 / \code{cpuImpact} 1.38 / 48.1 B CPU instructions over 60 s, against the temporal-GPU control at 2.23 / 2.63 / 110.3 B. The ANE policy removes process-attributed GPU impact entirely and cuts CPU instructions by 56\%. In the same comparison the producer's \emph{duty cycle} tells the thermal story: the ANE arm finished each second of audio fast enough to sleep 43\% of the run under backpressure; the GPU arm worked 93\% of wall-clock to deliver the same stream. (These captures predate the \S\ref{sec:cs2-host} correctness fixes; both arms ran the identical semantics, so the policy-controlled comparison stands, but the absolute throughput numbers do not transfer to the corrected pipeline.) On the A17 Pro, process-level power impact did \emph{not} separate the policies --- the Instruments residency trace was required to prove placement there, which is why the methodology treats power tables and residency traces as complementary rather than alternative evidence. Figure~\ref{fig:power} plots the paired power metrics.
+In the earlier all-ANE configuration, Instruments traces on both phones show ANE intervals for all three model families and no app-attributed GPU intervals, encoded as a machine-checked placement artifact. Paired Power Profiler captures on the A14, varying only the temporal stage's policy, show process GPU impact 0.000 and 48.1 B CPU instructions over 60 s for ANE, against 2.23 and 110.3 B for the GPU control (Figure~\ref{fig:power}); the ANE arm slept 43\% of the run under backpressure. These captures predate the correctness fixes: both arms ran identical semantics, so the comparison stands, but absolute numbers do not transfer.
 
 \begin{figure}[H]
 \centering
-\IfFileExists{figures/fig-power.pdf}{\includegraphics[width=\linewidth]{fig-power}}{\pendingfig{fig-power}}
-\caption{Paired power comparison on the A14 (iPhone 12 Pro), all-ANE temporal policy vs.\ a temporal-GPU control running identical graphs over 60 s (\S\ref{sec:cs2-power}). The ANE policy eliminates process-attributed GPU impact entirely (2.23 $\rightarrow$ 0.000) and cuts CPU instructions by 56\% (110.3 B $\rightarrow$ 48.1 B), while the producer's duty cycle drops from 93\% to 57\% --- it finishes each second of audio fast enough to sleep 43\% of the run under backpressure.}
+\IfFileExists{figures/fig-power.pdf}{\includegraphics[width=0.9\linewidth]{fig-power}}{\pendingfig{fig-power}}
+\caption{Paired power comparison on the A14, all-ANE temporal policy vs a temporal-GPU control, identical graphs, 60 s. The ANE policy removes process GPU impact (2.23 $\rightarrow$ 0.000) and cuts CPU instructions by 56\%.}
 \label{fig:power}
 \end{figure}
 
-\textbf{End-to-end status, stated plainly.} With the corrected, numerically verified pipeline (rolling temporal on GPU, in-graph depth rollout FP16 on CPU, NCHW decoder on ANE): the iPhone 15 Pro Max runs faster than real time --- composed $\approx$29 ms/frame p50 (temporal 12.2 + depth 8.4 + decoder 8.3), zero underruns over bounded 45 s runs with backpressure engaged, $\approx$1.37$\times$ real-time headroom. The iPhone 12 Pro does not currently hold the budget ($\approx$50 ms/frame; combined temporal+depth DRAM traffic is $\approx$0.7 GB/frame, $\approx$67\% of the A14's bandwidth --- \S\ref{sec:cs2-bandwidth}'s invariant again). And the 10-minute \emph{foreground} sustain gate currently fails on the A17 Pro: both arms of a controlled soak bank $\approx$20 s of ring lookahead and then thermal-throttle to $\approx$0.95$\times$ real time around minutes 5--7, screen on, with the UI's Metal load included. The earlier 10-minute zero-underrun runs (headless host, all-ANE placement, pre-fix producer) validated the delivery architecture --- SPSC ring, reservoir, backpressure --- but not the corrected pipeline's thermal envelope. The named open work is exactly what the findings predict: re-land the temporal stack on the ANE via the stateless host-cache boundary (\S\ref{sec:cs2-state}), and cut temporal weight bytes (\S\ref{sec:cs2-bandwidth}). We report the gap rather than the trend line.
+\textbf{Status, plainly.} With the corrected pipeline (temporal on GPU, depth rollout FP16 on CPU, decoder on ANE), the iPhone 15 Pro Max runs faster than real time: about 29 ms/frame p50, zero underruns over bounded 45 s runs, 1.37$\times$ headroom. The A14 does not hold the budget (about 50 ms/frame; temporal plus depth move about 0.7 GB per frame, 67\% of its bandwidth). The 10-minute foreground soak fails on the A17 Pro: after banking about 20 s of lookahead, it throttles to about 0.95$\times$ real time around minutes 5--7. The named fixes --- the temporal stack back on the ANE via the stateless boundary, and fewer temporal weight bytes --- follow from the findings above and are not yet demonstrated.
 
 \section{Discussion}\label{sec:discussion}
 
-\subsection{Why Does the Kokoro Pipeline Win?}\label{sec:disc-why}
+\subsection{Structure Decides Admission}\label{sec:disc-admission}
 
-The Surgical pipeline's advantage over GPU-only frameworks has six sources:
-
-\begin{enumerate}[leftmargin=*]
-\item \textbf{A better scheduling unit.} The original model is not the natural unit of deployment. It contains several computational regimes with different hardware affinities. Once those regimes become separate artifacts, the runtime can schedule them independently instead of forcing the whole graph through one backend.
-
-\item \textbf{Ahead-of-time compiled static graphs.} Each Core ML stage is a statically compiled fp16 graph (fixed-shape except the GPU generator's bounded \code{RangeDim} axis), compiled and fused once at load. PyTorch MPS dispatches Metal kernels op by op from Python. MLX evaluates lazily and supports graph compilation (\code{mx.compile}), so the gap to MLX is not simply eager-versus-compiled, and we have not isolated it. Either way, the generator runs on CPU+GPU through Core ML --- the \emph{same} silicon --- and still beats both Metal baselines.
-
-\item \textbf{Elimination of Python.} PyTorch MPS incurs interpreter cost between operations; five \code{model.forward()} calls through the GIL cost real milliseconds. The Surgical pipeline is Swift end-to-end.
-
-\item \textbf{Avoidance of MPS fallback overhead.} PyTorch MPS lacks certain operations (notably \code{aten::angle}, used in STFT), forcing per-op CPU round-trips. The Surgical pipeline implements hn-nsf natively in Swift and never pays this cost.
-
-\item \textbf{Cross-unit concurrency.} Because the stages are separate artifacts with explicit dataflow, the CPU-bound hn-nsf source runs on a background thread \emph{during} the DecoderPre Core ML predict (\S\ref{sec:cs1-procedure}). A monolithic graph executes serially on whatever unit the scheduler picked; the decomposition turns one of the largest CPU stages into partly hidden time.
-
-\item \textbf{ANE participation where it pays.} Only DecoderPre ships on the ANE (\pth{.cpuAndNeuralEngine}), as a single policy for every machine, for simplicity. Per-machine sweeps show the ANE also wins some Duration and F0Ntrain buckets on an M1, by a few milliseconds each. This is a real but partial contribution.
-\end{enumerate}
-
-This is also why the methodology matters for concurrent workloads. A GPU-only Kokoro occupies the GPU for the entire synthesis path. Surgical Inference still uses the GPU for stages that measure best there, but it shortens the total wall time, moves some work to CPU/ANE, exposes idle windows, and avoids routing irregular DSP through the GPU. That is the path to keeping the GPU available for another local workload such as an LLM. We have not yet run a co-scheduling benchmark with TTS and an LLM; the claim here is architectural headroom, not a measured throughput result. Case Study 2 supplies a direct measurement of the underlying property for its earlier all-ANE configuration: the generating process showed zero attributed Metal GPU intervals and zero process GPU power impact while streaming audio (\S\ref{sec:cs2-power}). The corrected pipeline that ships today runs its temporal stage on the GPU.
-
-We did not run controlled ablations isolating each factor's contribution --- and the cleanest such ablation, a monolithic Core ML baseline, is one we could not build for this model (\S\ref{sec:cs1-monolith}): conversion fails at the alignment seam, and the strongest partial monolith is numerically invalid. The per-stage compute-unit ablation data (which motivated the staged policy) is the closest available evidence. From it we believe factors 1--5 dominate, but that is a hypothesis, not a measurement. We state the missing factor-isolation as a limitation (\S\ref{sec:disc-limitations}), but the \S\ref{sec:cs1-monolith} control also sharpens the paper's central finding: \textbf{the win comes from decomposition and native orchestration, not from any single accelerator --- and for this model, decomposition was not merely faster but the precondition for any correct Core ML artifact we could build.}
-
-\subsection{The ANE Admission Findings}\label{sec:disc-ane}
-
-An earlier draft of this work assumed the Dense-Static stages would run on the ANE under \code{compute\_units=ALL}. The evidence says otherwise, and the correction matters for anyone applying this methodology:
-
-\begin{itemize}[leftmargin=*]
-\item \textbf{The vocoder categorically exceeds ANE tensor limits.} GeneratorFromHar's harmonic input has a last-axis extent of 14,401--144,001 elements across the buckets and its waveform output 72,000--720,000 --- far beyond the $\approx$16,384 per-axis limit documented by the community and confirmed by our own compiler errors (\code{Tensor width goes beyond limit supported (16390 $>$ 16384)}).
-
-\item \textbf{Forcing it fails loudly on every machine; \code{.all} fails silently.} Loading the generator with \code{.cpuAndNeuralEngine} fails ANE compilation (\code{MILCompilerForANE ... ANECCompile() FAILED}) on every Mac tested, and in an April 2026 ablation with the pre-fix generator geometry, the fallback execution ran $\approx$54$\times$ slower than CPU+GPU ($\approx$1517 ms vs $\approx$28 ms on M2 Ultra, 3 s bucket).\footnote{An isolated single-model \code{predict()} benchmark used for this placement ablation. It is distinct from the $\approx$2 ms generator figure in \S\ref{sec:cs1-stages}, which is the generator's marginal share of end-to-end wall time, obtained by subtracting the other three models' costs from the observed pipeline total.} Under \code{.all}, macOS silently reroutes the rejected subgraph --- the model ``works'' and the developer learns nothing. iOS was stricter: on iOS 26.5, \code{.all} hard-failed at predict time on both test iPhones (on iOS 27.0.1 it runs; \S\ref{sec:cs1-iphone}).
-
-\item \textbf{The shipped policy is therefore explicit and staged}: DecoderPre on \pth{.cpuAndNeuralEngine}; Duration, F0Ntrain, and GeneratorFromHar on \code{.cpuAndGPU}. The same compute policy runs on Mac and iPhone, so the cross-device numbers are policy-matched (the generator package differs: fixed buckets on the Macs, flexible on the iPhones).
-
-\item \textbf{Surface-level graph surgery did not change placement.} We tested rewrites suggested by ANE reverse-engineering literature --- \code{nn.Linear} $\rightarrow$ 1$\times$1 \code{Conv1d}, native instance-norm lowering, broadcast-AdaIN reformulation, fp16 input dtypes, palettization --- against the fused generator. All passed strict numerical validation; none produced a material runtime improvement, and the Linear$\rightarrow$Conv1d change was reverted. The MIL compiler appears to make these lowering decisions itself; the binding constraint is tensor geometry, not op selection.
-\end{itemize}
-
-The generalizable lesson: \emph{Dense-Static is the candidate set for the ANE, not a guarantee.} Audio-rate tensors need either re-chunking along the time axis to fit admission limits --- future work --- or the honest fallback this paper ships: Core ML-compiled CPU+GPU execution, which is already faster than the eager GPU frameworks.
-
-Across the two case studies, three \emph{distinct} binding constraints governed ANE admission, and we found none of them documented as such by the vendor:
+Across the two workloads, three structural properties governed ANE admission, and we found none of them documented as such by the vendor:
 
 \begin{enumerate}[leftmargin=*]
-\item \textbf{Tensor geometry} (Case Study 1): waveform-rate axes exceed per-axis limits; no op rewrite helps because the constraint is shape, not lowering. Case Study 2 routed around this by construction --- its codec graph stops at STFT-rate features and the host synthesizes PCM.
-\item \textbf{In-graph state mutation} (Case Study 2, \S\ref{sec:cs2-state}): every temporal graph that mutated K/V cache state inside Core ML failed \code{ANECCompile}; the identical math as a stateless step function compiled clean and beat CPU and GPU. The escape is a boundary redesign, not an op substitution.
-\item \textbf{FP16 lowering paths coupled to layout} (Case Study 2, \S\ref{sec:cs2-layout}): the same FP16 program produced finite output on the ANE and non-finite output on CPU and GPU after a channels-first rewrite --- and was non-finite everywhere before it. Admission here is not binary compile success but numerical survival, per compute unit.
+\item \textbf{Tensor geometry} (\S\ref{sec:cs1-wall}--\ref{sec:cs1-fold}): audio-rate axes exceed per-axis limits. Folding the axis into rows, with exact global statistics, admitted the whole vocoder. MRT2 designed the problem out by stopping its codec at feature rate.
+\item \textbf{In-graph state mutation} (\S\ref{sec:cs2-state}): every graph that mutated K/V state inside Core ML failed compilation; the same math as a stateless step compiled and beat the CPU and GPU.
+\item \textbf{Layout-coupled FP16 numerics} (\S\ref{sec:cs2-layout}): one FP16 program was finite only on the ANE, and only after a channels-first rewrite.
 \end{enumerate}
 
-The two case studies also disagree instructively about rewrites: Kokoro's op-level rewrites (Linear $\rightarrow$ 1$\times$1 conv, norm lowerings) changed nothing, while MRT2's layout rewrite changed everything. Both are consistent with one rule: the MIL compiler already makes op-level lowering decisions, so source cosmetics are no-ops, but \emph{structural} properties --- shapes, state boundaries, memory layout --- are the developer's lever, and only a per-stage on-device ablation reveals which structural property is binding.
+Op-level rewrites --- \code{Linear} to 1$\times$1 convolution, normalization lowerings --- changed nothing in either workload; the MIL compiler makes those choices itself. The developer's levers are shapes, state boundaries and layout, and only a per-stage on-device ablation reveals which one is binding. Admission is also not the end of the question: the admitted all-ANE vocoder was 2.2--4.4$\times$ slower than the hybrid at 30 s on every device, and on the M2 Ultra slower than October's GPU pipeline, until the stage was split by op class across both engines (\S\ref{sec:cs1-hybrid}). ``Dense-Static'' is the candidate set for an engine, and op-class cost inside a stage can still favor splitting it.
 
-\subsection{When Surgical Inference Is Worth the Effort}\label{sec:disc-worth}
+\subsection{What Did Not Work}\label{sec:disc-negative}
 
-Surgical Inference required substantial engineering: per-bucket Core ML exports with numerical validation, a Swift package with custom DSP, per-stage compute-unit ablations, and a counterbalanced bakeoff harness. This effort is justified when:
+Failures shaped the pipeline as much as successes. In Kokoro: a monolithic export (\S\ref{sec:cs1-monolith}); op-level ANE rewrites (\S\ref{sec:cs1-wall}); sampled AdaIN statistics (1--4 dB); FP16 pre-scaling of AdaIN variance (16 dB, subnormal flush); fusing the three parallel convolution branches into one ANE call (0.5--0.85 ms saved per call, at the cost of ANE/GPU overlap); \code{.fastPrediction} specialization (no change); private \code{e5rt} dispatch (about 0.2 ms per call); QoS and work-interval settings, pre-warm loops and GPU-to-ANE event chaining (no gain); moving DecoderPre or the LSTMs to the GPU (slower, or changed duration rounding and therefore output); splitting a long first sentence for earlier audio (switching generators cost more than it saved); and halos below 8 frames. In MRT2: \code{MLState} caches, twelve depth predictions per frame, and FP32 or channels-last decoders.
 
-\begin{itemize}[leftmargin=*]
-\item \textbf{The workload is compute-bound and parallelizable.} Dense convolutional vocoders, image denoisers, and speech encoders fit. Memory-bandwidth-bound autoregressive transformers do not.
-\item \textbf{The pipeline has distinct stages.} A single undifferentiated block offers fewer decomposition opportunities. Models with encoders, decoders, samplers, DSP, token logic, or post-processors are better candidates.
-\item \textbf{Target hardware spans a range of devices.} The advantage matters most on constrained hardware: PyTorch MPS fails the 15 s and 30 s inputs on every Mac tested, and MLX is jetsam-killed on a 4 GB phone, where the Core ML pipeline completes.
-\item \textbf{Real-time or interactive constraints matter.} For offline batch synthesis on a workstation, PyTorch MPS may be sufficient. For an app that must synthesize speech while rendering UI or running an assistant model, freeing GPU time matters. Case Study 2 is the limiting case: under a hard streaming deadline, per-stage placement and host-owned glue were how we met the deadline on the A17 Pro, not an optional optimization.
-\end{itemize}
+\subsection{When Surgical Inference Is Worth It}\label{sec:disc-worth}
 
-The methodology is less useful for:
-
-\begin{itemize}[leftmargin=*]
-\item LLM inference (memory-bandwidth-bound; the ANE provides no bandwidth advantage --- and Case Study 2's bandwidth invariant, \S\ref{sec:cs2-bandwidth}, quantifies exactly why)
-\item Small one-shot models where Python overhead is already negligible
-\item Research contexts where PyTorch flexibility outweighs deployment performance
-\end{itemize}
-
-\subsection{Applicability to Other Workloads}\label{sec:disc-applicability}
-
-The empirical claims of this paper now cover two structurally different generative systems: a feed-forward batch TTS pipeline (Kokoro-82M) and a hard-real-time autoregressive streaming music model (MRT2). The second port is evidence that the decomposition procedure (\S\ref{sec:procedure}) is not TTS-specific: the same motif classification, the same per-stage ablation, and the same host-glue discipline produced a working pipeline in a regime with no buckets, no batch boundary, and a stateful transformer on the hot path. Beyond these two:
-
-\begin{itemize}[leftmargin=*]
-\item \textbf{Speech and audio.} Other TTS architectures, neural codecs, source-filter vocoders, speech enhancement, and Whisper-style encoder-decoders all mix dense neural blocks with DSP, masking, or sequence logic. The ANE admission analysis (\S\ref{sec:disc-ane}) transfers directly: vocoders that emit audio-rate tensors need time-axis chunking or host-side synthesis from feature-rate tensors (the route Case Study 2 took), and streaming encoders with cache state should be exported as stateless step functions (\S\ref{sec:cs2-state}).
-\item \textbf{Image and video generation.} Encoders, denoisers, VAE decoders, schedulers, safety checkers, and post-processing often have different hardware affinities. Dense fixed-shape blocks are natural Core ML candidates; schedulers and dynamic post-processing belong in native code.
-\item \textbf{Agentic local assistants.} A local LLM may remain on GPU because it is memory-bandwidth-bound, while speech I/O, wake-word models, embedding models, rerankers, image encoders, and audio decoders can be decomposed away from the GPU. The useful question is not ``can the LLM run on ANE?'' but ``which surrounding stages can leave the GPU alone?'' Case Study 2's power data (\S\ref{sec:cs2-power}) shows a nontrivial generative workload streaming with zero process GPU impact, in its earlier all-ANE configuration.
-\end{itemize}
+The method costs real engineering: per-bucket exports with validation, native DSP, per-stage ablations, a disciplined benchmark harness. It pays when the workload is compute-bound and has distinct stages (vocoders, codecs, image decoders, speech encoders), when it must run across a range of devices --- the margin is largest on base chips and phones, where GPU frameworks fail outright (in October 2026, PyTorch MPS failed the 15 s and 30 s inputs on every Mac and kokoro-ios was killed for memory on the 4 GB phone) --- and when the GPU is needed for something else. It pays least for large language models, whose cost is weight bandwidth (\S\ref{sec:cs2-bandwidth}), and for small models where framework overhead is already negligible.
 
 \subsection{Limitations}\label{sec:disc-limitations}
 
-\textbf{Residency and power instrumentation is asymmetric across case studies.} Case Study 1's published runs have no Instruments Core ML timelines or power traces; its staged policy states placement \emph{intent} (the iPhone \code{.all} rejection on iOS 26.5 indicates the scheduler honors stage policies), but the fraction of DecoderPre actually executing on ANE silicon is unmeasured. Case Study 2 closes this gap for its own pipeline --- per-model ANE hardware intervals, app-attributed-GPU-absence checks, and paired Power Profiler captures (\S\ref{sec:cs2-power}) --- and that tooling should be back-ported to the Kokoro benchmarks.
+\textbf{Single vendor.} The motifs and procedure do not assume Core ML, but the admission catalog is Apple-specific; other NPU toolchains (QNN, LiteRT delegates) need their own ablations.
 
-\textbf{Case Study 2's power comparison predates its correctness fixes.} The paired ANE-vs-GPU power captures ran identical graphs in both arms, so the policy-controlled deltas (GPU impact removed, CPU instructions $-$56\%) stand, but the absolute duty cycles were measured on a producer later found semantically incorrect (\S\ref{sec:cs2-host}) and do not transfer to the corrected pipeline.
+\textbf{Instrumentation asymmetry.} MRT2 has Instruments residency and paired power captures; Kokoro has \code{MLComputePlan} placement evidence on a Mac and on-device compute-plan placement on the A14, but no Instruments residency traces and no power captures yet.
 
-\textbf{Case Study 2's sustained envelope is open.} The corrected pipeline is faster than real time on the A17 Pro over bounded runs but fails the 10-minute foreground soak by thermal throttling to $\approx$0.95$\times$ real time (screen on, UI Metal load included), and the A14 is above the frame budget entirely ($\approx$50 ms/frame). The named fixes --- re-landing the temporal stack on the ANE via the stateless boundary, and cutting temporal weight bytes --- are motivated by the \S\ref{sec:cs2-state}/\S\ref{sec:cs2-bandwidth} findings but not yet demonstrated. ANE admission also proved \emph{instance-fragile}: an artifact that compiled to the ANE in a test harness later fell back to CPU inside the shipping app (\S\ref{sec:cs2-state}), so placement must be re-proven per process, not per artifact.
+\textbf{Quality evidence is narrow.} Both case studies rest on numerical gates plus listening checks: automated blind model-judged lineups with known-bad controls during development, and, for Kokoro's frozen build, one unblinded listener. Neither is a human MOS study.
 
-\textbf{No concurrent workload benchmark.} We have not yet measured synthesis while a local LLM runs on the GPU. The paper's GPU-headroom argument follows from shorter wall time, staged placement, partial CPU/ANE execution, and Case Study 2's zero-GPU-impact traces of its earlier all-ANE configuration, but it needs a direct co-scheduling benchmark before becoming a throughput claim.
-
-\textbf{MPS fallback overhead in Config D.} Config D uses \code{PYTORCH\_ENABLE\_MPS\_FALLBACK=1}, the realistic developer default, so its timings include CPU fallback costs for unsupported ops. The MLX comparison (\S\ref{sec:cs1-mlx}) partially addresses this --- MLX is a fallback-free Metal path and the Surgical pipeline still wins by 1.8--2.4$\times$ --- but a fallback-free MPS variant was not benchmarked.
-
-\textbf{Mixed OS and a mild-load laptop.} Each Mac's results come from one session, but not one OS: the M2 Ultra ran macOS 26.7.1 and the M2 Air and M1 Mini ran macOS 27.0.1. The M2 Air never cleared the quiet-host gate (load 2.2--2.9), so its rows are mild upper bounds (\S\ref{sec:cs1-setup}).
-
-\textbf{An OS regression shapes the shipped configuration.} The library's flexible-length generator, which avoids paying for bucket padding, can abort the process on macOS 27.0.1 inside MPSGraph; the abort is intermittent and cannot be caught. The runtime therefore uses the fixed-bucket generators on OS 27, and the main tables use them on every Mac for comparability.
-
-\textbf{Remaining frontier on low-end hardware.} In June 2026, laishere's chain-only Core ML numbers were faster than our full-pipeline numbers on the M1 Mini's short and medium buckets. That comparison cannot be repeated on macOS 27.0.1, where laishere's converter fails (\S\ref{sec:cs1-coreml-ports}). On the M2 Ultra the Surgical pipeline is now 1.9--2.0$\times$ faster. On base chips our generator stage dominates wall time (\S\ref{sec:cs1-stages}), and that is where any remaining gap would be.
-
-\textbf{Audio quality evaluation is automated, not human, and has not been rerun on the current pipeline.} In July 2026, to move beyond informal listening checks, we ran a structured perceptual evaluation of Case Study 1's then-shipped pipeline: the PyTorch eager reference (float32, CPU) versus the Swift + Core ML pipeline under its staged compute policy, judged by a multimodal audio model (Gemini) in blind paired lineups with a known-bad control and repeat-vote agreement, alongside the objective waveform gate. It used four frozen inputs (2.8--27.4 s); the benchmarks in \S\ref{sec:cs1-eval} use five, and the 10 s input was never listening-tested. The initial run passed the short and medium buckets cleanly --- the judge rated the Core ML output ``perceptually indistinguishable'' from the reference while unambiguously rejecting a speech-shaped static control that the objective waveform gate cannot catch --- and failed both long buckets: 3/3 votes on ``unnatural silent gaps'' at 15 s, and 2/2 votes on ``background static and hiss'' at 30 s, backed by signal analysis (phrase pauses measured 40--110 ms long; 1--9 kHz energy at 0.35--0.48$\times$ of the gain-matched reference). Stage-boundary tensor bisection traced both to implementation defects invisible to per-stage matched-input correlation: a native post-process that silenced punctuation-adjacent whitespace spans carrying real speech ($-$11 to $-$22 dBFS word onsets and phrase-final decays), and an export-time inverse-STFT substitution that scaled every interior frequency bin of the one-sided spectrum at half amplitude --- a defect present in \emph{every} bucket and every compute policy, which the judge only flagged where exposure was longest. A third, compounding defect surfaced during root-causing rather than from the perceptual gate directly: the Swift harmonic-source noise generator's xorshift64 RNG had an absorbing zero state, so the fixed seed used for every evaluated clip produced a degenerate DC-and-Nyquist-only ``noise'' signal instead of broadband Gaussian noise. After fixing all three (suppression narrowed to punctuation tokens; corrected one-sided iSTFT weights re-exported, matching the reference generator to $5\times10^{-7}$ max abs; the RNG reseeded via SplitMix64 scrambling so no seed reaches the absorbing state), all four inputs passed the blind evaluation (15 s 2/2, 30 s 2/2) and the control was still rejected.
-
-Three later findings changed the pipeline that evaluation certified. The punctuation-narrowing ``fix'' was itself found to cut speech --- PyTorch renders $-$8 to $-$25 dBFS onsets and decays inside punctuation-owned spans --- and the fade was removed. Bucket padding had contaminated normalization statistics: with one 2.8 s utterance forced through every bucket, F0 sat at 15 dB SNR against a native-length run even at 93\% fill, and the decoder output at $-$4.7 dB at 9\% fill; masking fixed it (\S\ref{sec:cs1-export}). And the Swift STFT reported $-\pi$ where PyTorch reports $+\pi$ at the Nyquist bin, in 10,658 frames of the frozen 15 s input, which put +1 to +3 dB of excess energy above 6 kHz into every earlier render. All three are fixed, but the blind evaluation has not been rerun on the current pipeline. It is also a model-judged evaluation, not a human MOS study: it demonstrated the discriminative power to catch shipped defects, but it does not calibrate absolute quality scores, and its pass verdicts apply to the July pipeline. Commands, verdicts, signal analyses, and the root-cause chain are recorded in the repository (Appendix~\ref{app:artifacts}). Case Study 2 reports token-level parity, embedding-space adherence and stereo-correlation metrics against the MLX reference, and blind automated listening gates with known-bad controls --- also short of a formal MOS study, and its adherence scores sit below the upstream runtime-CFG reference because the on-device pipeline bakes guidance at export time.
-
-\textbf{Single-vendor evaluation.} All measurements are on Apple Silicon. The motif taxonomy and the decomposition procedure do not assume Core ML, but the constraint catalog (\S\ref{sec:disc-ane}) is Apple-specific; other NPU toolchains (Qualcomm QNN, LiteRT delegates) impose different admission rules and would need their own per-stage ablations before the quantitative claims transfer.
-
-\textbf{Hardware coverage.} Macs: M1, M2, M2 Ultra; iPhones: A14, A17 Pro (both case studies use the same two phones). M3/M4 Macs and A18/A19-class phones were not tested.
+\textbf{Two workloads.} ``Structure decides admission'' holds in both workloads we studied. It is an empirical regularity across two models, not a law.
 
 \section{Related Work}\label{sec:related}
 
-\textbf{Core ML deployment of large models.} Apple has published a Core ML conversion of Stable Diffusion~\citep{apple-stable-diffusion}, which already ships the pipeline as separate Core ML packages per model (text encoder, UNet, VAE decoder), and vendor guidance for ANE-friendly transformer deployment~\citep{apple-ane-transformers}; the latter documents channels-first layout conventions as a throughput optimization, which our \S\ref{sec:cs2-layout} finding extends to a numerical-survival condition. In the speech domain, whisper.cpp~\citep{whispercpp} added a Core ML encoder path alongside its Metal decoder, and WhisperKit~\citep{whisperkit} decomposes Whisper into per-stage Core ML models with per-stage compute units and ships them in production on Apple devices. These are close precedents, and Surgical Inference systematizes their practice rather than inventing it. What this paper adds is an explicit cross-model procedure (motif classification, per-stage placement ablation, host-glue validation rules), the measured admission findings that make the ablation necessary, the negative results, and two end-to-end pipelines on structurally different generative workloads.
+\textbf{Per-stage Core ML deployment.} Apple's Stable Diffusion port~\citep{apple-stable-diffusion} ships separate packages per model, and Apple's ANE transformer guidance~\citep{apple-ane-transformers} documents channels-first layout for throughput, which \S\ref{sec:cs2-layout} extends to numerical survival. whisper.cpp~\citep{whispercpp} runs Whisper's encoder through Core ML beside a Metal decoder, and WhisperKit~\citep{whisperkit} ships Whisper as per-stage Core ML models with per-stage compute units. Surgical Inference systematizes this practice; it adds the reshaping step for rejected stages, the admission findings that make per-stage ablation necessary, intra-stage ANE/GPU co-execution, and negative results.
 
-\textbf{Live music generation on device.} Magenta RealTime and its successor MRT2~\citep{magenta-rt,magenta-rt-repo} are, to our knowledge, the first open-weights live-music models with a real-time streaming contract; the upstream deployment path is MLX on M-series Macs, with desktop standalone and plugin surfaces. We are not aware of prior work running this model class in real time on a phone, nor of prior documentation of the state-mutation ANE admission cliff (\S\ref{sec:cs2-state}) or the layout-dependent FP16 survival result (\S\ref{sec:cs2-layout}) that doing so surfaced; Apple's stateful-model documentation~\citep{mlstate} describes the \code{MLState} API but does not specify ANE admission behavior for graphs that mutate state in-graph. The SpectroStream codec follows the residual-vector-quantization lineage of SoundStream~\citep{soundstream}.
+\textbf{Kokoro ports.} laishere/kokoro-coreml~\citep{laishere} splits Kokoro's vocoder into several Core ML packages with partial ANE placement (\S\ref{sec:cs1-wall}); soniqo/speech-swift~\citep{speech-swift} ships a Core ML Kokoro with a fixed-length output; mlalma/kokoro-ios~\citep{kokoro-ios} is the MLX Swift port we compare against. Piper~\citep{piper} and MeloTTS~\citep{melotts} target CPU inference; we did not benchmark them.
 
-\textbf{Core ML Kokoro ports.} laishere/kokoro-coreml~\citep{laishere} runs a seven-package ANE-resident Kokoro vocoder chain and is the strongest prior art for this specific model; we benchmark against it directly (\S\ref{sec:cs1-coreml-ports}) and adopt its chain-only boundary caveat when comparing. soniqo/speech-swift~\citep{speech-swift} ships a Core ML Kokoro for iOS with a fixed-length output artifact. mlalma/kokoro-ios~\citep{kokoro-ios} is the MLX Swift port we compare against on-device (\S\ref{sec:cs1-iphone}).
+\textbf{Reverse-engineering the ANE.} Orion~\citep{orion} and community guides~\citep{ane-field-guide} document per-axis limits, per-dispatch costs and preferred lowerings. We corroborate the geometry limit, find that their op-level rewrites do not change Core ML runtime, and add folding as an exact escape from the limit, the state-mutation cliff and layout-dependent FP16 survival.
 
-\textbf{On-device TTS.} Piper~\citep{piper} targets edge deployment with CPU-only inference. MeloTTS~\citep{melotts} provides real-time multilingual synthesis on CPU. These systems prioritize portability across CPUs; we did not benchmark them.
+\textbf{Heterogeneous scheduling.} StarPU~\citep{starpu} and Legion~\citep{legion} map tasks across CPU/GPU systems; ExecuTorch~\citep{executorch} and LiteRT delegates partition graphs across mobile backends at runtime. Closest to our hybrid generator, $\mu$Layer~\citep{mulayer} splits single layers across a phone's CPU and GPU, CoDL~\citep{codl} co-executes inference on CPU and GPU, and Band~\citep{band} coordinates multiple DNNs across mobile processors; for LLMs, llm.npu~\citep{llmnpu}, PowerInfer-2~\citep{powerinfer2} and HeteroLLM~\citep{heterollm} split inference across a phone's NPU, GPU and CPU. These systems mostly target Android SoCs with programmable access to each processor. We work through Core ML, whose ANE admission is opaque and must be probed, and split a stage by op class between an NPU and a GPU over shared memory.
 
-\textbf{MLX for Apple Silicon.} MLX~\citep{mlx} provides a NumPy-like GPU interface for Apple Silicon. MLX is complementary to our work: Sequential-Dynamic stages of a larger pipeline could use MLX while Dense-Static stages use Core ML. Our measurements (\S\ref{sec:cs1-mlx}, \S\ref{sec:cs1-iphone}) characterize where the Core ML path wins for convolutional TTS today, including the memory-bounded regime where MLX fails outright.
-
-\textbf{Reverse engineering the ANE.} The Orion project~\citep{orion} and community field guides~\citep{ane-field-guide} document reverse-engineered ANE constraints (per-dispatch overheads, tensor geometry limits, preferred lowerings). Our experiments corroborate the geometry limits as binding for audio-rate tensors, and find that source-level op rewrites suggested by this literature (e.g. Linear $\rightarrow$ 1$\times$1 conv) do not change Core ML runtime performance --- the MIL compiler already makes those decisions (\S\ref{sec:disc-ane}). Case Study 2 adds two constraints we did not find in this literature: in-graph state mutation as a compile-time admission cliff for streaming transformers, and FP16 numerical survival that differs across compute units as a function of internal layout (\S\ref{sec:disc-ane}).
-
-\textbf{Heterogeneous accelerator scheduling.} The problem of mapping computation to heterogeneous accelerators has been studied extensively in CPU/GPU systems (StarPU~\citep{starpu}, Legion~\citep{legion}) and data-center contexts (TPU/GPU/CPU). In mobile deployment, delegate-based runtimes (ExecuTorch~\citep{executorch}, LiteRT/NNAPI) partition a single graph across NPU backends at runtime. A line of mobile-systems work schedules inference across a phone's processors directly: $\mu$Layer~\citep{mulayer} splits single layers across CPU and GPU, CoDL~\citep{codl} co-executes DNN inference on CPU and GPU, and Band~\citep{band} coordinates multiple DNNs across heterogeneous mobile processors; for LLMs, llm.npu~\citep{llmnpu} offloads prefill to the NPU, and PowerInfer-2~\citep{powerinfer2} and HeteroLLM~\citep{heterollm} split inference across a smartphone's heterogeneous processors. These systems schedule DNN or LLM operators on Android phones, mostly Qualcomm SoCs, with programmable access to each processor. This paper studies a different constraint surface: Apple's Core ML, whose ANE admission is opaque and must be probed per stage, and the decomposition of generative audio pipelines into separately compiled stages whose partition is an explicit, measured design artifact rather than a runtime decision.
+\textbf{Live music on device.} MRT2's upstream path is MLX on M-series Macs~\citep{magenta-rt,magenta-rt-repo}. We know of no prior real-time phone deployment of this model class, nor prior documentation of the state-mutation cliff; Apple's \code{MLState} documentation~\citep{mlstate} does not specify ANE behavior for graphs that mutate state.
 
 \section{Conclusion}\label{sec:conclusion}
 
-We presented Surgical Inference, a methodology for decomposing generative models into smaller neural submodels and native stages that can be scheduled across a heterogeneous SoC, and evaluated it on two structurally opposite workloads. By classifying stages into three computational motifs --- Sequential-Dynamic, Data-Dependent Logic, and Dense-Static --- matching each to candidate hardware, and resolving final placement with per-stage measurement, we produced a Kokoro-82M pipeline that is 1.8--2.4$\times$ faster than MLX, 2.7--6.5$\times$ faster than PyTorch MPS where MPS completes at all, and 3.2--6.8$\times$ faster than PyTorch CPU, across three Macs spanning the consumer-to-workstation range. The same model families deploy to iPhone, where the pipeline beats the MLX Swift port by 2.0--3.2$\times$ and completes the 30 s input that the MLX port cannot load on a 4 GB phone.
+The ANE rejected Kokoro's vocoder, and the rejection turned out to be about one axis's length. Folding that axis into rows, without changing the math, put the vocoder on the ANE; splitting each stage by op class between the ANE and the GPU made it fast. The result synthesizes 27 s of speech in 309 ms on an M1 Mac Mini, 9.8$\times$ faster than MLX on the same machine, and in 319 ms on an iPhone 15 Pro Max. The same procedure carried a 230M-parameter streaming music model onto a phone, faster than real time in bounded runs though not yet in a 10-minute soak, and found the same pattern twice more: state mutation, not attention, was the compile cliff, and layout decided whether FP16 output was finite.
 
-The same procedure carried Magenta RealTime 2 --- a 230M-parameter autoregressive streaming music model whose upstream real-time path requires an M-series Mac GPU --- onto iPhone hardware, and sharpened the methodology along the way: the Sequential-Dynamic motif is divisible into Dense-Static math and host-owned cache bookkeeping, layout can decide FP16 survival per compute unit, and weight bandwidth sets the cost of each call on bandwidth-bound stages (\S\ref{sec:disc-ane}, \S\ref{sec:cs2-bandwidth}). Residency traces and paired power captures of the earlier all-ANE configuration showed zero app-attributed GPU time. The corrected pipeline, which runs the temporal stage on the GPU and the depth stage on the CPU, is faster than real time on an iPhone 15 Pro Max; the 10-minute thermal envelope and the A14 budget remain open, and we report them as open.
-
-The ``use the GPU'' convention in local inference is suboptimal for compute-bound generative pipelines with distinct stages, and the inverse oversimplification fails too: the Neural Engine is not a substrate that dense graphs simply run on. In both case studies the win comes from decomposition --- static per-stage graphs, native orchestration, deliberate placement, and validated host glue --- with each accelerator contributing where its admission constraints allow. The right question for on-device AI is not ``which single accelerator should run this model?'' but ``what is the smallest set of static neural packages and native kernels that lets the whole chip execute the workload?'' --- for batch synthesis on hardware people already own, and for generative audio that streams in real time from the phone in their pocket.
+The useful question for on-device AI is not ``which accelerator should run this model?'' It is ``what is the smallest set of static packages and native kernels --- each reshaped until its engine admits it --- that lets the whole chip do the work?''
 
 \section*{Acknowledgments}
 
-Several improvements to the Kokoro pipeline reported here came from outside contributors to the open-source repository. Willem Kokke contributed mask-aware bucketing, which replaced the duration model's unrolled BiLSTM with stock LSTM operations and stopped bucket padding from biasing normalization statistics. He also removed the punctuation-span fade, corrected the generator's harmonic-input geometry and the STFT phase sign at the DC and Nyquist bins, ran the harmonic source concurrently, and contributed the flexible-length generator. Ahmed El Hadidi fixed a Swift error-mapping build failure, and David Bitton fixed the Intel (x86\_64) SDK build. We thank them for their work and their careful measurements.
+Several improvements to the Kokoro pipeline came from outside contributors. Willem Kokke contributed mask-aware bucketing, which replaced the duration model's unrolled BiLSTM with stock LSTM operations and stopped bucket padding from biasing normalization statistics; he also removed the punctuation-span fade, corrected the generator's harmonic-input geometry and the STFT phase sign at the DC and Nyquist bins, ran the harmonic source concurrently, and contributed the flexible-length generator. Ahmed El Hadidi fixed a Swift error-mapping build failure, and David Bitton fixed the Intel (x86\_64) SDK build. We thank them for their work and their careful measurements.
 
 \bibliographystyle{plainnat}
 \bibliography{refs}
 
 \appendix
+
 \section{Artifact and Reproduction Map}\label{app:artifacts}
 
 \subsection{Case Study 1 (Kokoro-82M)}
 
-The implementation artifacts for the first case study are in the open-source \code{kokoro-coreml} repository:
-
 \begingroup\let\code\pth
 \begin{itemize}[leftmargin=*]
-\item Swift runtime pipeline: \code{swift/Sources/KokoroPipeline/}
-\item Main pipeline loader and staged compute-unit policy: \code{swift/Sources/KokoroPipeline/KokoroPipeline.swift}
-\item End-to-end synthesis executor and DecoderPre/hn-nsf overlap: \code{swift/Sources/KokoroPipeline/KokoroSynthesisExecutor.swift}
-\item Direct token-to-frame expansion: \code{swift/Sources/KokoroPipeline/MLMultiArrayHelpers.swift}
-\item Harmonic source DSP implementation: \code{swift/Sources/KokoroPipeline/HarmonicSource.swift}
-\item Waveform trim: \code{swift/Sources/KokoroPipeline/KokoroSynthesisExecutor.swift}
-\item Mac bakeoff harness: \code{scripts/bakeoff\_harness.py}
-\item External bakeoff adapters: \code{scripts/external\_bakeoff/}
-\item iPhone benchmark app: \code{ios-bench/}
-\item Monolithic-export control experiment (\S\ref{sec:cs1-monolith}), protocol and verbatim logs: \code{README/Notes/monolithic-coreml-control-experiment.md}
-\item Structured perceptual evaluation (\S\ref{sec:disc-limitations}), protocol, verdicts, and signal analyses: \code{README/Notes/cs1-audio-quality-evaluation-2026-07-14.md}
-\item October 2026 iPhone data (\S\ref{sec:cs1-iphone}): \code{README/Notes/paper-cs1-frozen-rerun-2026-10-20.md}; thermal protocol and Debug-vs-Release methodology from the July 2026 runs: \code{README/Notes/iphone-release-build-mlx-comparison.md}
-\item October 2026 Mac benchmark run (\S\ref{sec:cs1-setup}--\S\ref{sec:cs1-scaling}), protocol, quiet-host log, and result summary: \code{README/Notes/paper-cs1-frozen-rerun-2026-10-20.md} (plan: \code{README/Plans/013-paper-cs1-frozen-rerun-plan.md})
+\item Swift runtime pipeline and staged policy: \code{swift/Sources/KokoroPipeline/} (\code{KokoroPipeline.swift}, \code{KokoroSynthesisExecutor.swift})
+\item Folded generator host code (fold, masks, unfold, iSTFT tail): \code{swift/Sources/KokoroPipeline/FoldedGenerator.swift}; exporter and parity: \code{scripts/probe\_generator\_ane\_fold.py}
+\item Hybrid generator (ANE functions, Metal kernels, shared tensors): \code{swift/Sources/KokoroPipeline/HybridGenerator.swift}, \code{HybridKernels.swift}, \code{HybridArenaLayout.swift}; exporter: \code{scripts/export\_hybrid\_generator.py}
+\item Frozen build: source commit \code{903f1fc1}; its 68 Core ML packages, byte-identical, at Hugging Face revision \code{e65729b9} under \code{coreml/} and \code{coreml-\{dur-ane,f0n-split,dpre-ane,fold,hybrid\}/}
+\item Frozen rerun (plan 014): \code{README/Plans/014-paper-cs1-hybrid-frozen-rerun-plan.md}; package manifest with SHA-256 for 68 packages and both iPhone apps: \code{paper/data/frozen\_rerun\_014/manifest.json}; quality and per-call timing records: \code{paper/data/frozen\_rerun\_014/}
+\item Split duration: \code{swift/Sources/KokoroPipeline/SplitDuration.swift}; harmonic source: \code{HarmonicSource.swift}
+\item Private e5rt path (aside only): \code{swift/Sources/KokoroPipeline/E5Runtime.swift}
+\item ANE lab (per-primitive timing app and driver): \code{tools/ane-lab/}
+\item Generator investigation log, op admission, numerics, rejected experiments: \code{README/Notes/ane-folded-generator.md}
+\item Frozen rerun plan, protocol and results: \code{README/Plans/014-paper-cs1-hybrid-frozen-rerun-plan.md}, \code{README/Notes/paper-cs1-hybrid-rerun-2026-10-23.md}
+\item Mac harness: \code{swift/Sources/KokoroBenchmark/}, \code{scripts/bakeoff\_harness.py}; iPhone app: \code{ios-bench/}
+\item October 2026 pipeline run (Appendix~\ref{app:october}): \code{README/Notes/paper-cs1-frozen-rerun-2026-10-20.md}
+\item Monolithic-export control: \code{README/Notes/monolithic-coreml-control-experiment.md}; July 2026 listening evaluation: \code{README/Notes/cs1-audio-quality-evaluation-2026-07-14.md}
 \end{itemize}
 \endgroup
 
-The pre-converted Core ML packages are published with the repository release artifacts and on the project Hugging Face model page.
+\subsection{Case Study 2 (Magenta RealTime 2)}
 
-\subsection{Case Study 2 (Magenta RealTime 2 / Crossfade)}
-
-The conversion and validation layer is public in the \href{https://github.com/mattmireles/magenta-realtime-2-iphone}{\code{magenta-realtime-2-iphone}} repository and covers both artifact generations:
-
-\begingroup\let\code\pth
-\begin{itemize}[leftmargin=*]
-\item Corrected exporters reproducing the \S\ref{sec:cs2-state}--\S\ref{sec:cs2-bandwidth} findings: \code{exporters/convert\_temporal\_body\_carry.py} (stateless host-owned-cache temporal boundary, \S\ref{sec:cs2-state}), \code{exporters/convert\_depth\_body\_rollout.py} (in-graph FP16 depth rollout, \S\ref{sec:cs2-bandwidth}), and \code{exporters/convert\_spectrostream\_decoder.py --fp16-rescale} (the finite-FP16 channels-first decoder path, \S\ref{sec:cs2-layout})
-\item Superseded exporters retained and labeled as negative-result artifacts: running the stateful temporal exporter reproduces the \code{ANECCompile} $-$14 rejection, and the decoder without the FP16-safe path reproduces the non-finite output
-\item Numerical-parity validators and validation receipts: \code{validation/} (including the depth rollout's 0/900 token-exactness receipt)
-\item Reference fixtures, graph-teardown and KV-cache documentation, and the artifact inventory with tensor contracts: \code{fixtures/}, \code{docs/}, \code{MODELS.md}
-\end{itemize}
-\endgroup
-
-Pre-built \code{.mlpackage} binaries on the \href{https://huggingface.co/mattmireles/magenta-realtime-2-iphone}{Hugging Face mirror} are the superseded generation at the time of writing; the corrected artifacts are reproducible from the exporters above, and \code{MODELS.md} states per artifact what is uploaded versus reproducible-from-exporter. The streaming runtime and instrumentation live in the \code{crossfade} repository, a fork of \code{magenta/magenta-realtime} that is private at the time of writing (artifacts available from the author). Within it:
-
-\begingroup\let\code\pth
-\begin{itemize}[leftmargin=*]
-\item Conversion wrappers and exporters: \code{magenta\_rt/coreml/}, \code{scripts/convert\_mrt2\_*.py}, \code{scripts/convert\_spectrostream\_decoder\_*.py}
-\item Numerical-parity validators (vs the MLX reference): \code{scripts/validate\_mrt2\_*.py}, \code{scripts/verify\_spectrostream\_streaming\_decode.py}
-\item On-device probe used for the falsification ladder and placement matrices: \code{examples/ios/CoreMLMRT2Probe/}
-\item Production runtime (stateless temporal boundary, depth rollout, SPSC ring, reservoir/backpressure): \code{Sources/CrossfadeRuntime/}, \code{Sources/CrossfadeRuntimeCore/}
-\item Residency-proof runner emitting the machine-checkable \code{placement-evidence.json}: \code{scripts/run\_coreml\_trace\_device.py} with \code{scripts/summarize\_coreml\_xctrace\_exports.py}
-\item Paired ANE-vs-GPU power capture with the comparability gate: \code{scripts/run\_power\_profiler\_pair\_device.py} with \code{scripts/summarize\_power\_xctrace\_exports.py}
-\item Sustained-run log analyzer (duty cycle, backpressure share, underruns, thermal): \code{scripts/analyze\_crossfade\_runtime\_host\_log.py}
-\item Investigation ledgers with per-run device log paths: \code{README/Notes/mrt2-coreml-proof-v1.md}, \code{README/Notes/mrt2-small-graph-teardown-v1.md}
-\end{itemize}
-\endgroup
+The public \href{https://github.com/mattmireles/magenta-realtime-2-iphone}{\code{magenta-realtime-2-iphone}} repository holds the corrected exporters (stateless temporal boundary, in-graph FP16 depth rollout, finite-FP16 channels-first decoder), the superseded exporters as negative-result artifacts (they reproduce the \code{ANECCompile} $-$14 rejection and the non-finite decoder), parity validators with receipts (including the 0/900 token-exactness result), fixtures and \code{MODELS.md}, which states per artifact what is uploaded versus reproducible from an exporter. The streaming runtime, on-device probe, residency-proof runner, paired power capture and sustained-run analyzer live in the private Crossfade fork of \code{magenta/magenta-realtime} (available from the author).
 
 \section{Benchmark Boundaries}\label{app:boundaries}
 
-The benchmark boundary used throughout Case Study 1 is:
+Kokoro: phoneme token IDs and voice embedding in, 24 kHz PCM resident in memory out. Model download, process startup, first-use compilation, playback and text-to-phoneme conversion are excluded unless a comparison's public API forces a wider boundary; kokoro-ios takes raw text, so its times include a G2P pass (0.17--1.05 ms per input in isolation). MRT2: per-stage times at the Core ML prediction call (warmed, p50/p99, with placement evidence from the same run); end-to-end claims at the audio contract (frames into and out of the render ring, underruns, ring watermarks and thermal state logged per iteration).
 
-\begin{verbatim}
-phoneme token IDs + voice embedding
-    -> full synthesis pipeline
-    -> 24 kHz PCM waveform resident in memory
-\end{verbatim}
+\section{The October 2026 Pipeline}\label{app:october}
 
-Model download, process startup, first-use Core ML compilation/cache effects, playback, and text-to-phoneme conversion are excluded unless a comparison implementation's public API forces a wider boundary. Such boundary differences are disclosed in \S\ref{sec:cs1-coreml-ports} and \S\ref{sec:cs1-iphone}.
+The previous pipeline ran the generator on the GPU in fixed buckets and is the ablation's R0. Its October 2026 run (commit \code{d32ef0d3}, Hugging Face revision \code{dadebca4}; M2 Ultra on macOS 26.7.1, others on 27.0.1; the M2 Air never cleared the load gate) compared it with every baseline we could build. We keep these results because the rerun does not repeat the PyTorch arms, and we do not mix sessions in any ratio.
 
-Case Study 2 uses two boundaries appropriate to streaming. Stage and per-frame timings are measured at the Core ML prediction call (warmed, p50/p99 over sustained runs, with \code{MLComputePlan} or Instruments placement evidence attached to the same run). End-to-end claims are measured at the audio contract: frames pushed into and pulled from the render ring by the live \code{AVAudioSourceNode}, with underrun events, dropped frames, ring fill watermarks, and \code{ProcessInfo.thermalState} logged per generation iteration. Sustained results report the full counter set rather than a single latency figure, because a streaming pipeline can have excellent median latency and still fail its product contract at minute seven.
+\begin{table}[h]
+\centering
+\small
+\caption{October 2026 pipeline (F$_\text{Oct}$) vs baselines, warm medians (ms), same session per machine. A: Python prefix + Core ML vocoder; D: PyTorch MPS; E: PyTorch CPU. ``err'': MLX broadcast-shape error (3 s) or MPS 65,536-channel limit (15 s, 30 s).}
+\label{tab:october}
+\begin{tabular}{llrrrrr}
+\toprule
+Machine & Input & F$_\text{Oct}$ & MLX & A & D & E \\
+\midrule
+M2 Ultra & 3s  & 44.5   & err    & 124  & 193  & 259  \\
+M2 Ultra & 30s & 286.5  & 685.3  & 631  & err  & 1921 \\
+M2 Air   & 3s  & 123.4  & err    & 236  & 367  & 615  \\
+M2 Air   & 30s & 1175.5 & 2150.0 & 3381 & err  & 6114 \\
+M1 Mini  & 3s  & 205.3  & err    & 281  & 553  & 654  \\
+M1 Mini  & 30s & 1635.5 & 3003.7 & 2066 & err  & 6487 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Across all five buckets the October pipeline was 1.8--2.4$\times$ faster than MLX, 2.7--6.5$\times$ faster than PyTorch MPS where MPS completed, and 3.2--6.8$\times$ faster than PyTorch CPU. On the iPhones (iOS 27.0.1, flexible GPU generator) it took 1,721 ms (A17 Pro) and 4,017 ms (A14) for the 30 s input, 2.6--3.2$\times$ and 2.0--2.2$\times$ faster than kokoro-ios; kokoro-ios was killed for memory at 30 s on the A14. laishere/kokoro-coreml's chain-only boundary excludes G2P and feed preparation; on the M2 Ultra the October pipeline was 1.9--2.0$\times$ faster, and its converter aborts on macOS 27.0.1. Full tables: \code{README/Notes/paper-cs1-frozen-rerun-2026-10-20.md}.
 
 \end{document}

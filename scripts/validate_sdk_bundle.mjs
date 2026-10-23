@@ -64,7 +64,7 @@ async function listFiles(root) {
   return files.sort();
 }
 
-/** Computes a stable tree digest for one `.mlpackage`. */
+/** Computes a stable tree digest for one model directory (`.mlpackage` or coreml/hybrid). */
 async function hashPackage(packagePath) {
   const digest = createHash('sha256');
   let fileCount = 0;
@@ -102,12 +102,20 @@ async function verifyFile(bundleRoot, entry) {
 async function validateBundle(bundleRoot) {
   const manifest = JSON.parse(await readFile(path.join(bundleRoot, 'KokoroRuntimeManifest.json'), 'utf8'));
   const hosted = JSON.parse(await readFile(path.join(bundleRoot, 'HostedManifest.json'), 'utf8'));
+  // Version 2 allows directory entries such as coreml/hybrid; nothing else ships.
+  if (manifest.schema_version !== 2) {
+    throw new Error(`unsupported KokoroRuntimeManifest schema_version: ${manifest.schema_version}`);
+  }
   const hostedPaths = hosted.files.map((file) => file.path).sort();
   if (new Set(hostedPaths).size !== hostedPaths.length) {
     throw new Error('HostedManifest.json contains duplicate file paths');
   }
   for (const pkg of manifest.model_packages) {
-    const actual = await hashPackage(await containedPath(bundleRoot, pkg.path));
+    const packagePath = await containedPath(bundleRoot, pkg.path);
+    if (!pkg.path.startsWith('coreml/') || !(await stat(packagePath)).isDirectory()) {
+      throw new Error(`model package is not a directory under coreml/: ${pkg.path}`);
+    }
+    const actual = await hashPackage(packagePath);
     if (
       actual.tree_sha256 !== pkg.tree_sha256 ||
       actual.file_count !== pkg.file_count ||

@@ -1,10 +1,18 @@
 % fig-kokoro-pipeline.tex
-% CS1 (Kokoro-82M) decomposed inference pipeline.
-% Data: paper/main.tex Section 4.1 (shipped staged compute policy and
-%       DecoderPre || hn-nsf concurrency).
-% Four Core ML model families, three native Swift stages. Per-stage compute-unit
-% annotations: DecoderPre = .cpuAndNeuralEngine; Duration, F0Ntrain,
-% GeneratorFromHar = .cpuAndGPU; alignment, pad and trim = Swift (CPU).
+% CS1 (Kokoro-82M) decomposed inference pipeline, shipped placement.
+% Data: paper/main.tex Section 4.1 and Table tab:cs1-placement (shipped
+%       placement per stage), Section sec:cs1-hybrid (hybrid generator:
+%       53 ANE convolution functions, AdaIN/Snake/joins in Metal, IOSurface
+%       shared memory, >=7 s; folded all-ANE below 7 s and as fallback).
+% Four Core ML model families, three native Swift stages. Per-stage placement:
+%   Duration  = BERT front Core ML .cpuAndNeuralEngine + LSTM back Core ML .cpuOnly
+%   Alignment = Swift (CPU)
+%   F0Ntrain  = front Core ML .cpuOnly + back Core ML .cpuAndNeuralEngine
+%   Pad       = host materialization
+%   DecoderPre = Core ML .cpuAndNeuralEngine, concurrent with hn-nsf (Swift/vDSP)
+%   Generator = hybrid ANE convolutions + Metal (GPU) elementwise (>=7 s);
+%               folded all-ANE below 7 s and as fallback
+%   iSTFT tail + Trim = Swift (CPU)
 % Build: tectonic paper/figures/fig-kokoro-pipeline.tex
 \documentclass[border=6pt]{standalone}
 \usepackage[T1]{fontenc}
@@ -16,9 +24,10 @@
 
 % Okabe-Ito-derived, colorblind-safe fills; distinct border dash = redundant
 % (grayscale-safe) encoding of engine placement.
-\definecolor{cmlgpu}{HTML}{CDE4F2}   % Core ML on CPU+GPU  (blue family)
-\definecolor{cmlane}{HTML}{C7E9C0}   % Core ML on CPU+ANE  (green family, the ANE stage)
-\definecolor{swiftc}{HTML}{FDE3C4}   % native Swift (CPU)  (orange family)
+\definecolor{cmlcpu}{HTML}{E0E0D1}   % Core ML on CPU       (neutral khaki)
+\definecolor{cmlane}{HTML}{C7E9C0}   % Core ML on CPU+ANE   (green family, the ANE)
+\definecolor{metalg}{HTML}{CDE4F2}   % Metal on GPU         (blue family)
+\definecolor{swiftc}{HTML}{FDE3C4}   % native Swift (CPU)   (orange family)
 \definecolor{padc}{HTML}{DCD6E8}     % host materialization (padding) -- not a named Swift stage; distinct from ioblk
 \definecolor{ioblk}{HTML}{E8E8E8}    % I/O endpoints
 \definecolor{edgec}{HTML}{444444}
@@ -31,15 +40,21 @@
   node distance=5.2mm,
   every node/.style={transform shape},
   stage/.style={rectangle, rounded corners=2pt, draw=edgec, line width=0.8pt,
-                align=center, inner sep=3.2pt, minimum height=9mm, text width=52mm},
+                align=center, inner sep=3.2pt, minimum height=9mm, text width=62mm},
   io/.style={stage, fill=ioblk, draw=edgec, text width=44mm, minimum height=7mm,
              rounded corners=5pt},
-  cmlgpu/.style={stage, fill=cmlgpu},
   cmlane/.style={stage, fill=cmlane, line width=1.1pt},
   swiftc/.style={stage, fill=swiftc, densely dashed},
-  padc/.style={stage, fill=padc, densely dotted, text width=52mm, minimum height=7mm},
+  padc/.style={stage, fill=padc, densely dotted, minimum height=7mm},
+  % Split fill: left half color #1, right half color #2 (engine split within one stage).
+  split/.style 2 args={stage, line width=1.1pt, path picture={
+      \fill[#1, sharp corners, draw=none] (path picture bounding box.south west) rectangle
+                (path picture bounding box.north east);
+      \fill[#2, sharp corners, draw=none] (path picture bounding box.south) rectangle
+                (path picture bounding box.north east);}},
   saned/.style={cmlane, text width=40mm, minimum height=13mm},
   sswift/.style={swiftc, text width=40mm, minimum height=13mm},
+  half/.style={align=center, inner sep=1pt, text width=29mm},
   ann/.style={font=\sffamily\scriptsize\itshape, text=edgec, align=left},
   flow/.style={->, draw=edgec, line width=0.9pt},
   swatch/.style={draw=edgec, line width=0.5pt, minimum width=3mm,
@@ -48,12 +63,16 @@
 
 % ---- main vertical spine ----
 \node[io] (in) {phoneme IDs $+$ voice embedding};
-\node[cmlgpu, below=of in] (dur)
-  {\textbf{Duration model}\\BERT $+$ LSTM $+$ CNN predictor\\$\to$ pred\_dur, t\_en, ref\_s};
+\node[split={cmlane}{cmlcpu}, below=of in, minimum height=13mm] (dur) {};
+\node[anchor=north, inner sep=2pt] at (dur.north) {\textbf{Duration}};
+\node[half] at ($(dur.center)!0.5!(dur.west)+(0,-2mm)$) {BERT front (ANE)};
+\node[half] at ($(dur.center)!0.5!(dur.east)+(0,-2mm)$) {$+$ LSTM back (CPU)};
 \node[swiftc, below=of dur] (align)
   {\textbf{Alignment}: token$\to$frame expansion\\(no alignment matrix materialized)};
-\node[cmlgpu, below=of align] (f0n)
-  {\textbf{F0Ntrain model}\\small CNN: (en, s) $\to$ F0, N};
+\node[split={cmlcpu}{cmlane}, below=of align, minimum height=13mm] (f0n) {};
+\node[anchor=north, inner sep=2pt] at (f0n.north) {\textbf{F0Ntrain}};
+\node[half] at ($(f0n.center)!0.5!(f0n.west)+(0,-2mm)$) {BiLSTM front (CPU)};
+\node[half] at ($(f0n.center)!0.5!(f0n.east)+(0,-2mm)$) {$+$ F0/N back (ANE)};
 \node[padc, below=of f0n] (pad)
   {\textbf{Pad} to bucket geometry\\3s $\mid$ 7s $\mid$ 10s $\mid$ 15s $\mid$ 30s};
 
@@ -63,11 +82,22 @@
 \node[sswift, below=12mm of pad, xshift=26mm] (hnsf)
   {\textbf{hn-nsf} harmonic source\\SineGen $+$ STFT,\\double-precision phase};
 
-\node[cmlgpu, below=42mm of pad] (gen)
-  {\textbf{GeneratorFromHar model}\\conv residual stacks $+$ iSTFT\\x\_pre $+$ har $\to$ waveform};
+\node[split={cmlane}{metalg}, below=48mm of pad, text width=66mm, minimum height=22mm] (gen) {};
+\node[anchor=north, inner sep=2.5pt] at (gen.north) {\textbf{Generator, hybrid ($\geq$7\,s)}};
+\node[half, text width=31mm] at ($(gen.center)!0.5!(gen.west)+(0,0.3mm)$) {53 convolutions\\on the ANE};
+\node[half, text width=31mm] at ($(gen.center)!0.5!(gen.east)+(0,0.3mm)$) {AdaIN/Snake/joins\\on the GPU (Metal)};
+\node[anchor=south, inner sep=2.5pt, align=center, font=\sffamily\scriptsize] at (gen.south)
+  {shared IOSurface memory\\folded all-ANE below 7\,s and as fallback};
 \node[swiftc, below=of gen] (trim)
-  {\textbf{Trim}};
+  {\textbf{iSTFT tail $+$ Trim}};
 \node[io, below=of trim] (out) {24\,kHz PCM waveform};
+
+% ---- engine dividers inside split stages (clear of the centered titles) ----
+\begin{scope}[edgec, densely dashed, line width=0.4pt]
+  \draw ($(dur.south)+(0,0.4pt)$) -- ($(dur.north)+(0,-4.6mm)$);
+  \draw ($(f0n.south)+(0,0.4pt)$) -- ($(f0n.north)+(0,-4.6mm)$);
+  \draw ($(gen.south)+(0,7.2mm)$) -- ($(gen.north)+(0,-5mm)$);
+\end{scope}
 
 % ---- flow edges ----
 \draw[flow] (in) -- (dur);
@@ -76,8 +106,8 @@
 \draw[flow] (f0n) -- (pad);
 \draw[flow] (pad.south) -- (dpre.north);
 \draw[flow] (pad.south) -- (hnsf.north);
-\draw[flow] (dpre.south) -- node[pos=0.55, above left=-1pt, font=\sffamily\scriptsize] {x\_pre} (gen.north);
-\draw[flow] (hnsf.south) -- node[pos=0.55, above right=-1pt, font=\sffamily\scriptsize] {har} (gen.north);
+\draw[flow] (dpre.south) -- node[pos=0.5, left=3pt, font=\sffamily\scriptsize] {x\_pre} (gen.north);
+\draw[flow] (hnsf.south) -- node[pos=0.5, right=3pt, font=\sffamily\scriptsize] {har} (gen.north);
 \draw[flow] (gen) -- (trim);
 \draw[flow] (trim) -- (out);
 
@@ -86,16 +116,16 @@
   \node[draw=edgec, densely dotted, line width=0.8pt, rounded corners=3pt,
         fit=(dpre)(hnsf), inner sep=3.4pt] (conc) {};
 \end{scope}
-\node[ann, above=0.5pt of conc.north, anchor=south, align=center]
+\node[ann, below=0.5pt of conc.south, anchor=north, align=center, fill=white, inner sep=1pt]
   {executed \textbf{concurrently}: DecoderPre on ANE $\;\parallel\;$ hn-nsf on background CPU thread};
 
 % ---- right-side engine / motif annotations (spine) ----
-\node[ann, right=4mm of dur.east]   {Core ML (CPU+GPU)\\Motif: Sequential-Dynamic\\(bucketed)};
+\node[ann, right=4mm of dur.east]   {Core ML (CPU+ANE) $+$ (CPU)\\Motif: Sequential-Dynamic\\(bucketed)};
 \node[ann, right=4mm of align.east] {Swift (CPU)\\Motif: Data-Dependent};
-\node[ann, right=4mm of f0n.east]   {Core ML (CPU+GPU)\\Motif: Dense-Static};
+\node[ann, right=4mm of f0n.east]   {Core ML (CPU) $+$ (CPU+ANE)\\Motif: Dense-Static};
 \node[ann, right=4mm of pad.east]   {Host materialization\\(not a named Swift stage)};
-\node[ann, right=4mm of gen.east]   {Core ML (CPU+GPU)\\Motif: Dense-Static\\(ANE-rejected; see \S7.2)};
-\node[ann, right=4mm of trim.east]  {Swift (CPU)};
+\node[ann, right=4mm of gen.east]   {Core ML (ANE) $+$ Metal (GPU)\\Motif: Dense-Static\\(one stage, two engines)};
+\node[ann, right=4mm of trim.east]  {Swift (CPU)\\Motif: DSP};
 
 % ---- branch annotations (outer sides, clear of the joining arrows) ----
 \node[ann, left=3mm of dpre, align=right] {Core ML\\(CPU+ANE)\\Motif: DS};
@@ -105,10 +135,14 @@
 \node[anchor=north east, draw=edgec, line width=0.6pt, rounded corners=2pt,
       inner sep=5pt, align=left, font=\sffamily\scriptsize] (leg)
       at ($(align.west)+(-8mm,6mm)$) {%
-  {\tikz\node[swatch,fill=cmlgpu]{};}~~Core ML (CPU+GPU)\\[2.5pt]
   {\tikz\node[swatch,fill=cmlane]{};}~~Core ML (CPU+ANE)\\[2.5pt]
+  {\tikz\node[swatch,fill=cmlcpu]{};}~~Core ML (CPU)\\[2.5pt]
+  {\tikz\node[swatch,fill=metalg]{};}~~Metal (GPU)\\[2.5pt]
   {\tikz\node[swatch,fill=swiftc]{};}~~Native Swift (CPU)\\[2.5pt]
-  {\tikz\node[swatch,fill=padc]{};}~~Host materialization (padding)};
+  {\tikz\node[swatch,fill=padc]{};}~~Host materialization (padding)\\[2.5pt]
+  {\tikz\node[swatch, path picture={
+      \fill[cmlane, sharp corners, draw=none] (path picture bounding box.south west) rectangle (path picture bounding box.north east);
+      \fill[metalg, sharp corners, draw=none] (path picture bounding box.south) rectangle (path picture bounding box.north east);}]{};}~~split fill = two engines, one stage};
 \node[ann, below=1.5mm of leg.south east, anchor=north east, align=right]
   {4 Core ML model families,\\3 native Swift stages,\\zero Python at inference.};
 \end{tikzpicture}

@@ -1,3 +1,5 @@
+// Runs only with -DKOKORO_E5, like HybridArenaLayout itself.
+#if KOKORO_E5
 import XCTest
 @testable import KokoroPipeline
 
@@ -76,3 +78,4 @@ final class HybridArenaLayoutTests: XCTestCase {
         assertDisjoint(l, Array(l.offsets.keys), "separate")
     }
 }
+#endif

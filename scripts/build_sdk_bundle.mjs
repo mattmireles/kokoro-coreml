@@ -2,65 +2,19 @@
 
 import { createHash } from 'node:crypto';
 import { copyFile, lstat, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const defaultRepoId = 'mattmireles/kokoro-coreml';
-// HF commit holding the model, voice, and G2P artifacts this checkout expects.
-// It is where sources are verified, NOT a revision consumers should pin: the
-// manifests are published in a later commit (see prepare_hf_sdk_metadata.py).
-const defaultRevision = 'fd1e4958fd3336e1d77dfb8f9949cc7d30996a1d';
 const runtimeAssetDir = path.join(repoRoot, 'swift-tts/Sources/KokoroTTS/Resources/KokoroRuntime');
-// KokoroSDKModelProvider selects one padded t128 graph. Keeping the historical
-// duration ladder in hosted bundles wasted roughly 300 MB per first install
-// and exposed seven separate lazy Core ML specialization paths.
-const sdkDurationTokenSizes = [128];
 const bundleMarkerName = '.kokoro-sdk-bundle';
-// One flexible (RangeDim, GPU) generator serves every bucket at the
-// utterance's real length. Export it traced at 30 s so it covers every
-// profile's largest bucket. MPSGraph on macOS 27 can abort on it (iOS 27 is
-// gated too, as a precaution), so every
-// profile also ships the per-bucket generators the runtime falls back to
-// there (PipelineConstants.flexibleGeneratorAllowed).
-const flexibleGeneratorPackage = 'kokoro_decoder_har_post_range.mlpackage';
-// Minimal asset set for the KokoroG2P Swift library
-// (`KokoroEnglishFrontend(assetsDirectory:)`), mirrored from the Apache-2.0
-// HF repo FluidInference/kokoro-82m-coreml into `g2p/` of our HF repo.
-const g2pAssetNames = ['us_lexicon_cache.json', 'g2p_vocab.json', 'G2PEncoder.mlmodelc', 'G2PDecoder.mlmodelc'];
-
-const profiles = {
-  // Public KokoroTTS SDK contract: one 15 s bucket, one padded t128 graph.
-  starter: {
-    voices: ['af_heart'],
-    buckets: [15],
-    durationTokenSizes: sdkDurationTokenSizes,
-  },
-  // Product profile: three multifunction packages (one function per shape,
-  // weights stored once) plus the generators serve every bucket and
-  // duration shape. Loaded by KokoroPipeline (MultifunctionPackages.swift);
-  // the KokoroTTS SDK provider only loads per-bucket starter/custom bundles.
-  full: {
-    voices: null,
-    buckets: [3, 7, 10, 15, 30],
-    durationTokenSizes: [32, 64, 128, 256, 320, 384, 512],
-    packages: [
-      'kokoro_duration_multifunction.mlpackage',
-      'kokoro_f0ntrain_multifunction.mlpackage',
-      'kokoro_decoder_pre_multifunction.mlpackage',
-      flexibleGeneratorPackage,
-      'kokoro_decoder_har_post_3s.mlpackage',
-      'kokoro_decoder_har_post_7s.mlpackage',
-      'kokoro_decoder_har_post_10s.mlpackage',
-      'kokoro_decoder_har_post_15s.mlpackage',
-      'kokoro_decoder_har_post_30s.mlpackage',
-    ],
-    g2p: true,
-  },
-};
+// Every profile's contents, shared with scripts/download_models.py. Paths are
+// bundle paths == HF paths == local checkout paths (coreml/..., g2p/...).
+const sdkProfiles = JSON.parse(readFileSync(path.join(repoRoot, 'scripts/sdk_profiles.json'), 'utf8'));
 
 /**
  * Returns HEAD only when the repository can honestly claim exact provenance.
@@ -126,22 +80,53 @@ function splitIntegerList(value) {
   });
 }
 
-/** Returns the active bundle profile configuration. */
-function resolveProfile(args) {
+/**
+ * Returns { profile, voices, buckets, paths, durationTokenSizes } for the
+ * requested profile. custom expands the per-bucket template; the hybrid
+ * directory joins only for buckets >= 7 s, with that bucket's max row count.
+ * Mirrors sdk_profile() in scripts/download_models.py (tests compare them).
+ */
+export function resolveProfile(args) {
   const profile = args.get('profile') || 'starter';
-  if (profile === 'custom') {
-    const voices = splitList(args.get('voices'));
-    const buckets = splitIntegerList(args.get('buckets'));
-    if (voices.length === 0 || buckets.length === 0) {
-      throw new Error('--profile custom requires --voices and --buckets');
-    }
-    return { profile, voices, buckets, durationTokenSizes: sdkDurationTokenSizes };
+  const durationTokenSizes = sdkProfiles.duration_token_sizes;
+  if (sdkProfiles.profiles[profile]) {
+    return { profile, durationTokenSizes, ...sdkProfiles.profiles[profile] };
   }
-  const config = profiles[profile];
-  if (!config) {
+  if (profile !== 'custom') {
     throw new Error(`unknown profile: ${profile}`);
   }
-  return { profile, ...config };
+  const voices = splitList(args.get('voices'));
+  const buckets = splitIntegerList(args.get('buckets'));
+  if (voices.length === 0 || buckets.length === 0) {
+    throw new Error('--profile custom requires --voices and --buckets');
+  }
+  const custom = sdkProfiles.custom;
+  const paths = [...custom.paths];
+  const rows = new Set();
+  for (const bucket of buckets) {
+    const tFrames = custom.t_frames[String(bucket)];
+    if (tFrames === undefined) {
+      throw new Error(`unsupported SDK bucket ${bucket}; choose from ${Object.keys(custom.t_frames).join(',')}`);
+    }
+    for (const template of custom.bucket_paths) {
+      paths.push(template.replaceAll('{bucket}', String(bucket)).replaceAll('{t_frames}', String(tFrames)));
+    }
+    if (custom.hybrid_rows[String(bucket)] !== undefined) {
+      rows.add(custom.hybrid_rows[String(bucket)]);
+    }
+  }
+  if (rows.size > 0) {
+    paths.push(...custom.hybrid_paths);
+    for (const count of [...rows].sort((a, b) => a - b)) {
+      paths.push(custom.hybrid_row_path.replaceAll('{rows}', String(count)));
+    }
+  }
+  return { profile, voices, buckets, durationTokenSizes, paths: [...new Set(paths)] };
+}
+
+/** Returns the manifest model entry for a coreml/ path: coreml/<first segment>. */
+function modelEntry(relativePath) {
+  return relativePath.split('/').slice(0, 2).join('/');
 }
 
 /** Computes SHA-256 for one file. */
@@ -217,19 +202,33 @@ async function verifyDownloadedFile(downloadManifest, relativePath) {
   }
 }
 
-/** Verifies a copied model or voice source against the HF download manifest. */
+/**
+ * Verifies a copied model or voice source against the HF download manifest,
+ * both ways: every local file must match a manifest entry, and every manifest
+ * entry at or under `relativePath` must exist locally (a half-finished
+ * download would otherwise ship a package missing files).
+ */
 async function verifySourceAgainstDownloadManifest(downloadManifest, relativePath) {
   if (!downloadManifest) {
     return;
   }
   const source = path.join(repoRoot, relativePath);
   const sourceStat = await stat(source);
+  const local = new Set();
   if (sourceStat.isDirectory()) {
     for (const filePath of await listFiles(source)) {
-      await verifyDownloadedFile(downloadManifest, path.relative(repoRoot, filePath));
+      const rel = path.relative(repoRoot, filePath);
+      await verifyDownloadedFile(downloadManifest, rel);
+      local.add(rel.split(path.sep).join('/'));
     }
   } else if (sourceStat.isFile()) {
     await verifyDownloadedFile(downloadManifest, relativePath);
+    local.add(relativePath);
+  }
+  for (const entry of downloadManifest.manifest.files) {
+    if ((entry.path === relativePath || entry.path.startsWith(`${relativePath}/`)) && !local.has(entry.path)) {
+      throw new Error(`download manifest file missing locally: ${entry.path}`);
+    }
   }
 }
 
@@ -293,8 +292,8 @@ async function listFiles(root) {
   return files.sort();
 }
 
-/** Computes a stable tree digest for an `.mlpackage`. */
-async function hashPackage(packagePath, relativePath) {
+/** Computes a stable tree digest for a model directory (`.mlpackage` or coreml/hybrid). */
+async function hashTree(packagePath, relativePath) {
   const digest = createHash('sha256');
   const files = [];
   for (const filePath of await listFiles(packagePath)) {
@@ -329,91 +328,24 @@ async function fileDigest(root, relativePath) {
   };
 }
 
-/** Computes package names required by a bundle profile. */
-function requiredPackages(config) {
-  if (config.packages) {
-    return config.packages;
-  }
-  const names = [];
-  for (const size of config.durationTokenSizes) {
-    names.push(`kokoro_duration_t${size}.mlpackage`);
-  }
-  for (const bucket of config.buckets) {
-    names.push(`kokoro_f0ntrain_t${bucket * 40}.mlpackage`);
-    names.push(`kokoro_decoder_pre_${bucket}s.mlpackage`);
-    names.push(`kokoro_decoder_har_post_${bucket}s.mlpackage`);
-  }
-  names.push(flexibleGeneratorPackage);
-  return names;
-}
-
-/** Returns voice IDs for full profile from local voice files. */
-async function resolveVoices(config) {
-  if (config.voices) {
-    return config.voices;
-  }
-  const voiceDir = path.join(repoRoot, 'kokoro.js/voices');
-  const entries = await readdir(voiceDir);
-  return entries
-    .filter((entry) => /^[ab][fm]_.+\.bin$/.test(entry))
-    .map((entry) => path.basename(entry, '.bin'))
-    .sort();
-}
-
-/** Runs the downloader when required local artifacts are absent. */
-function hydrateIfRequested(args, config, missing) {
-  if (missing.length === 0 || args.get('hydrate') !== '1') {
-    return;
-  }
-  const command = [
-    'scripts/download_models.py',
-    '--repo-id', args.get('repo-id') || defaultRepoId,
-    '--revision', args.get('revision') || defaultRevision,
-    '--sdk-profile', config.profile,
-  ];
-  if (config.profile === 'custom') {
-    command.push('--sdk-voices', config.voices.join(','));
-    command.push('--sdk-buckets', config.buckets.join(','));
-  }
-  const result = spawnSync('python3', command, { cwd: repoRoot, stdio: 'inherit' });
-  if (result.status !== 0) {
-    throw new Error('failed to hydrate missing SDK bundle artifacts');
-  }
-}
-
 /** Builds one SDK bundle profile. */
 async function buildBundle() {
   const args = parseArgs(process.argv.slice(2));
   const config = resolveProfile(args);
   const repoId = args.get('repo-id') || defaultRepoId;
-  const revision = args.get('revision') || defaultRevision;
+  // Required: the HF commit the sources are verified against. A default here
+  // went stale every release and silently recorded the wrong provenance.
+  const revision = args.get('revision');
+  if (!revision) {
+    throw new Error('--revision <hf-commit-sha> is required');
+  }
   const sdkCommit = cleanSDKCommit(args.get('allow-dirty') === '1');
   const outputDir = path.resolve(repoRoot, args.get('output') || `outputs/sdk-bundles/${config.profile}`);
   await assertSafeOutputDirectory(outputDir);
-  const packageNames = requiredPackages(config);
-  const voices = await resolveVoices(config);
-  const missing = [];
-
-  for (const name of packageNames) {
-    if (!existsSync(path.join(repoRoot, 'coreml', name))) {
-      missing.push(`coreml/${name}`);
-    }
-  }
-  for (const voice of voices) {
-    if (!existsSync(path.join(repoRoot, 'kokoro.js/voices', `${voice}.bin`))) {
-      missing.push(`kokoro.js/voices/${voice}.bin`);
-    }
-  }
-  if (config.g2p) {
-    for (const name of g2pAssetNames) {
-      if (!existsSync(path.join(repoRoot, 'g2p', name))) {
-        missing.push(`g2p/${name}`);
-      }
-    }
-  }
-  hydrateIfRequested(args, config, missing);
-  if (missing.some((item) => !existsSync(path.join(repoRoot, item)))) {
-    throw new Error(`missing bundle artifacts: ${missing.join(', ')}`);
+  const voiceSources = config.voices.map((voice) => `kokoro.js/voices/${voice}.bin`);
+  const missing = [...config.paths, ...voiceSources].filter((item) => !existsSync(path.join(repoRoot, item)));
+  if (missing.length > 0) {
+    throw new Error(`missing bundle artifacts (run scripts/download_models.py first): ${missing.join(', ')}`);
   }
   const downloadManifest = await loadDownloadManifest(args, repoId, revision);
 
@@ -424,53 +356,48 @@ async function buildBundle() {
   await mkdir(path.join(outputDir, 'compiled'), { recursive: true });
   await writeFile(path.join(outputDir, bundleMarkerName), 'kokoro-sdk-bundle\n');
 
-  for (const name of packageNames) {
-    const src = path.join(repoRoot, 'coreml', name);
-    await assertRealPathInside(path.join(repoRoot, 'coreml'), src);
-    await verifySourceAgainstDownloadManifest(downloadManifest, path.join('coreml', name));
-    await copyDirectory(src, path.join(outputDir, 'coreml', name));
+  for (const relativePath of config.paths) {
+    const src = path.join(repoRoot, relativePath);
+    await assertRealPathInside(path.join(repoRoot, relativePath.split('/')[0]), src);
+    await verifySourceAgainstDownloadManifest(downloadManifest, relativePath);
+    const dest = path.join(outputDir, relativePath);
+    await mkdir(path.dirname(dest), { recursive: true });
+    if ((await stat(src)).isDirectory()) {
+      await copyDirectory(src, dest);
+    } else {
+      await copyFile(src, dest);
+    }
   }
+  const modelEntries = [...new Set(config.paths.filter((item) => item.startsWith('coreml/')).map(modelEntry))];
   const modelPackages = [];
-  for (const name of packageNames) {
-    modelPackages.push(await hashPackage(path.join(outputDir, 'coreml', name), `coreml/${name}`));
+  for (const entry of modelEntries) {
+    modelPackages.push(await hashTree(path.join(outputDir, entry), entry));
   }
   if (args.get('compile-models') === '1') {
-    for (const name of packageNames) {
+    // Only top-level .mlpackage entries. coreml/hybrid is skipped: the Swift
+    // hybrid generator compiles its own rows into its own cache.
+    for (const entry of modelEntries.filter((item) => item.endsWith('.mlpackage'))) {
       const result = spawnSync(
         'xcrun',
-        ['coremlcompiler', 'compile', path.join(outputDir, 'coreml', name), path.join(outputDir, 'compiled')],
+        ['coremlcompiler', 'compile', path.join(outputDir, entry), path.join(outputDir, 'compiled')],
         { stdio: 'inherit' }
       );
       if (result.status !== 0) {
-        throw new Error(`coremlcompiler failed for ${name}`);
+        throw new Error(`coremlcompiler failed for ${entry}`);
       }
-      const packageDigest = modelPackages.find((item) => item.path === `coreml/${name}`);
-      const compiledName = name.replace(/\.mlpackage$/, '.mlmodelc');
+      const packageDigest = modelPackages.find((item) => item.path === entry);
+      const compiledName = path.basename(entry).replace(/\.mlpackage$/, '.mlmodelc');
       await writeFile(
         path.join(outputDir, 'compiled', `${compiledName}.kokoro-source-tree-sha256`),
         `${packageDigest.tree_sha256}\n`
       );
     }
   }
-  for (const voice of voices) {
-    const src = path.join(repoRoot, 'kokoro.js/voices', `${voice}.bin`);
+  for (const [index, voice] of config.voices.entries()) {
+    const src = path.join(repoRoot, voiceSources[index]);
     await assertRealPathInside(path.join(repoRoot, 'kokoro.js/voices'), src);
-    await verifySourceAgainstDownloadManifest(downloadManifest, path.join('kokoro.js/voices', `${voice}.bin`));
+    await verifySourceAgainstDownloadManifest(downloadManifest, voiceSources[index]);
     await copyFile(src, path.join(outputDir, 'voices', `${voice}.bin`));
-  }
-  if (config.g2p) {
-    for (const name of g2pAssetNames) {
-      const src = path.join(repoRoot, 'g2p', name);
-      await assertRealPathInside(path.join(repoRoot, 'g2p'), src);
-      await verifySourceAgainstDownloadManifest(downloadManifest, path.join('g2p', name));
-      const dest = path.join(outputDir, 'g2p', name);
-      await mkdir(path.dirname(dest), { recursive: true });
-      if ((await stat(src)).isDirectory()) {
-        await copyDirectory(src, dest);
-      } else {
-        await copyFile(src, dest);
-      }
-    }
   }
   for (const name of ['kokoro-vocab.json', 'hnsf_weights.json']) {
     const src = path.join(runtimeAssetDir, name);
@@ -479,11 +406,13 @@ async function buildBundle() {
   }
 
   const voiceDigests = [];
-  for (const voice of voices) {
+  for (const voice of config.voices) {
     voiceDigests.push(await fileDigest(outputDir, path.join('voices', `${voice}.bin`)));
   }
   const manifest = {
-    schema_version: 1,
+    // 2: model_packages may be directories that are not .mlpackage
+    // (coreml/hybrid). SDK code that only knows 1 rejects it outright.
+    schema_version: 2,
     generated_at: new Date().toISOString(),
     sdk_commit: sdkCommit,
     hf_repo_id: repoId,
@@ -504,7 +433,7 @@ async function buildBundle() {
       hnsf_weights: await fileDigest(outputDir, 'runtime/hnsf_weights.json'),
     },
   };
-  if (config.g2p) {
+  if (config.paths.some((item) => item.startsWith('g2p/'))) {
     manifest.g2p_assets = [];
     for (const filePath of await listFiles(path.join(outputDir, 'g2p'))) {
       manifest.g2p_assets.push(await fileDigest(outputDir, path.relative(outputDir, filePath)));
@@ -525,7 +454,8 @@ async function buildBundle() {
     });
   }
   const hosted = {
-    version: `${config.profile}-${sdkCommit.slice(0, 12)}`,
+    // Full sdkCommit, so a `-dirty` build never poses as a clean commit.
+    version: `${config.profile}-${sdkCommit}`,
     files: hostedFiles,
   };
   await writeFile(path.join(outputDir, 'HostedManifest.json'), `${JSON.stringify(hosted, null, 2)}\n`);
@@ -534,7 +464,9 @@ async function buildBundle() {
   console.log(`  models=${modelPackages.length} voices=${voiceDigests.length} files=${hostedFiles.length}`);
 }
 
-buildBundle().catch((error) => {
-  console.error(error instanceof Error ? error.stack || error.message : String(error));
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  buildBundle().catch((error) => {
+    console.error(error instanceof Error ? error.stack || error.message : String(error));
+    process.exitCode = 1;
+  });
+}

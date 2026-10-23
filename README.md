@@ -1,241 +1,115 @@
 # Kokoro 82M TTS - Surgically Optimized for Apple Silicon
 
-**30 seconds of speech in 1.6 s on an M1 Mac Mini, and in 287 ms on an M2 Ultra. 1.8-2.4x faster than MLX on the same Macs.**
+**27 seconds of speech in 309 ms on an M1 Mac Mini, 9.8x faster than MLX on the same machine, and in 319 ms on an iPhone 15 Pro Max.**
 
-[Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) running natively on Apple Silicon via Core ML: four model families, one Swift pipeline, zero Python at inference time. Each stage runs on the part of the chip that suits it: the Neural Engine, the GPU, or the CPU.
+[Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) running natively on Apple Silicon through Core ML, with zero Python at inference time. The model is cut at its seams, and each stage runs on the part of the chip that suits it. Even the vocoder, which the Neural Engine rejects outright as exported, runs there after a reshape that leaves its math unchanged.
 
-> **Pre-converted `.mlpackage` files:** [huggingface.co/mattmireles/kokoro-coreml](https://huggingface.co/mattmireles/kokoro-coreml)
+> **Pre-converted models:** [huggingface.co/mattmireles/kokoro-coreml](https://huggingface.co/mattmireles/kokoro-coreml) · **Paper:** [`paper/main.pdf`](paper/main.pdf)
 
-## Why split the model?
+## Quickstart
 
-Apple Silicon isn't one processor. It's three — **CPU, GPU, and the Neural Engine (ANE)** — each built for different work. The ANE runs fixed-shape dense math at a fraction of the GPU's power draw. The GPU handles large convolutions the ANE rejects. The CPU handles small, data-dependent logic.
+On an Apple Silicon Mac with macOS 15+ and Xcode 26+ (Swift 6.2):
 
-Each has rules. The ANE takes no dynamic shapes and no data-dependent control flow, and it rejects Kokoro's vocoder outright: the waveform tensors are too long for it. Most Core ML ports push the whole model through one policy and let the scheduler guess. It guesses badly.
-
-This repo cuts the Kokoro pipeline at those seams:
-
-```
-  "Hello world"
-       │
-       ▼
-  DURATION MODEL (Core ML)          ◀── GPU, LSTMs on CPU
-       │
-       ▼
-  ALIGNMENT (Swift)                 ◀── CPU: small, data-dependent
-       │
-       ▼
-  F0 + NOISE (Core ML)              ◀── GPU
-       │
-       ▼
-  DECODER-PRE (Core ML)             ◀── Neural Engine
-    ∥ HARMONIC SOURCE (Swift DSP)   ◀── CPU, runs at the same time
-       │
-       ▼
-  GENERATOR / VOCODER (Core ML)     ◀── GPU
-       │
-       ▼
-  24 kHz audio
+```bash
+git clone https://github.com/mattmireles/kokoro-coreml && cd kokoro-coreml
+swift run -c release kokoro-say "Hello from the Neural Engine."
+afplay kokoro.wav
 ```
 
-**Redesign the inference pipeline, not the model.** A whole-model Core ML export doesn't even convert correctly. Split at the right seams, each piece runs where it runs best.
+The first run builds the CLI (about a minute) and downloads the pinned ~210 MB starter model bundle from Hugging Face into `~/Library/Caches/kokoro-coreml`. Each download is checked against a SHA-256 before use. `kokoro-say` prints the time per stage and which path ran each one.
 
-## Why not just use PyTorch MPS?
+- **Options:** `--out speech.wav`, `--runs 3` (the first run includes one-time Core ML compilation). The starter bundle has one voice (`af_heart`) and one 15 s bucket, so every input is timed at that bucket; build the `full` bundle (README/SDK.md) and pass `--bundle` for the other voices and buckets.
+- **Help:** `swift run -c release kokoro-say --help`.
+- **If the build stops compiling Metal shaders** on a fresh Xcode, run `xcodebuild -downloadComponent MetalToolchain` once.
 
-Even if you stay on the GPU, PyTorch MPS has three problems with this model:
+## Use it in your app
 
-1. **It doesn't finish long clips.** On every Mac we tested, PyTorch MPS fails 15 s and 30 s inputs with `Output channels > 65536 not supported at the MPS device`.
-2. **Unsupported ops fall back to the CPU.** `aten::angle` has no MPS kernel, so the vocoder round-trips data to the CPU.
-3. **Python adds overhead.** Five `forward()` calls through eager-mode dispatch pay interpreter costs this pipeline never pays.
+```swift
+// Package.swift
+.package(url: "https://github.com/mattmireles/kokoro-coreml", revision: "<commit>")
+// target dependency
+.product(name: "KokoroTTS", package: "kokoro-coreml")
+```
 
-Swift + Core ML removes all three: native orchestration, no op fallbacks, and every input length completes.
+```swift
+import KokoroTTS
+
+let tts = try await KokoroTTS.load(resources: .huggingFace())   // download + verify once, then cached
+let audio = try await tts.synthesize("Hello world.", voice: .afHeart)
+let buffer = try audio.makePCMBuffer()                           // 24 kHz mono, ready for AVAudioEngine
+```
+
+iOS 18+ / macOS 15+. Text preparation, phonemization, chunking, model loading and fallbacks are handled for you. The full SDK guide, including bundled-resource mode and playback, is in [README/SDK.md](README/SDK.md). Pin the latest `main` commit.
 
 ## Performance
 
-An M1 Mac Mini with 16 GB of RAM — the cheapest Apple Silicon Mac you can buy — synthesizes 30 seconds of speech in 1.64 seconds. That's 17x realtime.
+Warm median end-to-end time, token IDs in, 24 kHz audio out. Measured October 23, 2026 on the shipped pipeline, against MLX on the same device in the same session:
 
-Warm median end-to-end time, October 2026 (current `main`, published models, fixed-bucket generator on Macs):
+| Audio | M2 Ultra | M1 Mini | iPhone 15 Pro Max | iPhone 12 Pro |
+| --- | ---: | ---: | ---: | ---: |
+| 3s | 74 ms | 95 ms | 62 ms | 98 ms |
+| 7s | 54 ms | 99 ms | 103 ms | 145 ms |
+| 10s | 71 ms | 124 ms | 156 ms | 186 ms |
+| 15s | 89 ms | 169 ms | 224 ms | 261 ms |
+| 30s (27.4 s input) | **159 ms** | **309 ms** | **319 ms** | **480 ms** |
+| **vs MLX** | 3.5-4.8x | 8.1-9.8x | 8.9-15.1x\* | 9.3-15.2x; MLX runs out of memory at 30 s |
 
-| Audio | M1 Mini (16 GB) | M2 Air (24 GB) | M2 Ultra (64 GB) | iPhone 15 Pro Max | iPhone 12 Pro |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 3s | 205 ms | 123 ms | **45 ms** | 195 ms | 421 ms |
-| 7s | 410 ms | 274 ms | **80 ms** | 417 ms | 917 ms |
-| 10s | 590 ms | 397 ms | **112 ms** | 609 ms | 1,391 ms |
-| 15s | 835 ms | 589 ms | **148 ms** | 881 ms | 1,984 ms |
-| 30s | 1,636 ms | 1,176 ms | **287 ms** | 1,721 ms | 4,017 ms |
+Every device runs at least 57x faster than real time on the 27.4 s input. MLX is [mlx-audio](https://github.com/Blaizzy/mlx-audio) 0.4.3 on Macs and [kokoro-ios](https://github.com/mlalma/kokoro-ios) 1.0.8 on iPhones; the pinned mlx-audio fails every 3 s input.
 
-Every device runs faster than realtime: 7x on the 2020 iPhone 12 Pro, 17x on the M1 Mini, up to 96x on the M2 Ultra. Macs ran macOS 26.7.1 (M2 Ultra) and 27.0.1 (M2 Air, M1 Mini); iPhones ran iOS 27.0.1 with the flexible-length generator.
+Caveats:
+- **Mac rows are upper bounds.** No Mac reached the quiet-host gate; the background load was 2-7.
+- **\* A17 ratios at 10 s and above are upper bounds.** MLX ran hot on that phone.
+- **iPhone numbers are a sustained workload.** A single request after the phone has been idle is slower.
+- **Short clips on the M2 Ultra regressed.** 3 s clips use the all-ANE generator, which is slower there than the old GPU generator: 74 ms here against 64 ms in October's run under similar load (45 ms in its quiet pass).
 
-### vs alternatives
+Full protocol, every cell with its min-max range, the ablation and raw data: [paper-cs1-hybrid-rerun-2026-10-23.md](README/Notes/paper-cs1-hybrid-rerun-2026-10-23.md).
 
-| Baseline | Speedup |
-| --- | --- |
-| MLX (mlx-audio 0.4.3) | **1.8-2.4x** faster |
-| MLX Swift on iPhone (kokoro-ios 1.0.8) | **2.0-3.2x** faster; MLX runs out of memory on 30 s clips on the 4 GB iPhone 12 Pro |
-| PyTorch MPS (GPU) | **2.7-6.5x** faster where MPS finishes (it fails 15 s and 30 s clips) |
-| PyTorch CPU | **3.2-6.8x** faster |
-| Python + Core ML hybrid | **1.3-2.9x** faster |
+## How it works
 
-Same machines, same frozen inputs, warm medians. Protocol, raw-data paths and caveats: [paper-cs1-frozen-rerun-2026-10-20.md](README/Notes/paper-cs1-frozen-rerun-2026-10-20.md).
-
-> **macOS 27 note:** on macOS 27.0.1, Apple's MPSGraph can crash on the flexible-length generator, so the runtime uses the fixed-bucket generators on OS 27 (`KOKORO_FLEXIBLE_GENERATOR=1` overrides). Details: [debug-notes.md](README/Notes/debug-notes.md) "Flexible generator aborts on OS 27".
-
-## Architecture
-
-Four Core ML model families chained with native Swift DSP. Text goes in, 24 kHz audio comes out. Zero Python at inference time.
-
-## In-Repo Memory
-
-For current belief before changing runtime, export, or bakeoff behavior, start
-at [README/Wiki/README.md](README/Wiki/README.md). The wiki routes back to
-canonical sources; it does not replace code, scripts, notes, or measured
-outputs. Check it with:
-
-```bash
-node scripts/memory-health.mjs --write-coverage
-node scripts/memory-health.mjs --strict
-```
+Apple Silicon has three engines: CPU, GPU and the Neural Engine (ANE). The ANE runs fixed-shape convolutions fast and cheaply, but it accepts shapes, not models. Kokoro's vocoder fails ANE compilation because one axis is 720,000 samples long against a 16,384 limit. So the pipeline is cut at its seams, and each stage is reshaped until the right engine accepts it:
 
 ```
-Text → Phonemes → Duration (CoreML) → Alignment (Swift: expand token vectors to frames)
-  → F0Ntrain (CoreML) → DecoderPre (CoreML) ∥ hn-nsf (Swift) → GeneratorFromHar (CoreML) → Trim → Audio
+  text ──▶ Misaki G2P (Swift) ──▶ phoneme IDs
+       │
+       ▼
+  DURATION        BERT front on the ANE, LSTM back on the CPU
+       │
+       ▼
+  ALIGNMENT       Swift: expand tokens to frames
+       │
+       ▼
+  F0 + NOISE      CPU front, ANE back
+       │
+       ▼
+  DECODER-PRE     ANE                   ∥  HARMONIC SOURCE   Swift/vDSP, concurrently
+       │
+       ▼
+  GENERATOR       ≥7 s: 53 convolutions on the ANE + normalization and activations on the GPU,
+                  sharing IOSurface memory, both engines busy at once
+                  <7 s, or if Metal is unavailable: folded, entirely on the ANE
+       │
+       ▼
+  iSTFT + trim (Swift) ──▶ 24 kHz audio
 ```
 
-Decoder-pre runs on the ANE; duration, F0 and the generator run on the GPU (the ANE compiler rejects the generator's waveform-length tensors). One DSP stage (harmonic source) runs in Swift with double-precision phase accumulation, concurrently with decoder-pre. The generator has zero `nn.Linear` ops — all replaced with `Conv1d(kernel_size=1)` (48 → 0 linear ops in the MIL graph).
+- **Folding.** The generator's time axis is folded into rows of frames with 8-frame overlaps, and five rejected ops are rewritten into exact equivalents. Global normalization statistics stay exact. 1,927 of its 1,928 ops then run on the ANE, and it matches the unfolded model to 68 dB.
+- **Hybrid.** Inside the generator, the ANE is slow at elementwise work and the GPU at convolutions. So the hybrid gives each engine the half it is good at. At every input of 7 s and longer, on all five devices measured, it takes 16-78% less time than the all-ANE version (up to 4.4x faster).
 
-<details>
-<summary>Full pipeline diagram and model inventory</summary>
+Audio matches the fp32 PyTorch reference at 40.8-45.8 dB SNR per clip.
 
-```
-Text --> Phonemes (tokenizer)
-    |
-    v
-Duration CoreML [32/64/128/256/320/384/512 tokens] --> pred_dur, d, t_en, s, ref_s
-    |
-    v
-Alignment (Swift) --> expand d and t_en to frames by pred_dur (en, asr)
-    |
-    v
-F0Ntrain CoreML --> F0_pred, N_pred (pitch + noise contours)
-    |
-    v
-Pad to bucket geometry (Swift)
-    |
-    +--> DecoderPre CoreML --> x_pre (decoder features)
-    |
-    +--> hn-nsf (Swift/Accelerate, Double-precision phase) --> har (harmonics)
-    |
-    v
-GeneratorFromHar CoreML --> waveform (24 kHz)
-    |
-    v
-Trim (Swift) --> final audio
-```
+**Redesign the inference pipeline, not the model.** The paper has the full story: [`paper/main.pdf`](paper/main.pdf).
 
-| Model | Sizes | Input | Output | Role |
-| --- | --- | --- | --- | --- |
-| `kokoro_duration_t{N}` | T=32, 64, 128, 256, 320, 384, 512 | input_ids, attention_mask, ref_s, speed | pred_dur, d, t_en, s, ref_s_out | BERT + prosody prediction |
-| `kokoro_f0ntrain_t{N}` | T=120, 280, 400, 600, 1200 | en, s, mask | F0_pred, N_pred | Pitch/noise from aligned features |
-| `kokoro_decoder_pre_{N}s` | 3s, 7s, 10s, 15s, 30s | asr, f0, n_input, ref_s, mask | x_pre | Decoder stack (Conv + AdaIN) |
-| `kokoro_decoder_har_post_{N}s` | 3s, 7s, 10s, 15s, 30s | x_pre, ref_s, har, mask | waveform | Generator, fixed shape per bucket (GPU) |
-| `kokoro_decoder_har_post_range` | 0.5 s granule up to 30 s | x_pre, ref_s, har, mask | waveform | Generator, one flexible-length program (GPU; skipped on OS 27) |
+## Reproduce the benchmark
 
-Duration, F0Ntrain and decoder-pre stay bucketed: the ANE rejects flexible shapes, an LSTM over a symbolic length runs about 5x slower on the CPU, and `EnumeratedShapes` costs about 140 ms per shape change. The caller pads to the nearest bucket and passes a `mask` so padding never reaches a statistic. Only the GPU generator ships as a flexible (`RangeDim`) program.
-Newly exported padded-stage packages require the binary prefix `mask`; the runtime also recognizes legacy published packages that predate that input.
+The paper's numbers come from a frozen build: source commit `903f1fc1`, with its models at HF revision `e65729b9`. Plan, harness and per-call data:
+- [README/Plans/014-paper-cs1-hybrid-frozen-rerun-plan.md](README/Plans/014-paper-cs1-hybrid-frozen-rerun-plan.md)
+- [`paper/data/frozen_rerun_014/`](paper/data/frozen_rerun_014/)
 
-</details>
-
-## Hear it yourself
-
-```bash
-bash scripts/setup_bakeoff.sh                     # deps, models, exports, Swift build (~10 min)
-uv run python scripts/bakeoff_listen.py            # render WAVs through the Swift+CoreML pipeline
-afplay outputs/bakeoff/listen/config_f_3s.wav      # listen
-```
-
-Three commands. WAVs land in `outputs/bakeoff/listen/`. Use `--skip-download` if models are already local.
-
-### Run the benchmark
-
-```bash
-BAKEOFF_SKIP_SMOKE=1 PYTORCH_ENABLE_MPS_FALLBACK=1 \
-uv run python scripts/bakeoff_harness.py run \
-  --configs a,d,e,f --iterations 5 --order-seed 0
-```
-
-<details>
-<summary>Manual setup (step-by-step)</summary>
-
-```bash
-uv sync
-uv run python scripts/download_models.py --coreml
-uv run python export_duration.py
-uv run python export_f0ntrain.py --t-frames 120 400 560 1200 2400
-uv run python export_decoder_pre.py --buckets 3 7 10 15 30
-uv run python -m export_synth.main --buckets "3s,7s,10s,15s,30s" --mode decoder-har --output_dir coreml
-cd swift && swift build -c release --product kokoro-bench && cd ..
-uv run python scripts/bakeoff_harness.py prepare-inputs
-uv run python scripts/prepare_swift_bench_inputs.py
-```
-
-</details>
-
-## Swift Package
-
-The `swift/` directory contains a Swift Package (`KokoroPipeline`) with:
-
-- **`KokoroPipeline.swift`** -- 9-stage orchestrator with per-stage timing
-- **`HarmonicSource.swift`** -- hn-nsf in Swift/Accelerate (Double-precision phase accumulator)
-- **`AlignmentBuilder.swift`** -- one-hot alignment matrix from phoneme durations
-- **`MLMultiArrayHelpers.swift`** -- matrix multiply (cblas_sgemm), zero-padding, stride-safe MLMultiArray ops
-- **`MultifunctionPackages.swift`** -- loads the bucketed stages from one multifunction package each (macOS 15 / iOS 18)
-- **`CompiledModelCache.swift`** -- optional on-disk cache of compiled models, so a relaunch skips the compile
-- **`BucketSelector.swift`** -- smallest bucket >= ceil(audio_seconds)
-
-```swift
-import KokoroPipeline
-
-let pipeline = try KokoroPipeline(
-    modelsDirectory: coremlURL,
-    buckets: [3, 7, 10, 15, 30],
-    linearWeights: hnsfWeights,
-    linearBias: hnsfBias,
-    compiledModelCache: cacheURL  // optional; nil recompiles on every launch
-)
-
-let result = try pipeline.synthesize(
-    inputIds: tokenIds,
-    attentionMask: mask,
-    refS: voiceEmbedding,
-    speed: 1.0
-)
-
-// result.audio: [Float] at 24 kHz
-// result.timings: per-stage breakdown
-// result.timings.total: end-to-end wall time
-```
-
-`init` only finds the model packages. Each model compiles and opens the first time it's used. Call `prepareForBucket(bucketSec:tFrames:)` to do that ahead of time. Point `compiledModelCache` at a directory whose name comes from the model set's digest, so that updated models never reuse stale compiled bundles.
-
-## Bakeoff configs
-
-<details>
-<summary>Config details (A through F)</summary>
-
-| Config | What it measures | Pipeline | Status |
-| --- | --- | --- | --- |
-| **F** | Swift + CoreML (winner) | 5 CoreML models + Swift hn-nsf DSP | **Production** |
-| **A** | Python HAR-post hybrid | PyTorch prefix + CoreML GeneratorFromHar | Baseline |
-| **D** | PyTorch MPS (GPU with CPU fallback) | Full PyTorch on MPS device | Comparison |
-| **E** | PyTorch CPU | Full PyTorch on CPU | Comparison |
-| B/C | ANE participation (diagnostic) | Decoder-only CoreML under .all / .cpuAndGPU | Diagnostic |
-
-The bakeoff harness uses a persistent batch subprocess for Config F — models compile once at startup and stay cached across all iterations. See [bakeoff-results.md](README/Notes/bakeoff-results.md) for the full cross-machine matrix.
-
-</details>
+The older PyTorch, Python and MLX bakeoff harness is in `scripts/bakeoff_harness.py`; see [bakeoff-results.md](README/Notes/bakeoff-results.md).
 
 ## Python fallback
 
-Don't need CoreML? The original Kokoro Python library works standalone:
+Don't need Core ML? The original Kokoro Python library works standalone (`pip install kokoro soundfile`):
 
 ```python
 from kokoro import KPipeline
@@ -246,48 +120,31 @@ for i, (gs, ps, audio) in enumerate(pipeline('Hello world!', voice='af_heart')):
     sf.write(f'{i}.wav', audio, 24000)
 ```
 
-For MPS GPU acceleration: `PYTORCH_ENABLE_MPS_FALLBACK=1 python your_script.py`
-
-## Deep dive
+## For contributors
 
 <details>
-<summary>Repository structure</summary>
+<summary>Repository layout, exporting models, in-repo memory</summary>
 
 ```
 kokoro-coreml/
-  coreml/                          # CoreML .mlpackage files (downloaded from HF)
-  swift/                           # Swift Package (KokoroPipeline)
-    Sources/KokoroPipeline/        # Pipeline library (production)
-    Sources/KokoroBenchmark/       # Benchmark CLI with batch mode + model cache
-  kokoro/                          # Python TTS library (PyTorch)
-  export_duration.py               # Duration model export
-  export_f0ntrain.py               # F0Ntrain export
-  export_decoder_pre.py            # DecoderPre export
-  export_synth/                    # GeneratorFromHar export
-  scripts/
-    setup_bakeoff.sh               # One-command setup
-    bakeoff_harness.py             # Benchmark harness
-    bakeoff_listen.py              # Render WAVs from benchmark inputs
-    download_models.py             # HF Hub downloader
+  Package.swift              # Root SwiftPM manifest: KokoroTTS, KokoroPipeline, KokoroG2P, kokoro-say
+  swift-tts/                 # KokoroTTS SDK (raw text -> speech) and kokoro-say
+  swift/                     # KokoroPipeline runtime, kokoro-bench, tests
+  scripts/                   # Exporters, HF release tooling (sdk_profiles.json), benchmarks
+  kokoro/                    # Python TTS library (PyTorch reference)
+  paper/                     # Surgical Inference paper, figures, frozen benchmark data
+  README/                    # Wiki, Notes, Plans, Guides
 ```
 
-</details>
-
-<details>
-<summary>Documentation index</summary>
-
-- [bakeoff-results.md](README/Notes/bakeoff-results.md) -- v5 cross-machine comparison (M2 Ultra, M2 Air, M1 Mini)
-- [performance-notes.md](README/Notes/performance-notes.md) -- full bakeoff history, stage breakdowns
-- [002-ane-optimization-plan.md](README/Plans/002-ane-optimization-plan.md) -- Linear→Conv1d swap (48→0 MIL linear ops)
-- [004-swift-prefix-rewrite-plan.md](README/Plans/004-swift-prefix-rewrite-plan.md) -- Swift pipeline architecture
-- [debug-notes.md](README/Notes/debug-notes.md) -- active issues and resolved investigations
-- [learnings.md](README/learnings.md) -- conversion challenges and solutions
-- [CoreML-Compute-Unit-Scheduling-guide.md](README/Guides/apple-silicon/CoreML-Compute-Unit-Scheduling-guide.md)
+- **Exports.** You don't need them to run anything: every shipped package is on Hugging Face. To re-export, use Python 3.12 and `uv sync`, then `uv run huggingface-cli download hexgrad/Kokoro-82M --local-dir kokoro-82m` for the weights. The exporters take `--weights kokoro-82m/kokoro-v1_0.pth --config kokoro-82m/config.json --out <dir>`: `scripts/export_duration_ane.py` and `scripts/export_f0ntrain_split.py` (split duration and F0Ntrain), `scripts/export_decoder_pre_ane.py` and `scripts/export_hybrid_generator.py`. The folded generator came from the lab probe `scripts/probe_generator_ane_fold.py`; see [ane-folded-generator.md](README/Notes/ane-folded-generator.md).
+- **Tests.** `uv run --with pytest python -m pytest -q`, plus `swift test` in `swift/` and `swift-tts/`.
+- **Releases.** The release section of [README/SDK.md](README/SDK.md).
+- **In-repo memory.** For current belief before changing runtime, export or benchmark behavior, start at [README/Wiki/README.md](README/Wiki/README.md). Check it with `node scripts/memory-health.mjs --strict`.
 
 </details>
 
 ---
 
-Built on [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) by [hexgrad](https://huggingface.co/hexgrad), [StyleTTS 2](https://github.com/yl4579/StyleTTS2) by [@yl4579](https://huggingface.co/yl4579), and Apple's coremltools.
+Built on [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) by [hexgrad](https://huggingface.co/hexgrad), [StyleTTS 2](https://github.com/yl4579/StyleTTS2) by [@yl4579](https://huggingface.co/yl4579), [MisakiSwift](https://github.com/mattmireles/MisakiSwift), and Apple's coremltools.
 
 Run it on your Mac. [Tell us how fast it is.](https://discord.gg/QuGxSWBfQy)

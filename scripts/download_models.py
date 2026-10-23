@@ -10,6 +10,8 @@ Usage::
     python scripts/download_models.py --coreml     # only coreml/ packages
     python scripts/download_models.py --voices     # only kokoro.js/voices/
     python scripts/download_models.py --force      # re-download even if present
+    python scripts/download_models.py --sdk-profile starter --revision <sha>
+                                                   # one SDK profile (scripts/sdk_profiles.json)
 
 The HF token is read from (in order):
   1. HF_TOKEN environment variable
@@ -20,44 +22,25 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
-import hashlib
 import json
-import os
 import sys
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-
-# Hugging Face repo that holds the model artifacts.
-HF_REPO_ID = "mattmireles/kokoro-coreml"
+from hf_common import DEFAULT_REPO_ID as HF_REPO_ID
+from hf_common import REPO_ROOT as _REPO_ROOT
+from hf_common import git_blob_sha1, load_hf_token, load_sdk_profiles, sha256_file
 
 # Patterns for each download group.  Matched against HF repo file paths.
-# The HF repo hosts only the curated runtime set under coreml/ (DecoderPre +
-# HAR-post buckets, F0Ntrain frame sizes, duration token sizes). Legacy
-# coreml_fp32/ and KokoroVocoder.mlpackage were removed from HF in June 2026;
-# the Swift runtime (swift/Sources/KokoroPipeline/KokoroPipeline.swift) never
-# loads them.
+# The HF repo hosts the runtime set under coreml/; the paper's frozen record
+# also sits in sibling coreml-*/ prefixes, which these patterns never fetch.
 COREML_PATTERNS = [
     "coreml/**",
 ]
 VOICE_PATTERNS = [
     "kokoro.js/voices/*.bin",
 ]
-ENGLISH_VOICE_PATTERNS = [
-    "kokoro.js/voices/af_*.bin",
-    "kokoro.js/voices/am_*.bin",
-    "kokoro.js/voices/bf_*.bin",
-    "kokoro.js/voices/bm_*.bin",
-]
-STARTER_BUCKET_SECONDS = [15]
-# The public SDK deliberately uses one padded duration shape. Shipping the
-# historical ladder added roughly 300 MB to first-run downloads even though
-# KokoroSDKModelProvider selects only t128, and each extra shape creates an
-# independent Core ML specialization path.
-SDK_DURATION_TOKEN_SIZES = [128]
-STARTER_VOICES = ["af_heart"]
 # Files to always skip (not model artifacts).
 # IMPORTANT: Do NOT add "*.json" here — it would exclude Manifest.json inside
 # .mlpackage directories, producing corrupt/incomplete packages.
@@ -98,20 +81,6 @@ IGNORE_PATTERNS = [
     "README/**",
     "outputs/**",
 ]
-
-
-def _load_token() -> str | None:
-    """Load HF token from env, .env file, or huggingface-cli cache."""
-    token = os.environ.get("HF_TOKEN")
-    if token:
-        return token
-    env_path = _REPO_ROOT / ".env"
-    if env_path.exists():
-        for line in env_path.read_text().splitlines():
-            line = line.strip()
-            if line.startswith("HF_TOKEN="):
-                return line.split("=", 1)[1].strip()
-    return None  # Falls back to huggingface-cli login cache.
 
 
 def download(
@@ -158,8 +127,10 @@ def _repair_missing_manifests(
     import glob as globmod
 
     repaired = 0
-    # Search all .mlpackage dirs anywhere under the repo root.
-    for pkg_dir in sorted(globmod.glob(str(_REPO_ROOT / "**" / "*.mlpackage"), recursive=True)):
+    # Only coreml/ holds downloaded packages (including coreml/hybrid/). The
+    # rest of the checkout has local experiment dirs (coreml-fold/, ...) whose
+    # paths do not exist on HF, so --force must not try to "repair" them.
+    for pkg_dir in sorted(globmod.glob(str(_REPO_ROOT / "coreml" / "**" / "*.mlpackage"), recursive=True)):
         pkg = Path(pkg_dir)
         manifest = pkg / "Manifest.json"
         if manifest.exists() and not force:
@@ -206,94 +177,45 @@ def _split_int_csv(raw: str | None) -> list[int]:
     return values
 
 
-# One flexible (RangeDim, GPU) generator serves every SDK bucket at the real
-# utterance length. MPSGraph on macOS 27 can abort on it (iOS 27 is gated too,
-# as a precaution), so every profile
-# also ships the per-bucket generators the runtime falls back to there
-# (PipelineConstants.flexibleGeneratorAllowed). Must match
-# scripts/build_sdk_bundle.mjs requiredPackages().
-SDK_FLEXIBLE_GENERATOR = "kokoro_decoder_har_post_range.mlpackage"
-FULL_BUCKET_SECONDS = [3, 7, 10, 15, 30]
-# The full (product) profile: three multifunction packages plus the
-# generators serve every bucket and duration shape for KokoroPipeline, and the
-# KokoroG2P assets live under g2p/. Must match build_sdk_bundle.mjs profiles.full.
-FULL_PACKAGES = [
-    "coreml/kokoro_duration_multifunction.mlpackage",
-    "coreml/kokoro_f0ntrain_multifunction.mlpackage",
-    "coreml/kokoro_decoder_pre_multifunction.mlpackage",
-    f"coreml/{SDK_FLEXIBLE_GENERATOR}",
-] + [f"coreml/kokoro_decoder_har_post_{bucket}s.mlpackage" for bucket in FULL_BUCKET_SECONDS]
-G2P_PATTERNS = ["g2p/**"]
+def sdk_profile(profile: str, voices: list[str], buckets: list[int]) -> dict:
+    """Return {voices, buckets, paths} for an SDK profile from sdk_profiles.json.
 
+    `paths` are repo-relative files or directories (bundle path == HF path).
+    custom expands the per-bucket template; the hybrid generator directory is
+    added only for buckets that use it (>= 7 s), with that bucket's row count.
+    Mirrors resolveProfile() in scripts/build_sdk_bundle.mjs.
+    """
 
-def _sdk_patterns(profile: str, voices: list[str], buckets: list[int]) -> list[str]:
-    """Return HF allow patterns for an SDK download profile."""
-
-    if profile == "full":
-        return [f"{package}/**" for package in FULL_PACKAGES] + ENGLISH_VOICE_PATTERNS + G2P_PATTERNS
-    if profile == "starter":
-        voices = voices or STARTER_VOICES
-        buckets = buckets or STARTER_BUCKET_SECONDS
-        duration_sizes = SDK_DURATION_TOKEN_SIZES
-    elif profile == "custom":
-        if not voices:
-            raise SystemExit("--sdk-profile custom requires --sdk-voices")
-        if not buckets:
-            raise SystemExit("--sdk-profile custom requires --sdk-buckets")
-        duration_sizes = SDK_DURATION_TOKEN_SIZES
-    else:
+    spec = load_sdk_profiles()
+    if profile in spec["profiles"]:
+        return dict(spec["profiles"][profile])
+    if profile != "custom":
         raise SystemExit(f"unknown SDK profile: {profile}")
-
-    patterns: list[str] = []
-    for size in duration_sizes:
-        patterns.append(f"coreml/kokoro_duration_t{size}.mlpackage/**")
+    if not voices or not buckets:
+        raise SystemExit("--sdk-profile custom requires --sdk-voices and --sdk-buckets")
+    custom = spec["custom"]
+    paths = list(custom["paths"])
+    rows = set()
     for bucket in buckets:
-        t_frames = bucket * 40
-        patterns.extend([
-            f"coreml/kokoro_f0ntrain_t{t_frames}.mlpackage/**",
-            f"coreml/kokoro_decoder_pre_{bucket}s.mlpackage/**",
-            f"coreml/kokoro_decoder_har_post_{bucket}s.mlpackage/**",
-        ])
-    patterns.append(f"coreml/{SDK_FLEXIBLE_GENERATOR}/**")
-    for voice in voices:
-        patterns.append(f"kokoro.js/voices/{voice}.bin")
-    return patterns
+        t_frames = custom["t_frames"].get(str(bucket))
+        if t_frames is None:
+            raise SystemExit(f"unsupported SDK bucket {bucket}; choose from {sorted(map(int, custom['t_frames']))}")
+        paths += [p.format(bucket=bucket, t_frames=t_frames) for p in custom["bucket_paths"]]
+        if str(bucket) in custom["hybrid_rows"]:
+            rows.add(custom["hybrid_rows"][str(bucket)])
+    if rows:
+        paths += custom["hybrid_paths"]
+        paths += [custom["hybrid_row_path"].format(rows=n) for n in sorted(rows)]
+    return {"voices": list(voices), "buckets": list(buckets), "paths": list(dict.fromkeys(paths))}
 
 
-def _sdk_required_packages(profile: str, voices: list[str], buckets: list[int]) -> list[str]:
-    """Return model package directories required by an SDK profile."""
+def sdk_patterns(config: dict) -> list[str]:
+    """Return HF allow patterns for a resolved SDK profile."""
 
-    if profile == "full":
-        return list(FULL_PACKAGES)
-    if profile == "starter":
-        buckets = buckets or STARTER_BUCKET_SECONDS
-        duration_sizes = SDK_DURATION_TOKEN_SIZES
-    elif profile == "custom":
-        duration_sizes = SDK_DURATION_TOKEN_SIZES
-    else:
-        raise SystemExit(f"unknown SDK profile: {profile}")
-
-    packages: list[str] = []
-    for size in duration_sizes:
-        packages.append(f"coreml/kokoro_duration_t{size}.mlpackage")
-    for bucket in buckets:
-        packages.extend([
-            f"coreml/kokoro_f0ntrain_t{bucket * 40}.mlpackage",
-            f"coreml/kokoro_decoder_pre_{bucket}s.mlpackage",
-            f"coreml/kokoro_decoder_har_post_{bucket}s.mlpackage",
-        ])
-    packages.append(f"coreml/{SDK_FLEXIBLE_GENERATOR}")
-    return packages
-
-
-def _sha256_file(path: Path) -> str:
-    """Compute a SHA-256 digest for a regular file."""
-
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    patterns = []
+    for path in config["paths"]:
+        patterns += [path, f"{path}/**"]
+    return patterns + [f"kokoro.js/voices/{voice}.bin" for voice in config["voices"]]
 
 
 def _matches_any(path: str, patterns: list[str]) -> bool:
@@ -329,31 +251,26 @@ def _repo_files_for_patterns(repo_id: str, revision: str | None, patterns: list[
             continue
         if not _matches_any(path, patterns) or _matches_any(path, IGNORE_PATTERNS):
             continue
-        size = getattr(item, "size", None)
-        lfs = getattr(item, "lfs", None)
-        sha256 = None
-        if isinstance(lfs, dict):
-            sha256 = lfs.get("sha256")
-            size = size if size is not None else lfs.get("size")
-        elif lfs is not None:
-            sha256 = getattr(lfs, "sha256", None)
-            size = size if size is not None else getattr(lfs, "size", None)
-        if not sha256:
-            local = _REPO_ROOT / path
-            if local.is_file():
-                sha256 = _sha256_file(local)
-        if size is None:
-            local = _REPO_ROOT / path
-            if local.is_file():
-                size = local.stat().st_size
-        if size is None or not sha256:
-            raise SystemExit(f"could not determine HF digest metadata for {path}")
-        files.append({
-            "path": path,
-            "bytes": int(size),
-            "sha256": sha256,
-        })
+        files.append(_verified_file_record(item, _REPO_ROOT / path))
     return sorted(files, key=lambda item: item["path"])
+
+
+def _verified_file_record(item, local: Path) -> dict:
+    """Return {path, bytes, sha256} for one HF file.
+
+    LFS files carry an HF-side sha256, recorded as is (build_sdk_bundle.mjs
+    later checks local bytes against it). Small non-LFS files carry only a git
+    blob id, so the local file must match that blob id before its local sha256
+    is recorded; otherwise the manifest would vouch for whatever is on disk.
+    """
+
+    lfs = item.lfs
+    if lfs is not None:
+        sha256 = lfs["sha256"] if isinstance(lfs, dict) else lfs.sha256
+        return {"path": item.path, "bytes": int(item.size), "sha256": sha256}
+    if not local.is_file() or git_blob_sha1(local) != item.blob_id:
+        raise SystemExit(f"local file does not match HF blob id for {item.path}")
+    return {"path": item.path, "bytes": local.stat().st_size, "sha256": sha256_file(local)}
 
 
 def _write_download_manifest(
@@ -410,7 +327,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--sdk-profile",
-        choices=["starter", "custom", "full"],
+        choices=[*load_sdk_profiles()["profiles"], "custom"],
         help="Download SDK-oriented artifact profile",
     )
     parser.add_argument(
@@ -423,7 +340,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    token = _load_token()
+    token = load_hf_token()
     if token:
         print("Using HF token from configured credentials.")
     else:
@@ -434,11 +351,8 @@ def main() -> None:
     sdk_buckets = _split_int_csv(args.sdk_buckets)
 
     if args.sdk_profile:
-        patterns = _sdk_patterns(
-            args.sdk_profile,
-            voices=sdk_voices,
-            buckets=sdk_buckets,
-        )
+        sdk_config = sdk_profile(args.sdk_profile, sdk_voices, sdk_buckets)
+        patterns = sdk_patterns(sdk_config)
         label = f"SDK {args.sdk_profile} profile"
     elif args.coreml and not args.voices:
         patterns = COREML_PATTERNS
@@ -484,37 +398,24 @@ def main() -> None:
         print(f"\nDownload failed: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    # Verify key artifacts exist and are complete (have Manifest.json).
-    if args.sdk_profile:
-        checks = [
-            (rel_path, rel_path.removeprefix("coreml/").removesuffix(".mlpackage"))
-            for rel_path in _sdk_required_packages(args.sdk_profile, sdk_voices, sdk_buckets)
-        ]
-    else:
-        checks = [
-            ("coreml/kokoro_duration.mlpackage", "Duration model (legacy fallback)"),
-            ("coreml/kokoro_duration_t512.mlpackage", "Duration t512"),
-            ("coreml/kokoro_f0ntrain_t120.mlpackage", "F0Ntrain t120"),
-            ("coreml/kokoro_decoder_pre_3s.mlpackage", "DecoderPre 3s"),
-            ("coreml/kokoro_decoder_har_post_3s.mlpackage", "HAR-post 3s"),
-            ("coreml/kokoro_decoder_har_post_10s.mlpackage", "HAR-post 10s"),
-        ]
+    # Verify the profile's artifacts exist and packages are complete.
     all_ok = True
-    for rel_path, label in checks:
+    required = []
+    if args.sdk_profile:
+        required = sdk_config["paths"] + [f"kokoro.js/voices/{v}.bin" for v in sdk_config["voices"]]
+    for rel_path in required:
         p = _REPO_ROOT / rel_path
-        manifest = p / "Manifest.json"
-        weights = p / "Data" / "com.apple.CoreML" / "weights" / "weight.bin"
         if not p.exists():
-            print(f"  MISSING: {label} ({rel_path})")
+            print(f"  MISSING: {rel_path}")
             all_ok = False
-        elif not manifest.exists():
-            print(f"  INCOMPLETE: {label} — missing Manifest.json")
+        elif p.suffix == ".mlpackage" and not (p / "Manifest.json").exists():
+            print(f"  INCOMPLETE: {rel_path} — missing Manifest.json")
             all_ok = False
-        elif not weights.exists():
-            print(f"  INCOMPLETE: {label} — missing weight.bin")
+        elif p.suffix == ".mlpackage" and not (p / "Data" / "com.apple.CoreML" / "weights" / "weight.bin").exists():
+            print(f"  INCOMPLETE: {rel_path} — missing weight.bin")
             all_ok = False
         else:
-            print(f"  OK: {label}")
+            print(f"  OK: {rel_path}")
 
     # Also check all .mlpackage dirs under coreml/ for completeness.
     import glob as globmod

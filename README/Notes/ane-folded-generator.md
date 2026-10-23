@@ -1184,6 +1184,10 @@ number is unchanged by this; the penalty there has no public-API fix found.
 **First spotted:** 2026-10-22
 **Status:** Active (opt-in `KOKORO_HYBRID_E5=1`; not for App Store builds)
 
+**Build flag (2026-10-23):** the e5rt code is compiled out by default (`#if KOKORO_E5`), so SDK and app binaries carry no private-framework strings. To reproduce the plan 014 `hybrid-e5` column, build with
+`swift build -c release --package-path swift -Xswiftc -DKOKORO_E5` and run with `KOKORO_HYBRID_GENERATOR=1 KOKORO_HYBRID_E5=1`. iPhone bench (no project change; the setting reaches the KokoroPipeline package target):
+`xcodebuild -project ios-bench/KokoroIPhoneBench.xcodeproj -scheme KokoroIPhoneBench -configuration Release -destination 'generic/platform=iOS' -allowProvisioningUpdates 'OTHER_SWIFT_FLAGS=$(inherited) -DKOKORO_E5' build`, then launch with `-e '{"KOKORO_HYBRID_E5":"1"}'` plus `--hybrid-generator`. Without the flag, `KOKORO_HYBRID_E5=1` fails with "needs a build with -Xswiftc -DKOKORO_E5": a benchmark run (`KOKORO_HYBRID_GENERATOR=1` or `--hybrid-generator`) stops, and an app falls back to folded with a stderr line. The plan 014 apps predate the gate (e5rt always compiled in); same code path.
+
 ### Summary
 
 Core ML needs every tensor to be its own IOSurface of exactly the tensor's

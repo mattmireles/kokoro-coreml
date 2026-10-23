@@ -5,19 +5,24 @@ This script uploads only lightweight metadata and docs, in ONE HF commit:
 
 - README.md, sourced from README/hf-model-card.md.
 - Top-level HostedManifest.json and KokoroRuntimeManifest.json for the starter
-  profile, preserving the current public discovery contract.
+  profile: the one hydratable manifest (KokoroDownloadedModelStore).
 - sdk/<profile>/KokoroRuntimeManifest.json for each checked bundle profile.
-- sdk/full/HostedManifest.json, the product manifest.
-- Runtime and voice files both manifests reference, copied to the HF root.
+- Runtime and voice files the starter hosted manifest references, at the root.
 - sdk/SDKReleaseManifest.json, which records checksums and profile summaries.
-- Deletion of stale files (sdk/starter/HostedManifest.json).
+- Deletion of stale files (see STALE_PATHS).
+
+There is no full hosted manifest. KokoroDownloadedModelStore resolves each
+hosted path against the manifest URL's folder and stores it at the same path
+under its cache root, so only a manifest at the HF root, whose paths mirror the
+bundle layout, can hydrate. Full is consumed with download_models.py
+--sdk-profile full + build_sdk_bundle.mjs; sdk/full/KokoroRuntimeManifest.json
+records what that yields.
 
 Model packages (coreml/) and G2P assets (g2p/) are uploaded beforehand by
-upload_hf_artifacts.py. Every path in both hosted manifests is repo-root
-relative, so each manifest is hydratable at the commit this script creates --
-and only there or later. Before committing, files the payload does not carry
-are checked at the parent commit; after committing, both manifests are
-hydrated at the new commit SHA and every file is checked. That SHA is the pin.
+upload_hf_artifacts.py. Before committing, every file the inventory manifests
+(INVENTORY_MANIFESTS) name that the payload does not carry is checked at the
+parent commit; after committing, all of them are checked at the new commit
+SHA. That SHA is the pin.
 """
 
 from __future__ import annotations
@@ -25,7 +30,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -33,15 +38,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from hf_common import ARTIFACT_PREFIXES, DEFAULT_REPO_ID, INVENTORY_MANIFESTS, REPO_ROOT, load_hf_token, sha256_file
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_REPO_ID = "mattmireles/kokoro-coreml"
 PAYLOAD_MARKER = ".kokoro-hf-sdk-metadata"
-# Hosted manifests published by this script, relative to the HF repo root.
-HOSTED_MANIFESTS = {"starter": "HostedManifest.json", "full": "sdk/full/HostedManifest.json"}
-# Paths hosted by upload_hf_artifacts.py, never by this metadata commit.
-ARTIFACT_PREFIXES = ("coreml/", "g2p/")
-STALE_PATHS = ("sdk/starter/HostedManifest.json",)
+# sdk/full/HostedManifest.json used repo-root paths under sdk/full/, which the
+# Swift store resolves to sdk/full/coreml/... and 404s; it is deleted.
+STALE_PATHS = ("sdk/starter/HostedManifest.json", "sdk/full/HostedManifest.json")
 
 
 @dataclass(frozen=True)
@@ -78,9 +80,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--verify",
         metavar="SHA",
-        help="Only hydrate-check both hosted manifests at this HF commit.",
+        help="Only hydrate-check the starter hosted manifest and the full runtime manifest at this HF commit.",
     )
     args = parser.parse_args()
+    if args.verify and not re.fullmatch(r"[0-9a-f]{40}", args.verify):
+        parser.error("--verify needs a full 40-hex HF commit SHA")
     if not args.verify and not (args.output and args.starter_bundle and args.full_bundle):
         parser.error("--output, --starter-bundle and --full-bundle are required unless --verify is given")
     return args
@@ -97,16 +101,6 @@ def git_head() -> str:
         capture_output=True,
     )
     return result.stdout.strip()
-
-
-def sha256_file(path: Path) -> str:
-    """Compute a SHA-256 digest for one regular file."""
-
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def assert_safe_output_directory(output: Path) -> None:
@@ -160,28 +154,14 @@ def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def load_hf_token() -> str | None:
-    """Load an HF token using the same env/.env/cache order as the downloader."""
+def copy_manifest_pair(
+    profile: ProfileInput, output: Path, sdk_commit: str, repo_id: str
+) -> dict[str, Any]:
+    """Copy profile manifests into the payload and return release metadata.
 
-    token = os.environ.get("HF_TOKEN")
-    if token:
-        return token
-    env_path = REPO_ROOT / ".env"
-    if env_path.exists():
-        for line in env_path.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if stripped.startswith("HF_TOKEN="):
-                return stripped.split("=", 1)[1].strip()
-    try:
-        from huggingface_hub import HfFolder
-
-        return HfFolder.get_token()
-    except Exception:
-        return None
-
-
-def copy_manifest_pair(profile: ProfileInput, output: Path, sdk_commit: str, repo_id: str) -> dict[str, Any]:
-    """Copy profile manifests into the payload and return release metadata."""
+    Refuses a bundle built from uncommitted sources (sdk_commit ``<sha>-dirty``):
+    its manifests would vouch for code no commit holds.
+    """
 
     runtime_src = profile.bundle / "KokoroRuntimeManifest.json"
     hosted_src = profile.bundle / "HostedManifest.json"
@@ -191,6 +171,11 @@ def copy_manifest_pair(profile: ProfileInput, output: Path, sdk_commit: str, rep
     runtime = load_json(runtime_src)
     hosted = load_json(hosted_src)
     observed_commit = runtime.get("sdk_commit")
+    if str(observed_commit).endswith("-dirty"):
+        raise SystemExit(
+            f"{profile.name} bundle is dirty (sdk_commit {observed_commit}); rebuild it from a clean "
+            "checkout of the release commit"
+        )
     if observed_commit != sdk_commit:
         raise SystemExit(
             f"{profile.name} manifest sdk_commit mismatch: expected {sdk_commit}, observed {observed_commit}"
@@ -211,7 +196,6 @@ def copy_manifest_pair(profile: ProfileInput, output: Path, sdk_commit: str, rep
         "sdk_commit": observed_commit,
         "hf_repo_id": runtime.get("hf_repo_id"),
         "hf_artifact_revision": runtime.get("hf_artifact_revision"),
-        "hosted_manifest": HOSTED_MANIFESTS[profile.name],
         "hosted_version": hosted.get("version"),
         "minimum_platforms": runtime.get("minimum_platforms"),
         "buckets": runtime.get("buckets"),
@@ -225,8 +209,7 @@ def copy_manifest_pair(profile: ProfileInput, output: Path, sdk_commit: str, rep
 def copy_top_level_hosted_files(bundle: Path, output: Path) -> list[dict[str, Any]]:
     """Copy a bundle's runtime and voice files to the payload root.
 
-    Model packages and G2P assets are already canonical HF paths. A file both
-    profiles carry must be byte-identical, since both land on one HF path.
+    Model packages and G2P assets are already canonical HF paths.
     """
 
     hosted = load_json(bundle / "HostedManifest.json")
@@ -241,29 +224,10 @@ def copy_top_level_hosted_files(bundle: Path, output: Path) -> list[dict[str, An
         if not source.is_file():
             raise SystemExit(f"{bundle} HostedManifest references missing local file: {relative_path}")
         destination = contained_payload_path(output, relative_path)
-        if destination.exists():
-            if sha256_file(destination) != sha256_file(source):
-                raise SystemExit(f"profiles disagree on the bytes of {relative_path}")
-        else:
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
         records.append(file_record(output, destination))
     return records
-
-
-def write_full_hosted_manifest(full_bundle: Path, output: Path) -> None:
-    """Write sdk/full/HostedManifest.json with every path HF-repo-root relative.
-
-    The bundle layout mirrors the HF root (coreml/, voices/, runtime/, g2p/)
-    except for the runtime manifest, which lives under sdk/full/ on HF.
-    """
-
-    hosted = load_json(full_bundle / "HostedManifest.json")
-    for entry in hosted["files"]:
-        if entry["path"] == "KokoroRuntimeManifest.json":
-            entry["path"] = "sdk/full/KokoroRuntimeManifest.json"
-    destination = output / HOSTED_MANIFESTS["full"]
-    destination.write_text(json.dumps(hosted, indent=2) + "\n", encoding="utf-8")
 
 
 def prepare_payload(args: argparse.Namespace) -> Path:
@@ -284,7 +248,9 @@ def prepare_payload(args: argparse.Namespace) -> Path:
         ProfileInput("starter", args.starter_bundle.resolve()),
         ProfileInput("full", args.full_bundle.resolve()),
     ]
-    profile_records = [copy_manifest_pair(profile, output, sdk_commit, args.repo_id) for profile in profiles]
+    profile_records = [
+        copy_manifest_pair(profile, output, sdk_commit, args.repo_id) for profile in profiles
+    ]
     revisions = {profile["hf_artifact_revision"] for profile in profile_records}
     repo_ids = {profile["hf_repo_id"] for profile in profile_records}
     if repo_ids != {args.repo_id}:
@@ -296,11 +262,6 @@ def prepare_payload(args: argparse.Namespace) -> Path:
     shutil.copy2(args.starter_bundle.resolve() / "HostedManifest.json", output / "HostedManifest.json")
     shutil.copy2(starter_profile_dir / "KokoroRuntimeManifest.json", output / "KokoroRuntimeManifest.json")
     top_level_hosted_files = copy_top_level_hosted_files(args.starter_bundle.resolve(), output)
-    top_level_hosted_files += copy_top_level_hosted_files(args.full_bundle.resolve(), output)
-    top_level_hosted_files = sorted({r["path"]: r for r in top_level_hosted_files}.values(), key=lambda r: r["path"])
-    write_full_hosted_manifest(args.full_bundle.resolve(), output)
-    for profile in profile_records:
-        profile["hosted_manifest_record"] = file_record(output, output / profile["hosted_manifest"])
 
     manifest = {
         "schema_version": 1,
@@ -370,12 +331,12 @@ def check_hosted_entries(api: Any, repo_id: str, revision: str, entries: list[di
 
 
 def verify_published(api: Any, repo_id: str, revision: str, payload: Path | None = None) -> None:
-    """Hydrate-check every hosted manifest at `revision`; exit non-zero on any mismatch."""
+    """Check every inventory manifest's files at `revision`; exit non-zero on any mismatch."""
 
-    from inspect_hf_artifacts import fetch_repo_bytes
+    from inspect_hf_artifacts import fetch_repo_bytes, manifest_entries
 
     failed = False
-    for profile, manifest_path in HOSTED_MANIFESTS.items():
+    for profile, manifest_path in INVENTORY_MANIFESTS.items():
         data = fetch_repo_bytes(repo_id, revision, manifest_path)
         if data is None:
             print(f"FAIL {manifest_path}: missing at {revision}")
@@ -386,7 +347,7 @@ def verify_published(api: Any, repo_id: str, revision: str, payload: Path | None
             print(f"FAIL {manifest_path}: published bytes differ from the prepared payload")
             failed = True
             continue
-        entries = json.loads(data)["files"]
+        entries = manifest_entries(json.loads(data))
         problems = check_hosted_entries(api, repo_id, revision, entries)
         total = sum(entry["bytes"] for entry in entries)
         if problems:
@@ -409,6 +370,8 @@ def upload_payload(repo_id: str, payload: Path) -> str:
 
     from huggingface_hub import CommitOperationAdd, CommitOperationDelete
 
+    from inspect_hf_artifacts import manifest_entries
+
     api = hf_api()
     parent = api.model_info(repo_id).sha
 
@@ -416,8 +379,8 @@ def upload_payload(repo_id: str, payload: Path) -> str:
     # right at the parent, or the new commit would publish broken manifests.
     carried = {p.relative_to(payload).as_posix() for p in payload.rglob("*") if p.is_file()}
     external = {}
-    for manifest_path in HOSTED_MANIFESTS.values():
-        for entry in load_json(payload / manifest_path)["files"]:
+    for manifest_path in INVENTORY_MANIFESTS.values():
+        for entry in manifest_entries(load_json(payload / manifest_path)):
             if entry["path"] not in carried:
                 external[entry["path"]] = entry
     problems = check_hosted_entries(api, repo_id, parent, sorted(external.values(), key=lambda e: e["path"]))
@@ -453,6 +416,7 @@ def main() -> None:
     if args.verify:
         verify_published(hf_api(), args.repo_id, args.verify)
         return
+    args.sdk_commit = args.sdk_commit or git_head()
     payload = prepare_payload(args)
     if args.upload:
         upload_payload(args.repo_id, payload)

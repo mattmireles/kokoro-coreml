@@ -26,8 +26,13 @@ public enum HybridGeneratorError: Error {
     case noMetal
     case badPlan(String)
     /// A Metal command buffer failed (e.g. iOS refuses GPU work in the
-    /// background). Callers fall back to the folded ANE generator.
+    /// background). The SDK falls back to the folded ANE generator; a benchmark
+    /// that requested the hybrid fails instead (HybridGeneratorGate.swift).
     case metalFailed(String)
+    /// Core ML could not load the compiled hybrid model: the one failure a
+    /// stale or corrupt compile cache explains, so the only one providers retry
+    /// after evicting the cache.
+    case modelLoad(String)
 }
 
 /// plan.json written by scripts/export_hybrid_generator.py.
@@ -88,6 +93,7 @@ final class SharedTensor {
     let channels: Int
     let width: Int
     let rows: Int
+    #if KOKORO_E5
     /// A tensor at `offset` in an e5rt arena (no Core ML array of its own).
     init(arena: E5Arena, offset: Int, rows: Int, channels: Int, width: Int) throws {
         self.rows = rows
@@ -100,6 +106,7 @@ final class SharedTensor {
         array = try MLMultiArray(dataPointer: buffer.contents() + self.offset, shape: [rows, channels, 1, width].map { NSNumber(value: $0) },
                                  dataType: .float16, strides: [channels * width, width, width, 1].map { NSNumber(value: $0) })
     }
+    #endif
 
     init(device: MTLDevice, rows: Int, channels: Int, width: Int) throws {
         offset = 0
@@ -182,9 +189,11 @@ public final class HybridGenerator {
     let applyPhasePipe: MTLComputePipelineState
     let models: [String: MLModel]
     let table: [Float]
+    #if KOKORO_E5
     private var e5Library: E5Library?
     private var e5Arena: E5Arena?
     private var e5Layout: HybridArenaLayout?
+    #endif
     /// Accumulated seconds per step kind when KOKORO_HYBRID_PROFILE=1.
     public private(set) var profile: [String: Double] = [:]
     private let profiling = ProcessInfo.processInfo.environment["KOKORO_HYBRID_PROFILE"] == "1"
@@ -271,15 +280,17 @@ public final class HybridGenerator {
     private var har6Scratch: [Float] = []
     private func pooled(_ key: String, _ c: Int, _ w: Int) throws -> SharedTensor {
         if let t = pool[key] { return t }
-        let t: SharedTensor
+        #if KOKORO_E5
         if let arena = e5Arena, let layout = e5Layout {
             guard let offset = layout.offsets[key], layout.lengths[key] == rows * c * w * 2 else {
                 throw HybridGeneratorError.badPlan("arena layout has no slot for \(key) (\(c) x \(w))")
             }
-            t = try SharedTensor(arena: arena, offset: offset, rows: rows, channels: c, width: w)
-        } else {
-            t = try SharedTensor(device: device, rows: rows, channels: c, width: w)
+            let t = try SharedTensor(arena: arena, offset: offset, rows: rows, channels: c, width: w)
+            pool[key] = t
+            return t
         }
+        #endif
+        let t = try SharedTensor(device: device, rows: rows, channels: c, width: w)
         pool[key] = t
         return t
     }
@@ -289,52 +300,13 @@ public final class HybridGenerator {
     /// Each stage-2 chain holds three ~40 MB tensors at 30 s.
     let maxChains = max(1, min(3, Int(ProcessInfo.processInfo.environment["KOKORO_HYBRID_CHAINS"] ?? "") ?? 3))
 
-    /// Compiled .mlmodelc per package, once per process (compiling takes ~7 s).
-    private static var compiledURLs: [URL: URL] = [:]
-    private static let compileLock = NSLock()
-    private static func compiled(_ package: URL) throws -> URL {
-        compileLock.lock()
-        defer { compileLock.unlock() }
-        if let url = compiledURLs[package] { return url }
-        let url = try MLModel.compileModel(at: package)
-        compiledURLs[package] = url
-        return url
-    }
-
-    /// Environment switch: `1` lets providers use the hybrid generator.
-    public static let envKey = "KOKORO_HYBRID_GENERATOR"
-    public static var enabled: Bool { ProcessInfo.processInfo.environment[envKey] == "1" }
-
-    /// Shortest bucket the hybrid serves. Below it the folded generator wins:
-    /// the hybrid's ~100 Core ML/Metal round trips are a fixed cost (3 s,
-    /// wall: M1 211 vs 135 ms folded, M2 Air 200 vs 103 ms), while from 7 s up
-    /// the hybrid is 1.5-2x faster than folded.
-    public static let minBucketSec = 7
-
-    /// Row count for `xPreFrames` (80 Hz) in a bucket: the smallest packaged row
-    /// count that holds them. Ship few packages that match the chunker (e.g. r4
-    /// for 10 s phone chunks, r6 for 15 s, r11 for 30 s): each row-count switch
-    /// reloads 53 function models (~0.35-0.5 s on an M1).
-    public static func rows(bucketSec: Int, xPreFrames: Int, directory: URL) -> Int? {
-        guard bucketSec >= minBucketSec else { return nil }
-        guard let data = try? Data(contentsOf: directory.appendingPathComponent("plan.json")),
-              let plan = try? JSONDecoder().decode(HybridPlan.self, from: data) else { return nil }
-        let needed = (xPreFrames + plan.core - 1) / plan.core
-        let fm = FileManager.default
-        func hasPackage(_ r: Int) -> Bool {
-            fm.fileExists(atPath: directory.appendingPathComponent("hybrid_generator_r\(r).mlpackage").path)
-                || fm.fileExists(atPath: directory.appendingPathComponent("hybrid_generator_r\(r).mlmodelc").path)
-        }
-        // KOKORO_HYBRID_ROWS=4,11: only these packaged row counts (benchmarks that
-        // mimic an app shipping fewer packages).
-        let only = ProcessInfo.processInfo.environment["KOKORO_HYBRID_ROWS"].map { Set($0.split(separator: ",").compactMap { Int($0) }) }
-        return plan.rows.sorted().first { $0 >= needed && hasPackage($0) && (only?.contains($0) ?? true) }
-    }
-
     /// - Parameters:
     ///   - directory: folder with hybrid_generator_r{rows}.mlpackage (or .mlmodelc), plan.json, adain.bin.
     ///   - rows: one of plan.rows (the bucket's row count).
-    public init(directory: URL, rows: Int) throws {
+    ///   - compiledModel: the compiled hybrid_generator_r{rows}.mlmodelc from the
+    ///     caller's compiled-model cache. Nil: a .mlmodelc next to the package,
+    ///     else a compile once per process (~7 s, the benchmark's path).
+    public init(directory: URL, rows: Int, compiledModel: URL? = nil) throws {
         plan = try JSONDecoder().decode(HybridPlan.self, from: Data(contentsOf: directory.appendingPathComponent("plan.json")))
         guard plan.rows.contains(rows) else { throw HybridGeneratorError.badPlan("rows \(rows) not in \(plan.rows)") }
         // The Metal kernels read phase-major rows four samples at a time.
@@ -343,7 +315,11 @@ public final class HybridGenerator {
         }
         self.rows = rows
         let tableData = try Data(contentsOf: directory.appendingPathComponent("adain.bin"))
+        guard tableData.count % MemoryLayout<Float>.size == 0 else {
+            throw HybridGeneratorError.badPlan("adain.bin is \(tableData.count) bytes, not whole floats")
+        }
         table = tableData.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+        try Self.checkAdaINOffsets(plan.adain, tableCount: table.count)
         guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else {
             throw HybridGeneratorError.noMetal
         }
@@ -359,12 +335,15 @@ public final class HybridGenerator {
         applyPhasePipe = try device.makeComputePipelineState(function: lib.makeFunction(name: "apply_phase")!)
 
         // One fixed-shape package per row count: the ANE ran enumerated shapes ~5x slower.
-        var modelURL = directory.appendingPathComponent("hybrid_generator_r\(rows).mlmodelc")
+        var modelURL = compiledModel ?? directory.appendingPathComponent("hybrid_generator_r\(rows).mlmodelc")
         if !FileManager.default.fileExists(atPath: modelURL.path) {
             modelURL = try Self.compiled(directory.appendingPathComponent("hybrid_generator_r\(rows).mlpackage"))
         }
+        #if KOKORO_E5
         // KOKORO_HYBRID_E5=1: private e5rt dispatch with all tensors in one
         // lifetime-planned arena (E5Runtime.swift, HybridArenaLayout.swift).
+        // Compiled only with -DKOKORO_E5 (benchmarks): it names private
+        // frameworks, which App Store review rejects.
         if ProcessInfo.processInfo.environment["KOKORO_HYBRID_E5"] == "1" {
             let layout = HybridArenaLayout(rows: rows, w0: plan.w0, w1: plan.w1, w2s: plan.w2s, q6: plan.q6, chains: maxChains,
                                            shared: HybridArenaLayout.sharesMemoryOnThisDevice)
@@ -375,6 +354,14 @@ public final class HybridGenerator {
             logFootprint("hybrid.loaded e5 r\(rows)")
             return
         }
+        #else
+        // Fail loudly rather than time the public path under an e5rt label: the
+        // benchmarks request the hybrid (HybridGenerator.requested), so this
+        // error fails the run instead of falling back to folded.
+        if ProcessInfo.processInfo.environment["KOKORO_HYBRID_E5"] == "1" {
+            throw HybridGeneratorError.badPlan("KOKORO_HYBRID_E5=1 needs a build with -Xswiftc -DKOKORO_E5")
+        }
+        #endif
         // Load the functions concurrently: a serial loop took ~1.4 s on an M1,
         // paid again on every bucket switch (one generator stays resident).
         let names = plan.functions
@@ -388,7 +375,9 @@ public final class HybridGenerator {
             lock.lock(); slots[i] = r; lock.unlock()
         }
         var loaded: [String: MLModel] = [:]
-        for (i, name) in names.enumerated() { loaded[name] = try slots[i]!.get() }
+        for (i, name) in names.enumerated() {
+            do { loaded[name] = try slots[i]!.get() } catch { throw HybridGeneratorError.modelLoad("\(name): \(error)") }
+        }
         // A package exported for another plan (e.g. before the stage-2 crop) fails
         // later with a shape error deep in a run; check the output width up front.
         let postWidth = loaded["post"]?.modelDescription.outputDescriptionsByName["y"]?.multiArrayConstraint?.shape.last?.intValue
@@ -506,6 +495,12 @@ public final class HybridGenerator {
         if metalFailure == nil { metalFailure = cb.error.map { "\($0)" } ?? "command buffer error" }
         failureLock.unlock()
     }
+    private func throwIfMetalFailed() throws {
+        failureLock.lock()
+        let failure = metalFailure
+        failureLock.unlock()
+        if let failure { throw HybridGeneratorError.metalFailed(failure) }
+    }
 
     /// mode 0: out = a; 1: out += a; 2: out = (out + a) * zm * scale; 3: out = (a + b) * zm.
     private func join(_ a: SharedTensor, _ b: SharedTensor?, zm: SharedTensor, out: SharedTensor, mode: Int, scale: Float = 1) {
@@ -559,9 +554,11 @@ public final class HybridGenerator {
     // MARK: - ANE steps
 
     private func ane(_ name: String, _ inputs: [String: SharedTensor], out: SharedTensor) throws {
+        try throwIfMetalFailed()   // stop at the next ANE call, not after the whole run
         let perFunction = ProcessInfo.processInfo.environment["KOKORO_HYBRID_PROFILE_FN"] == "1"
         let key = perFunction || !(name.hasPrefix("rb") || name.hasPrefix("nr")) ? "ane.\(name)" : "ane.\(out.channels == 256 ? "s1" : "s2")"
         let a = CACurrentMediaTime()
+        #if KOKORO_E5
         if let op = e5Library?.operation(name) {   // private e5rt path (E5Runtime.swift)
             try timed(key) { try op.run(inputs: inputs.mapValues { $0.e5! }, output: ("y", out.e5!)) }
             let b = CACurrentMediaTime()
@@ -569,6 +566,7 @@ public final class HybridGenerator {
             noteCall(name, a, b)
             return
         }
+        #endif
         let opts = MLPredictionOptions()
         opts.outputBackings = ["y": out.array]
         let provider = try MLDictionaryFeatureProvider(dictionary: inputs.mapValues { MLFeatureValue(multiArray: $0.array) })
@@ -620,7 +618,7 @@ public final class HybridGenerator {
     public func run(xPre: [Float], har: [Float], style: [Float],
                     sm1: [Float], zm1: [Float], sm2: [Float], zm2: [Float]) throws -> MLMultiArray {
         profile = [:]
-        metalFailure = nil
+        failureLock.lock(); metalFailure = nil; failureLock.unlock()
         let runStart = CACurrentMediaTime()
         runStartTime = runStart
         defer { summarizeTimeline(start: runStart, end: CACurrentMediaTime()); printCalls() }
@@ -767,6 +765,8 @@ public final class HybridGenerator {
                 xs2 = try resblock("nr1", start: n1In, ch: n1Chain, sm: m2s, zm: m2z, count: count2)
             } catch { n1Error = error }
         }
+        // Join on every exit: a stage-1 throw must not leave this branch issuing ANE/Metal work.
+        defer { n1Group.wait() }
 
         // Stage 1.
         let x1 = try pooled("x1", 256, w1)
@@ -805,7 +805,7 @@ public final class HybridGenerator {
         let logits = try pooled("logits", 22, w2s)
         try ane("post", ["x": acc2], out: logits)
 
-        if let metalFailure { throw HybridGeneratorError.metalFailed(metalFailure) }
+        try throwIfMetalFailed()
         guard crop > 0 else { return logits.hostView }
         // Back to the host's w2-wide layout (the crop margins stay zero; the unfold reads cores only).
         let wide = try MLMultiArray(shape: [r, 22, 1, w2].map { NSNumber(value: $0) }, dataType: .float16)
