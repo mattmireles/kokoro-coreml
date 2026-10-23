@@ -15,9 +15,9 @@ tags:
   - on-device
 ---
 
-# Kokoro 82M TTS -- Surgically Optimized for Apple Silicon
+# Kokoro TTS: 9.8x faster than MLX on an M1 Mac
 
-**27 seconds of speech in 309 ms on an M1 Mac Mini, 9.8x faster than MLX on the same machine, and in 319 ms on an iPhone 15 Pro Max.**
+**It speaks 27 seconds of audio in under a third of a second, on a 2020 M1 Mac Mini or an iPhone 15 Pro Max.** MLX was measured on the same Mac, with the same text.
 
 [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) compiled to Core ML and cut at its seams, so each stage runs on the engine that suits it. Even the vocoder runs on the Apple Neural Engine, which rejects it as exported. On-device, offline, no API keys, no cents per character.
 
