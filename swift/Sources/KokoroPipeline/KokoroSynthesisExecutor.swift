@@ -15,11 +15,28 @@ public protocol KokoroModelProvider {
     func prepareForBucket(bucketSec: Int, tFrames: Int) throws
     /// Flexible (RangeDim) generator program, or nil to use the bucket packages.
     func flexibleGeneratorModel() throws -> MLModel?
+    /// Row-folded Neural Engine generator for this bucket (see
+    /// FoldedGenerator.swift), or nil to use the GPU generators.
+    func foldedGeneratorModel(bucketSec: Int) throws -> MLModel?
+    /// Hybrid ANE-conv + Metal generator for this bucket (HybridGenerator.swift),
+    /// or nil. Preferred over the folded and GPU generators when present. Its
+    /// row count follows `xPreFrames` (80 Hz frames to synthesize), not the bucket.
+    func hybridGenerator(bucketSec: Int, xPreFrames: Int) throws -> AnyObject?
+    /// Two-part duration model (ANE front + CPU back) for this choice, or nil
+    /// to use `durationModel(choice:)`. See SplitDuration.swift.
+    func splitDuration(choice: DurationModelChoice) throws -> SplitDuration?
+    /// Two-part F0Ntrain (CPU LSTM + ANE branches) for this size, or nil to use
+    /// `f0ntrainModel(tFrames:)`. See SplitDuration.swift.
+    func splitF0N(tFrames: Int) throws -> SplitF0N?
 }
 
 public extension KokoroModelProvider {
     func prepareForBucket(bucketSec: Int, tFrames: Int) throws {}
     func flexibleGeneratorModel() -> MLModel? { nil }
+    func foldedGeneratorModel(bucketSec: Int) -> MLModel? { nil }
+    func hybridGenerator(bucketSec: Int, xPreFrames: Int) -> AnyObject? { nil }
+    func splitDuration(choice: DurationModelChoice) -> SplitDuration? { nil }
+    func splitF0N(tFrames: Int) -> SplitF0N? { nil }
 }
 
 /// Pre-tokenized synthesis request for the shared Swift/Core ML pipeline.
@@ -59,6 +76,16 @@ private struct DurationInputBundle {
     let speedArray: MLMultiArray
 }
 
+/// Hands the pre-made harmonic noise to the hn-NSF thread without a copy.
+private final class NoiseBox {
+    var value: [Float]?
+    func take() -> [Float]? {
+        let v = value
+        value = nil
+        return v
+    }
+}
+
 private struct DurationProbe {
     let bucketSec: Int
     let tFrames: Int
@@ -72,12 +99,50 @@ private struct DurationProbe {
 /// and the `kokoro-bench` executable. Benchmark-only behavior is injected via
 /// `KokoroModelProvider.prepareForBucket(...)`, `warmModelsBeforeTiming`, and
 /// the optional tensor dump writer.
+/// Diagnostic: KOKORO_FOOTPRINT_LOG=1 prints the process phys_footprint (MB)
+/// at each stage boundary to stderr, to attribute peak RAM.
+func logFootprint(_ stage: String) {
+    guard ProcessInfo.processInfo.environment["KOKORO_FOOTPRINT_LOG"] == "1" else { return }
+    var info = task_vm_info_data_t()
+    var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+    let kr = withUnsafeMutablePointer(to: &info) {
+        $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+            task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+        }
+    }
+    if kr == KERN_SUCCESS {
+        fputs(String(format: "FOOTPRINT %@ %.0f MB (peak %.0f MB)\n", stage, Double(info.phys_footprint) / 1048576,
+                     Double(info.ledger_phys_footprint_peak) / 1048576), stderr)
+    }
+}
+
 public func executeKokoroSynthesis(
     request: KokoroSynthesisRequest,
     modelProvider: KokoroModelProvider,
     linearWeights: [Float],
     linearBias: Float,
-    tensorDump: inout TensorDumpWriter?
+    tensorDump: inout TensorDumpWriter?,
+    beforeBucketStages: (() -> Void)? = nil
+) throws -> SynthesisResult {
+    // Drain Core ML's autoreleased outputs per call: without this a caller that
+    // loops off the main run loop (CLI, background queue) grew ~50-120 MB per
+    // 30 s synthesis on an M1 (README/Notes/ane-folded-generator.md).
+    var dump = tensorDump
+    defer { tensorDump = dump }
+    return try autoreleasepool {
+        try executeKokoroSynthesisBody(request: request, modelProvider: modelProvider,
+                                       linearWeights: linearWeights, linearBias: linearBias, tensorDump: &dump,
+                                       beforeBucketStages: beforeBucketStages)
+    }
+}
+
+private func executeKokoroSynthesisBody(
+    request: KokoroSynthesisRequest,
+    modelProvider: KokoroModelProvider,
+    linearWeights: [Float],
+    linearBias: Float,
+    tensorDump: inout TensorDumpWriter?,
+    beforeBucketStages: (() -> Void)?
 ) throws -> SynthesisResult {
     let durationChoices = modelProvider.durationModelChoices()
     let durationChoice = try KokoroPipeline.selectDurationChoice(
@@ -94,7 +159,8 @@ public func executeKokoroSynthesis(
         speed: request.speed,
         choice: durationChoice
     )
-    let durationModel = try modelProvider.durationModel(choice: durationChoice)
+    let durationModel: StagePredictor = try modelProvider.splitDuration(choice: durationChoice)
+        ?? modelProvider.durationModel(choice: durationChoice)
 
     try writeDurationInputs(durationInput, tensorDump: &tensorDump)
 
@@ -120,10 +186,12 @@ public func executeKokoroSynthesis(
     var timings = StageTimings()
 
     // Stage 1: Duration Core ML.
+    logFootprint("start")
     let t0 = CFAbsoluteTimeGetCurrent()
     let durOutput = try durationModel.prediction(from: durationInput.provider)
     let t1 = CFAbsoluteTimeGetCurrent()
     timings.durationCoreML = t1 - t0
+    logFootprint("duration")
 
     let predDurArray = durOutput.featureValue(for: "pred_dur")!.multiArrayValue!
     let dArray = durOutput.featureValue(for: "d")!.multiArrayValue!
@@ -194,8 +262,23 @@ public func executeKokoroSynthesis(
     guard let tFrames = PipelineConstants.tFramesForBucket[bucketSec] else {
         throw PipelineError.modelNotLoaded("f0ntrain bucket \(bucketSec)")
     }
+    // The harmonic source's Gaussian noise depends only on the seed and the
+    // bucket length: make it now, while F0Ntrain runs (~28 ms off the critical
+    // path at 30 s on an M1). buildHar ignores it if the length differs.
+    let noiseFrames = Int(round(Double(bucketSec * PipelineConstants.sampleRate) / Double(HarmonicConstants.upsampleScale)))
+    let noiseBox = NoiseBox()
+    let noiseGroup = DispatchGroup()
+    DispatchQueue.global(qos: .userInitiated).async(group: noiseGroup) {
+        noiseBox.value = harmonicNoise(f0FrameCount: noiseFrames, seed: request.seed)
+    }
+    defer { noiseGroup.wait() }
+    // Everything from here on uses bucket models (and may load or evict them):
+    // executeKokoroSynthesisPipelined holds the next chunk here until the
+    // previous chunk has finished.
+    beforeBucketStages?()
     try modelProvider.prepareForBucket(bucketSec: bucketSec, tFrames: tFrames)
-    let f0nModel = try modelProvider.f0ntrainModel(tFrames: tFrames)
+    let f0nModel: StagePredictor = try modelProvider.splitF0N(tFrames: tFrames)
+        ?? modelProvider.f0ntrainModel(tFrames: tFrames)
     let enPadded = try zeroPad3D(
         source: en,
         channels: PipelineConstants.hiddenDim,
@@ -219,6 +302,7 @@ public func executeKokoroSynthesis(
     let nPredArray = f0nOutput.featureValue(for: "N_pred")!.multiArrayValue!
     let t7 = CFAbsoluteTimeGetCurrent()
     timings.f0ntrainCoreML = t7 - t6
+    logFootprint("f0ntrain")
 
     let f0Curve = floatValues(from: f0PredArray)
     let nCurve = floatValues(from: nPredArray)
@@ -231,7 +315,11 @@ public func executeKokoroSynthesis(
     // generator below runs on the real length. Frame counts: `frames` at 40 Hz
     // (asr, decoder-pre input), `2 * frames` at 80 Hz (f0, n, x_pre).
     let t8 = CFAbsoluteTimeGetCurrent()
-    let flexibleGen = try modelProvider.flexibleGeneratorModel()
+    // A folded ANE generator replaces the GPU ones: do not open the flexible
+    // program (or any GPU generator) when the bucket has one.
+    let hybridGen = try modelProvider.hybridGenerator(bucketSec: bucketSec, xPreFrames: 2 * frames)
+    var foldedGen = hybridGen == nil ? try modelProvider.foldedGeneratorModel(bucketSec: bucketSec) : nil
+    let flexibleGen = hybridGen == nil && foldedGen == nil ? try modelProvider.flexibleGeneratorModel() : nil
     let bucketSamples = bucketSec * PipelineConstants.sampleRate
     let fullF0Len = Int(round(Double(bucketSamples) / Double(HarmonicConstants.upsampleScale)))
     let frameCount = decoderPreFrameCount(fullF0Len: fullF0Len)
@@ -270,11 +358,14 @@ public func executeKokoroSynthesis(
     let harQueue = DispatchQueue(label: "kokoro.hnsf", qos: .userInitiated)
     harQueue.async(group: harGroup) {
         let start = CFAbsoluteTimeGetCurrent()
+        noiseGroup.wait()
         if wantDebug {
-            let components = buildHarComponents(f0Padded: harF0, linearWeights: linearWeights, linearBias: linearBias, seed: request.seed)
+            let components = buildHarComponents(f0Padded: harF0, linearWeights: linearWeights, linearBias: linearBias,
+                                                seed: request.seed, noise: noiseBox.take())
             harResult = (components.har, components.nFrames, components, start, CFAbsoluteTimeGetCurrent())
         } else {
-            let built = buildHar(f0Padded: harF0, linearWeights: linearWeights, linearBias: linearBias, seed: request.seed)
+            let built = buildHar(f0Padded: harF0, linearWeights: linearWeights, linearBias: linearBias,
+                                 seed: request.seed, noise: noiseBox.take())
             harResult = (built.har, built.nFrames, nil, start, CFAbsoluteTimeGetCurrent())
         }
     }
@@ -302,6 +393,7 @@ public func executeKokoroSynthesis(
     let xPre = decPreOutput.featureValue(for: "x_pre")!.multiArrayValue!
     let t11 = CFAbsoluteTimeGetCurrent()
     timings.decoderPre = t11 - t10
+    logFootprint("decoder_pre")
 
     try tensorDump?.writeMLMultiArray(name: "x_pre", array: xPre)
 
@@ -331,6 +423,86 @@ public func executeKokoroSynthesis(
         )
     }
     try tensorDump?.writeFloatArray(name: "har", values: harFlat, shape: [1, 22, harFrames])
+
+    // Stage 8 (Neural Engine): the row-folded generator, when the bundle has one.
+    let originalF0Len = frames * 2
+    let targetLen = Int(
+        round(Double(originalF0Len) / PipelineConstants.f0FrameRate * Double(PipelineConstants.sampleRate))
+    )
+    var hybridAudio: [Float]?
+    var hybridStart = CFAbsoluteTimeGetCurrent()
+    if #available(macOS 15.0, iOS 18.0, *), let hybrid = hybridGen as? HybridGenerator {
+        hybridStart = CFAbsoluteTimeGetCurrent()
+        do {
+            hybridAudio = try hybrid.synthesize(xPre: xPre, validXPreFrames: originalF0Len, har: harFlat,
+                                                harFrames: harFrames, refS: request.refS)
+        } catch HybridGeneratorError.metalFailed {
+            // No GPU right now (e.g. iOS background): run this clip on the folded ANE generator.
+            foldedGen = try modelProvider.foldedGeneratorModel(bucketSec: bucketSec)
+        }
+    }
+    if #available(macOS 15.0, iOS 18.0, *), var audio = hybridAudio, let hybrid = hybridGen as? HybridGenerator {
+        let t14 = hybridStart
+        timings.generatorCoreML = CFAbsoluteTimeGetCurrent() - t14
+        logFootprint("generator_hybrid")
+        if audio.count > targetLen { audio.removeLast(audio.count - targetLen) }
+        try tensorDump?.writeFloatArray(name: "waveform", values: audio, shape: [audio.count])
+        return SynthesisResult(
+            audio: audio,
+            timings: timings,
+            bucketSeconds: bucketSec,
+            audioDurationSeconds: Double(originalF0Len) / PipelineConstants.f0FrameRate,
+            wallTimeSeconds: CFAbsoluteTimeGetCurrent() - t0,
+            predictedDurationFrames: frames,
+            predictedDurationTokens: predDur.count,
+            durationModelCacheKey: durationChoice.cacheKey,
+            durationModelAllowsPadding: durationChoice.allowsPadding,
+            durationTokenLength: durationChoice.tokenLength,
+            tFrames: tFrames,
+            fullF0Length: fullF0Len,
+            decoderFrameCount: frameCount,
+            xPreExpectedTime: hybrid.geometry.w0,
+            harExpectedTime: hybrid.geometry.w0 * FoldGeometry.stage2Rate + hybrid.plan.extra2,
+            trimSampleCount: audio.count,
+            tokenDurationFrames: predDur
+        )
+    }
+    if let foldedGen, let geometry = FoldGeometry(model: foldedGen) {
+        let t14 = CFAbsoluteTimeGetCurrent()
+        let input = try foldedGeneratorInputs(
+            xPre: xPre, validXPreFrames: originalF0Len, har: harFlat, harFrames: harFrames,
+            refS: request.refS, geometry: geometry
+        )
+        let output = try foldedGen.prediction(from: input)
+        let logits = output.featureValue(for: "logits")!.multiArrayValue!
+        let t15 = CFAbsoluteTimeGetCurrent()
+        timings.generatorCoreML = t15 - t14
+        logFootprint("generator_folded")
+        let t16 = CFAbsoluteTimeGetCurrent()
+        var audio = foldedGeneratorAudio(logits: logits, validXPreFrames: originalF0Len, geometry: geometry)
+        if audio.count > targetLen { audio.removeLast(audio.count - targetLen) }
+        timings.trim = CFAbsoluteTimeGetCurrent() - t16
+        try tensorDump?.writeFloatArray(name: "waveform", values: audio, shape: [audio.count])
+        return SynthesisResult(
+            audio: audio,
+            timings: timings,
+            bucketSeconds: bucketSec,
+            audioDurationSeconds: Double(originalF0Len) / PipelineConstants.f0FrameRate,
+            wallTimeSeconds: CFAbsoluteTimeGetCurrent() - t0,
+            predictedDurationFrames: frames,
+            predictedDurationTokens: predDur.count,
+            durationModelCacheKey: durationChoice.cacheKey,
+            durationModelAllowsPadding: durationChoice.allowsPadding,
+            durationTokenLength: durationChoice.tokenLength,
+            tFrames: tFrames,
+            fullF0Length: fullF0Len,
+            decoderFrameCount: frameCount,
+            xPreExpectedTime: geometry.w0,
+            harExpectedTime: geometry.w2,
+            trimSampleCount: audio.count,
+            tokenDurationFrames: predDur
+        )
+    }
 
     // Stage 8: GeneratorFromHar Core ML.
     let t14 = CFAbsoluteTimeGetCurrent()
@@ -373,15 +545,12 @@ public func executeKokoroSynthesis(
     let genOutput = try genModel.prediction(from: genInput)
     let t15 = CFAbsoluteTimeGetCurrent()
     timings.generatorCoreML = t15 - t14
+    logFootprint("generator")
 
     // Stage 9: trim waveform.
     let t16 = CFAbsoluteTimeGetCurrent()
     let waveformKey = genOutput.featureNames.contains("waveform") ? "waveform" : genOutput.featureNames.first!
     let waveformArray = genOutput.featureValue(for: waveformKey)!.multiArrayValue!
-    let originalF0Len = frames * 2
-    let targetLen = Int(
-        round(Double(originalF0Len) / PipelineConstants.f0FrameRate * Double(PipelineConstants.sampleRate))
-    )
     let trimLen = min(waveformArray.count, targetLen)
     let audio = floatValues(from: waveformArray, limit: trimLen)
     let t17 = CFAbsoluteTimeGetCurrent()
@@ -507,7 +676,7 @@ private func writeDurationOutputs(
 
 private func probeDurationAndBucket(
     input: DurationInputBundle,
-    durationModel: MLModel,
+    durationModel: StagePredictor,
     modelProvider: KokoroModelProvider,
     validTokenLimit: Int,
     bucketDurationOverrideSeconds: Double?
@@ -539,13 +708,14 @@ private func probeDurationAndBucket(
 
 private func warmModels(
     probe: DurationProbe,
-    durationModel: MLModel,
+    durationModel: StagePredictor,
     durationInput: MLDictionaryFeatureProvider,
     modelProvider: KokoroModelProvider
 ) throws {
     _ = try durationModel.prediction(from: durationInput)
 
-    let f0nModel = try modelProvider.f0ntrainModel(tFrames: probe.tFrames)
+    let f0nModel: StagePredictor = try modelProvider.splitF0N(tFrames: probe.tFrames)
+        ?? modelProvider.f0ntrainModel(tFrames: probe.tFrames)
     let warmEnArr = try makeZeroArray3D(
         channels: PipelineConstants.hiddenDim,
         time: probe.tFrames
@@ -575,6 +745,26 @@ private func warmModels(
         "ref_s": MLFeatureValue(multiArray: warmRefS),
     ], validFrames: probe.validFrames, totalFrames: warmFrameCount)
     _ = try decPreModel.prediction(from: warmDecIn)
+
+    // With a folded ANE generator, warm only that: loading the GPU generator as
+    // well costs ~1 GB of footprint at 30 s and it would never run.
+    if try modelProvider.hybridGenerator(bucketSec: probe.bucketSec, xPreFrames: 2 * probe.validFrames) != nil {
+        return  // HybridGenerator compiles and loads in its init; nothing else to warm
+    }
+    if let folded = try modelProvider.foldedGeneratorModel(bucketSec: probe.bucketSec) {
+        var feats: [String: MLFeatureValue] = [:]
+        for (name, desc) in folded.modelDescription.inputDescriptionsByName {
+            guard let c = desc.multiArrayConstraint else { continue }
+            let arr = try MLMultiArray(shape: c.shape, dataType: .float32)
+            // Masks of ones keep the masked statistics finite; data stays zero.
+            let fill: Float = name.hasPrefix("sm") || name.hasPrefix("zm") ? 1 : 0
+            let ptr = arr.dataPointer.assumingMemoryBound(to: Float.self)
+            ptr.update(repeating: fill, count: arr.count)
+            feats[name] = MLFeatureValue(multiArray: arr)
+        }
+        _ = try folded.prediction(from: MLDictionaryFeatureProvider(dictionary: feats))
+        return
+    }
 
     let flexibleGen = try modelProvider.flexibleGeneratorModel()
     let genModel = try flexibleGen ?? modelProvider.generatorModel(bucketSec: probe.bucketSec)

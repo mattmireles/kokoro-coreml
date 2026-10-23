@@ -34,3 +34,46 @@ public enum PcmJoiner {
         return output
     }
 }
+
+/// Incremental form of `PcmJoiner.join` for streaming playback: push segments as
+/// they are synthesized and play what comes back. It holds back the last
+/// crossfade window until the next segment arrives (or `finish`), so the
+/// concatenated output equals `join` of the same segments.
+public struct PcmStreamJoiner {
+    private let fadeTarget: Int
+    private var pending: [Float] = []   // tail not yet emitted (at most fadeTarget once anything is emitted)
+    private var started = false
+
+    public init(sampleRate: Int = 24_000, crossfadeMs: Double = PcmJoiner.defaultCrossfadeMs) {
+        fadeTarget = max(0, Int((Double(max(1, sampleRate)) * max(0, crossfadeMs) / 1000.0).rounded(.down)))
+    }
+
+    /// Adds one segment and returns the samples that are now final.
+    public mutating func push(_ chunk: [Float]) -> [Float] {
+        guard !chunk.isEmpty else { return [] }
+        if !started {
+            started = true
+            pending = chunk
+        } else {
+            // `pending` holds the last min(fadeTarget, total) output samples, which
+            // is all the crossfade can touch.
+            let fade = min(fadeTarget, pending.count, chunk.count)
+            let fadeStart = pending.count - fade
+            for i in 0..<fade {
+                let t = Double(i + 1) / Double(fade + 1)
+                pending[fadeStart + i] = pending[fadeStart + i] * Float(cos(t * Double.pi * 0.5)) + chunk[i] * Float(sin(t * Double.pi * 0.5))
+            }
+            pending.append(contentsOf: chunk.dropFirst(fade))
+        }
+        let keep = min(fadeTarget, pending.count)
+        let ready = Array(pending[0..<(pending.count - keep)])
+        pending.removeFirst(pending.count - keep)
+        return ready
+    }
+
+    /// Returns the held-back tail; call once after the last segment.
+    public mutating func finish() -> [Float] {
+        defer { pending = [] }
+        return pending
+    }
+}

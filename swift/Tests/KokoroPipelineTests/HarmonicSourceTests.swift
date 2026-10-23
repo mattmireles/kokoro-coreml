@@ -161,7 +161,9 @@ final class HarmonicSourceTests: XCTestCase {
         let candidate = sineGenFromF0Frames(f0Frames: f0, linearWeights: weights, linearBias: bias, seed: seed)
         let reference = sequentialSineGenReference(f0Frames: f0, linearWeights: weights, linearBias: bias, seed: seed)
         XCTAssertEqual(candidate.count, reference.count)
-        XCTAssertTrue(candidate == reference, "concurrent sine generation diverged from the sequential form")
+        // The fast path takes the sine in Float on the phase reduced to [0, 1) cycles.
+        let worst = zip(candidate, reference).map { abs($0 - $1) }.max() ?? 0
+        XCTAssertLessThan(worst, 2e-6, "concurrent sine generation diverged from the sequential form")
     }
 
     /// Regression test for the SplitMix64 seed scrambler in `SeededRNG.init`

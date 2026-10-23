@@ -115,6 +115,45 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
         try model(cacheKey: "duration.\(choice.cacheKey)", url: choice.packageURL, units: computePolicy.duration)
     }
 
+    /// Two-part duration model (ANE-layout BERT front + CPU back) when the
+    /// manifest lists both packages for this size; see SplitDuration.swift.
+    func splitDuration(choice: DurationModelChoice) throws -> SplitDuration? {
+        guard SplitDuration.allowed, choice.allowsPadding,
+              let names = Self.splitDurationPackages(paths: Set(manifest.modelPackages.map(\.path)), tokenLength: choice.tokenLength)
+        else { return nil }
+        let front = try model(cacheKey: "duration.front.t\(choice.tokenLength)",
+                              url: modelsDirectory.appendingPathComponent(names.front), units: SplitDuration.frontComputeUnits)
+        let back = try model(cacheKey: "duration.back.t\(choice.tokenLength)",
+                             url: modelsDirectory.appendingPathComponent(names.back), units: SplitDuration.backComputeUnits)
+        return SplitDuration(front: front, back: back)
+    }
+
+    /// Two-part F0Ntrain when the manifest lists both packages for this size.
+    func splitF0N(tFrames: Int) throws -> SplitF0N? {
+        guard SplitF0N.allowed,
+              let names = Self.splitF0NPackages(paths: Set(manifest.modelPackages.map(\.path)), tFrames: tFrames)
+        else { return nil }
+        let front = try model(cacheKey: "f0ntrain.front.t\(tFrames)",
+                              url: modelsDirectory.appendingPathComponent(names.front), units: SplitF0N.frontComputeUnits)
+        let back = try model(cacheKey: "f0ntrain.back.t\(tFrames)",
+                             url: modelsDirectory.appendingPathComponent(names.back), units: SplitF0N.backComputeUnits)
+        return SplitF0N(front: front, back: back)
+    }
+
+    /// The split F0Ntrain packages for `tFrames` when the manifest lists both.
+    static func splitF0NPackages(paths: Set<String>, tFrames: Int) -> (front: String, back: String)? {
+        let names = SplitF0N.packageNames(tFrames: tFrames)
+        guard paths.contains("coreml/\(names.front)"), paths.contains("coreml/\(names.back)") else { return nil }
+        return names
+    }
+
+    /// The split duration packages for `tokenLength` when the manifest lists both.
+    static func splitDurationPackages(paths: Set<String>, tokenLength: Int) -> (front: String, back: String)? {
+        let names = SplitDuration.packageNames(tokenLength: tokenLength)
+        guard paths.contains("coreml/\(names.front)"), paths.contains("coreml/\(names.back)") else { return nil }
+        return names
+    }
+
     /// Loads an F0Ntrain model.
     func f0ntrainModel(tFrames: Int) throws -> MLModel {
         try model(
@@ -131,6 +170,52 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
             url: modelsDirectory.appendingPathComponent("kokoro_decoder_pre_\(bucketSec)s.mlpackage"),
             units: computePolicy.decoderPre
         )
+    }
+
+    /// The row-folded Neural Engine generator package the manifest lists for
+    /// `bucket`, preferring the variant this device's ANE runs best
+    /// (``PipelineConstants/foldedGeneratorCandidates(bucketSec:)``), else nil.
+    static func foldedPackageName(_ manifest: KokoroRuntimeManifest, bucket: Int) -> String? {
+        foldedPackageName(paths: Set(manifest.modelPackages.map(\.path)), bucket: bucket)
+    }
+
+    /// Same, over manifest package paths (`coreml/<name>`).
+    static func foldedPackageName(paths: Set<String>, bucket: Int) -> String? {
+        guard PipelineConstants.foldedGeneratorAllowed else { return nil }
+        return PipelineConstants.foldedGeneratorCandidates(bucketSec: bucket).first { paths.contains("coreml/\($0)") }
+    }
+
+    /// Loads the folded ANE generator for `bucketSec` when the bundle ships one.
+    /// It replaces the GPU generators for that bucket: on an M1 the GPU
+    /// generator alone held ~1 GB of footprint at 30 s, the folded one ~145 MB.
+    func foldedGeneratorModel(bucketSec: Int) throws -> MLModel? {
+        guard let name = Self.foldedPackageName(manifest, bucket: bucketSec) else { return nil }
+        return try model(
+            cacheKey: "generator.fold.\(bucketSec)",
+            url: modelsDirectory.appendingPathComponent(name),
+            units: .cpuAndNeuralEngine
+        )
+    }
+
+    /// Hybrid ANE-conv + Metal generator, when the bundle's manifest lists
+    /// `coreml/hybrid/plan.json` (README/Notes/ane-folded-generator.md). One
+    /// is kept resident; on a Metal failure (iOS background) the executor
+    /// falls back to the folded generator for that call.
+    private var hybrid: (rows: Int, generator: AnyObject)?
+    private let hybridLock = NSLock()
+    func hybridGenerator(bucketSec: Int, xPreFrames: Int) throws -> AnyObject? {
+        guard #available(macOS 15.0, iOS 18.0, *),
+              manifest.modelPackages.contains(where: { $0.path == "coreml/hybrid/plan.json" }) || HybridGenerator.enabled
+        else { return nil }
+        let dir = modelsDirectory.appendingPathComponent("hybrid")
+        guard let rows = HybridGenerator.rows(bucketSec: bucketSec, xPreFrames: xPreFrames, directory: dir) else { return nil }
+        hybridLock.lock()
+        defer { hybridLock.unlock() }
+        if let hybrid, hybrid.rows == rows { return hybrid.generator }
+        hybrid = nil
+        let generator = try HybridGenerator(directory: dir, rows: rows)
+        hybrid = (rows, generator)
+        return generator
     }
 
     /// Loads the flexible generator when the bundle ships it, else nil.
@@ -213,7 +298,14 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
                 units: computePolicy.decoderPre,
                 progress: progress
             )
-            if !usesFlexibleGenerator {
+            if let folded = Self.foldedPackageName(manifest, bucket: bucket) {
+                _ = try model(
+                    cacheKey: "generator.fold.\(bucket)",
+                    url: modelsDirectory.appendingPathComponent(folded),
+                    units: .cpuAndNeuralEngine,
+                    progress: progress
+                )
+            } else if !usesFlexibleGenerator {
                 _ = try model(
                     cacheKey: "generator.\(bucket)",
                     url: modelsDirectory.appendingPathComponent("kokoro_decoder_har_post_\(bucket)s.mlpackage"),
@@ -222,7 +314,7 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
                 )
             }
         }
-        if usesFlexibleGenerator {
+        if usesFlexibleGenerator, selectedBuckets.contains(where: { Self.foldedPackageName(manifest, bucket: $0) == nil }) {
             _ = try model(
                 cacheKey: "generator.range",
                 url: modelsDirectory.appendingPathComponent(PipelineConstants.flexibleGeneratorPackage),
@@ -569,7 +661,9 @@ final class KokoroSDKModelProvider: KokoroModelProvider {
                 throw KokoroError.missingModel("bucket \(bucket)s")
             }
             required += ["kokoro_f0ntrain_t\(tFrames).mlpackage", "kokoro_decoder_pre_\(bucket)s.mlpackage"]
-            if !usesFlexibleGenerator {
+            if let folded = foldedPackageName(manifest, bucket: bucket) {
+                required.append(folded)
+            } else if !usesFlexibleGenerator {
                 required.append("kokoro_decoder_har_post_\(bucket)s.mlpackage")
             }
         }

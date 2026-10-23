@@ -47,7 +47,11 @@ final class TextChunkerTests: XCTestCase {
 
     /// Verifies the SDK default is the documented 15-second cap.
     func testChunkerDefaultCapIsSDKStarterCap() {
+        #if os(iOS)
+        XCTAssertEqual(TextChunker().maxChunkSeconds, 10.0)   // RAM: see KokoroSynthesisOptions
+        #else
         XCTAssertEqual(TextChunker().maxChunkSeconds, 15.0)
+        #endif
     }
 
     /// Verifies the compatibility tokenizer is deterministic.

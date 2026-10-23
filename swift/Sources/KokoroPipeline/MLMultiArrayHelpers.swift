@@ -297,6 +297,19 @@ public func alignTokenMajorToFrames(
             srcPtr[token * strides[1] + channel * strides[2]]
         }
     }
+    // fp16 outputs (the split duration model's fp16 back): subscripting each
+    // element through NSNumber took ~280 ms at 512 tokens.
+    if source.dataType == .float16 && strides.count >= 3 {
+        let srcPtr = source.dataPointer.assumingMemoryBound(to: UInt16.self)
+        return try alignValuesToFrames(
+            predDur: predDur,
+            channels: channels,
+            tokenCount: tokenCount,
+            frameCount: frameCount
+        ) { token, channel in
+            floatFromIEEEFloat16Bits(srcPtr[token * strides[1] + channel * strides[2]])
+        }
+    }
 
     return try alignValuesToFrames(
         predDur: predDur,
@@ -342,6 +355,19 @@ public func alignChannelMajorToFrames(
             frameCount: frameCount
         ) { token, channel in
             srcPtr[channel * strides[1] + token * strides[2]]
+        }
+    }
+    // fp16 outputs (the split duration model's fp16 back): subscripting each
+    // element through NSNumber took ~280 ms at 512 tokens.
+    if source.dataType == .float16 && strides.count >= 3 {
+        let srcPtr = source.dataPointer.assumingMemoryBound(to: UInt16.self)
+        return try alignValuesToFrames(
+            predDur: predDur,
+            channels: channels,
+            tokenCount: tokenCount,
+            frameCount: frameCount
+        ) { token, channel in
+            floatFromIEEEFloat16Bits(srcPtr[channel * strides[1] + token * strides[2]])
         }
     }
 
@@ -573,13 +599,13 @@ public func makeBucketMask(validFrames: Int, totalFrames: Int) throws -> MLMulti
 /// the artifact declares one. Newly exported artifacts require the input;
 /// legacy maskless artifacts remain loadable during the artifact rollout.
 public func stageInputs(
-    for model: MLModel,
+    for model: StagePredictor,
     _ features: [String: MLFeatureValue],
     validFrames: Int,
     totalFrames: Int
 ) throws -> MLDictionaryFeatureProvider {
     var features = features
-    if model.modelDescription.inputDescriptionsByName["mask"] != nil {
+    if model.takesMask {
         features["mask"] = MLFeatureValue(
             multiArray: try makeBucketMask(validFrames: validFrames, totalFrames: totalFrames)
         )

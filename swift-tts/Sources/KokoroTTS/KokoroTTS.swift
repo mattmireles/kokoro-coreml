@@ -267,6 +267,55 @@ public actor KokoroTTS {
         }
     }
 
+    /// Synthesizes raw text chunk by chunk, handing audio to `onAudio` as soon as
+    /// each chunk is done, so playback can start after the first chunk instead
+    /// of after the whole text (A14, 30 s of text in 10 s chunks: first audio
+    /// after ~250 ms instead of ~700 ms). The pieces, concatenated, equal
+    /// ``synthesize(_:voice:options:)``'s samples (`PcmStreamJoiner`).
+    ///
+    /// - Parameters:
+    ///   - text: Raw caller text.
+    ///   - voice: Kokoro voice ID.
+    ///   - options: Synthesis options (`maxChunkSeconds` sets the first-audio delay).
+    ///   - onAudio: Called with each piece of final audio, in order.
+    public func synthesizeStreaming(
+        _ text: String,
+        voice: KokoroVoiceID = .afHeart,
+        options: KokoroSynthesisOptions = KokoroSynthesisOptions(),
+        onAudio: @Sendable (KokoroAudio) -> Void
+    ) async throws {
+        try Task.checkCancellation()
+        let inputs = try prepare(text, voice: voice, options: options)
+        var joiner = PcmStreamJoiner(sampleRate: PipelineConstants.sampleRate)
+        var produced = false
+        func emit(_ samples: [Float]) throws {
+            guard !samples.isEmpty else { return }
+            guard samples.allSatisfy({ $0.isFinite }) else { throw KokoroError.invalidAudioOutput }
+            produced = true
+            onAudio(KokoroAudio(samples: samples))
+        }
+        do {
+            // Chunk i+1's duration stage runs during chunk i's generator
+            // (PipelinedSynthesis.swift; 3 x 10 s on an A17: 413-478 -> 390-405 ms).
+            try Task.checkCancellation()
+            try executeKokoroSynthesisPipelined(
+                requests: inputs.map { $0.synthesisRequest() },
+                modelProvider: modelProvider,
+                linearWeights: hnsf.linearWeights,
+                linearBias: hnsf.linearBias
+            ) { _, result in
+                try Task.checkCancellation()
+                try emit(joiner.push(result.audio))
+            }
+            try emit(joiner.finish())
+            guard produced else { throw KokoroError.invalidAudioOutput }
+        } catch is CancellationError {
+            throw KokoroError.synthesisCancelled
+        } catch {
+            throw Self.mapSynthesisError(error)
+        }
+    }
+
     /// Synthesizes inputs returned by ``prepare(_:voice:options:)``.
     ///
     /// This split API lets applications time and diagnose raw-text
@@ -338,16 +387,14 @@ public actor KokoroTTS {
         hnsf: (linearWeights: [Float], linearBias: Float)
     ) throws -> KokoroAudio {
         var segments: [[Float]] = []
-        for input in inputs {
+        try Task.checkCancellation()
+        try executeKokoroSynthesisPipelined(
+            requests: inputs.map { $0.synthesisRequest() },
+            modelProvider: modelProvider,
+            linearWeights: hnsf.linearWeights,
+            linearBias: hnsf.linearBias
+        ) { _, result in
             try Task.checkCancellation()
-            var dump: TensorDumpWriter? = nil
-            let result = try executeKokoroSynthesis(
-                request: input.synthesisRequest(),
-                modelProvider: modelProvider,
-                linearWeights: hnsf.linearWeights,
-                linearBias: hnsf.linearBias,
-                tensorDump: &dump
-            )
             segments.append(result.audio)
         }
         let samples = PcmJoiner.join(segments: segments, sampleRate: PipelineConstants.sampleRate)

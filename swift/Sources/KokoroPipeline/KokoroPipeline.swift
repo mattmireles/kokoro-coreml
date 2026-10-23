@@ -79,6 +79,69 @@ public enum PipelineConstants {
     /// bucket then only selects the f0ntrain and decoder-pre packages.
     public static let flexibleGeneratorPackage = "kokoro_decoder_har_post_range.mlpackage"
 
+    /// Row-folded Neural Engine generator for one bucket (see FoldedGenerator.swift).
+    /// When present it replaces the GPU generators for that bucket. Two variants:
+    /// `kokoro_generator_fold_{N}s` uses the ANE's native `sin` (A17 Pro: 700 ms
+    /// at 30 s); `kokoro_generator_fold_poly_{N}s` uses a polynomial Snake that
+    /// every ANE runs (M1/M2/A14 have no ANE `sin`; there the native package
+    /// falls off the ANE). ``foldedGeneratorCandidates`` orders them per device.
+    public static func foldedGeneratorPackage(bucketSec: Int, poly: Bool = false) -> String {
+        poly ? "kokoro_generator_fold_poly_\(bucketSec)s.mlpackage" : "kokoro_generator_fold_\(bucketSec)s.mlpackage"
+    }
+
+    /// Whether this device's ANE runs `sin` natively. Known only for the chips
+    /// measured (README/Notes/ane-folded-generator.md): yes on A17 Pro, no on
+    /// M1, M2 and A14. Unmeasured chips get the polynomial variant, which is
+    /// correct everywhere.
+    public static var aneHasNativeSin: Bool {
+        var size = 0
+        sysctlbyname("hw.machine", nil, &size, nil, 0)
+        var machine = [CChar](repeating: 0, count: max(size, 1))
+        sysctlbyname("hw.machine", &machine, &size, nil, 0)
+        let id = String(cString: machine)                 // e.g. "iPhone16,2"
+        guard id.hasPrefix("iPhone"), let major = Int(id.dropFirst(6).prefix { $0 != "," }) else { return false }
+        return major >= 16                                // iPhone16,x = A17 Pro
+    }
+
+    /// Folded package names to try for a bucket, preferred first.
+    public static func foldedGeneratorCandidates(bucketSec: Int) -> [String] {
+        let native = foldedGeneratorPackage(bucketSec: bucketSec)
+        let poly = foldedGeneratorPackage(bucketSec: bucketSec, poly: true)
+        return aneHasNativeSin ? [native, poly] : [poly, native]
+    }
+
+    /// Duration-model compute units by padded token length.
+    ///
+    /// M1 Mini, warm, per bucket (cpuOnly / cpuAndNeuralEngine / cpuAndGPU):
+    /// t64 15.9 / 83.1 / 25.5 ms, t128 28.8 / 18.7 / 38.1, t256 56.2 / 42.8 / 105.7,
+    /// t512 114.9 / 100.2 / 230.4 (README/Notes/ane-folded-generator.md). On iOS
+    /// the duration graph has failed ANECCompile and stalled in MPSGraph
+    /// specialization on older phones, so iPhones before the A17 stay on the
+    /// CPU like the SDK's gistDefault. On an A17 Pro the padded duration graph
+    /// compiles for the ANE and runs 9.2 ms (t64) and 61 ms (t512) vs 14-31
+    /// and 104-181 ms on CPU+GPU (ios-bench, 2026-10-21).
+    public static func durationComputeUnits(tokenLength: Int) -> MLComputeUnits {
+        #if os(iOS)
+        return aneHasNativeSin ? .cpuAndNeuralEngine : .cpuOnly
+        #else
+        return tokenLength <= 64 ? .cpuOnly : .cpuAndNeuralEngine
+        #endif
+    }
+
+    /// F0Ntrain compute units: the CPU at every size. M2 Air, warm
+    /// (cpuOnly / cpuAndNeuralEngine / cpuAndGPU): t120 3.6 / 3.6 / 26.4 ms,
+    /// t400 11.3 / 11.5 / 21.0, t1200 32.0 / 40.0 / 65.4
+    /// (README/Notes/ane-folded-generator.md). The CPU also has no
+    /// compile-time risk on any device.
+    public static let f0ntrainComputeUnits: MLComputeUnits = .cpuOnly
+
+    /// Environment override: `0` never loads the folded generator.
+    public static let foldedGeneratorEnvKey = "KOKORO_FOLDED_GENERATOR"
+
+    public static var foldedGeneratorAllowed: Bool {
+        ProcessInfo.processInfo.environment[foldedGeneratorEnvKey] != "0"
+    }
+
     /// First OS major version whose MPSGraph can abort the process on the
     /// flexible generator's first predict ('mps.expand_dims' op invalid axis,
     /// then `MPSRuntime.mm:1519: failed assertion 'shape for TensorData is not
@@ -328,7 +391,9 @@ public class KokoroPipeline: KokoroModelProvider {
                 || exists("kokoro_f0ntrain_t\(tFrames).mlpackage")
             let hasPre = preMulti?.functionNames.contains(PipelineConstants.decoderPreFunctionName(bucketSec: sec)) == true
                 || exists("kokoro_decoder_pre_\(sec)s.mlpackage")
-            let hasGenerator = usesFlexibleGenerator || exists("kokoro_decoder_har_post_\(sec)s.mlpackage")
+            let hasFolded = PipelineConstants.foldedGeneratorAllowed
+                && PipelineConstants.foldedGeneratorCandidates(bucketSec: sec).contains(where: exists)
+            let hasGenerator = hasFolded || usesFlexibleGenerator || exists("kokoro_decoder_har_post_\(sec)s.mlpackage")
             return hasF0 && hasPre && hasGenerator
         }.sorted()
         if availableBuckets.isEmpty && !usesFlexibleGenerator && exists(PipelineConstants.flexibleGeneratorPackage) {
@@ -519,10 +584,11 @@ public class KokoroPipeline: KokoroModelProvider {
 
     public func durationModel(choice: DurationModelChoice) throws -> MLModel {
         try open("duration.\(choice.cacheKey)") {
+            let units = PipelineConstants.durationComputeUnits(tokenLength: choice.tokenLength)
             if let function = choice.functionName, let durationMultifunction {
-                return try durationMultifunction.load(function: function, computeUnits: .cpuAndGPU)
+                return try durationMultifunction.load(function: function, computeUnits: units)
             }
-            return try load(choice.packageURL, units: .cpuAndGPU)
+            return try load(choice.packageURL, units: units)
         }
     }
 
@@ -530,9 +596,9 @@ public class KokoroPipeline: KokoroModelProvider {
         try open("f0ntrain.t\(tFrames)") {
             let function = PipelineConstants.f0ntrainFunctionName(tFrames: tFrames)
             if let f0ntrainMultifunction, f0ntrainMultifunction.functionNames.contains(function) {
-                return try f0ntrainMultifunction.load(function: function, computeUnits: .cpuAndGPU)
+                return try f0ntrainMultifunction.load(function: function, computeUnits: PipelineConstants.f0ntrainComputeUnits)
             }
-            return try load(package("kokoro_f0ntrain_t\(tFrames).mlpackage"), units: .cpuAndGPU)
+            return try load(package("kokoro_f0ntrain_t\(tFrames).mlpackage"), units: PipelineConstants.f0ntrainComputeUnits)
         }
     }
 
@@ -553,6 +619,57 @@ public class KokoroPipeline: KokoroModelProvider {
         }
     }
 
+    private var hybridGenerators: [Int: AnyObject] = [:]
+    public func hybridGenerator(bucketSec: Int, xPreFrames: Int) throws -> AnyObject? {
+        guard #available(macOS 15.0, iOS 18.0, *), HybridGenerator.enabled else { return nil }
+        let dir = modelsDirectory.appendingPathComponent("hybrid")
+        guard let rows = HybridGenerator.rows(bucketSec: bucketSec, xPreFrames: xPreFrames, directory: dir) else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        if let g = hybridGenerators[rows] { return g }
+        // Keep one resident: several loaded at once failed on an M1 (README/Notes/ane-folded-generator.md).
+        hybridGenerators.removeAll()
+        let g = try HybridGenerator(directory: dir, rows: rows)
+        hybridGenerators[rows] = g
+        return g
+    }
+
+    /// Two-part duration model when its packages sit next to the others
+    /// (SplitDuration.swift); padded choices only.
+    public func splitDuration(choice: DurationModelChoice) throws -> SplitDuration? {
+        guard SplitDuration.allowed, choice.allowsPadding, choice.functionName == nil else { return nil }
+        let names = SplitDuration.packageNames(tokenLength: choice.tokenLength)
+        let frontURL = modelsDirectory.appendingPathComponent(names.front)
+        let backURL = modelsDirectory.appendingPathComponent(names.back)
+        guard FileManager.default.fileExists(atPath: frontURL.path),
+              FileManager.default.fileExists(atPath: backURL.path) else { return nil }
+        let front = try open("duration.front.t\(choice.tokenLength)") { try load(frontURL, units: SplitDuration.frontComputeUnits) }
+        let back = try open("duration.back.t\(choice.tokenLength)") { try load(backURL, units: SplitDuration.backComputeUnits) }
+        return SplitDuration(front: front, back: back)
+    }
+
+    /// Two-part F0Ntrain when its packages sit next to the others (SplitDuration.swift).
+    public func splitF0N(tFrames: Int) throws -> SplitF0N? {
+        guard SplitF0N.allowed else { return nil }
+        let names = SplitF0N.packageNames(tFrames: tFrames)
+        let frontURL = modelsDirectory.appendingPathComponent(names.front)
+        let backURL = modelsDirectory.appendingPathComponent(names.back)
+        guard FileManager.default.fileExists(atPath: frontURL.path),
+              FileManager.default.fileExists(atPath: backURL.path) else { return nil }
+        let front = try open("f0ntrain.front.t\(tFrames)") { try load(frontURL, units: SplitF0N.frontComputeUnits) }
+        let back = try open("f0ntrain.back.t\(tFrames)") { try load(backURL, units: SplitF0N.backComputeUnits) }
+        return SplitF0N(front: front, back: back)
+    }
+
+    public func foldedGeneratorModel(bucketSec: Int) throws -> MLModel? {
+        guard PipelineConstants.foldedGeneratorAllowed,
+              let name = PipelineConstants.foldedGeneratorCandidates(bucketSec: bucketSec)
+                .first(where: { FileManager.default.fileExists(atPath: package($0).path) }) else { return nil }
+        return try open("generator.fold.\(bucketSec)s") {
+            try load(package(name), units: .cpuAndNeuralEngine)
+        }
+    }
+
     public func flexibleGeneratorModel() throws -> MLModel? {
         guard usesFlexibleGenerator else { return nil }
         return try open("generator.range") {
@@ -569,6 +686,10 @@ public class KokoroPipeline: KokoroModelProvider {
     public func prepareForBucket(bucketSec: Int, tFrames: Int) throws {
         _ = try f0ntrainModel(tFrames: tFrames)
         _ = try decoderPreModel(bucketSec: bucketSec)
+        // The executor prefers the hybrid; opening the folded or GPU generator
+        // too would only hold memory.
+        if try hybridGenerator(bucketSec: bucketSec, xPreFrames: bucketSec * Int(PipelineConstants.f0FrameRate)) != nil { return }
+        if try foldedGeneratorModel(bucketSec: bucketSec) != nil { return }
         if try flexibleGeneratorModel() == nil {
             _ = try generatorModel(bucketSec: bucketSec)
         }

@@ -1,0 +1,24 @@
+# XcodeGen spec for the ANE lab runner: a headless iOS app that times any
+# Core ML model copied into its Documents folder. No models are bundled, so
+# the app is built once and every experiment is copy -> launch -> pull.
+# Driver: tools/ane-lab/run.py. Regenerate: xcodegen generate --spec project.yml
+name: ANELab
+options:
+  bundleIdPrefix: com.mattmireles
+  deploymentTarget:
+    iOS: "18.0"
+targets:
+  ANELab:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.mattmireles.ANELab
+        DEVELOPMENT_TEAM: 6ETYBAJKY8
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIFileSharingEnabled: YES
+        SWIFT_VERSION: "5.9"

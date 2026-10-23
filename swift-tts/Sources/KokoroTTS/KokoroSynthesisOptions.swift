@@ -2,8 +2,15 @@ import Foundation
 
 /// Caller-controlled options for raw-text Kokoro synthesis preparation.
 public struct KokoroSynthesisOptions: Equatable, Sendable {
-    /// Default SDK starter-profile chunk cap.
+    /// Default SDK starter-profile chunk cap. iOS uses 10 s: the fast ANE+Metal
+    /// generator peaks at ~350 MB for a 10 s chunk on an iPhone 12 Pro vs ~500 MB
+    /// at 15 s (shipping GPU path ~400-440 MB), with the same throughput per audio
+    /// second and earlier first audio (README/Notes/ane-folded-generator.md).
+    #if os(iOS)
+    public static let defaultMaxChunkSeconds = 10.0
+    #else
     public static let defaultMaxChunkSeconds = 15.0
+    #endif
 
     /// Duration-model speed multiplier.
     public let speed: Float
@@ -21,7 +28,7 @@ public struct KokoroSynthesisOptions: Equatable, Sendable {
     ///     when used by ``KokoroTextProcessor``.
     ///   - maxCharacters: Optional hard character window for fallback splits.
     ///   - maxChunkSeconds: Estimated chunk cap. Defaults to the SDK starter
-    ///     profile's 15-second cap.
+    ///     profile cap (10 s on iOS, 15 s elsewhere).
     public init(
         speed: Float = 1.0,
         maxCharacters: Int? = nil,

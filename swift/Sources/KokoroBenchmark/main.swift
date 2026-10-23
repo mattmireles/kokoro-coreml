@@ -106,12 +106,16 @@ class ModelCache: KokoroModelProvider {
     private var compiledF0n: [Int: URL] = [:]
     private var compiledDecPre: [Int: URL] = [:]
     private var compiledGen: [Int: URL] = [:]
+    private var compiledFolded: [URL: URL] = [:]
 
     // Layer 2: Loaded MLModel instances (evicted on bucket switch)
     var durationModels: [String: MLModel] = [:]  // kept across buckets (small)
+    var splitDurations: [Int: SplitDuration] = [:]
+    var splitF0Ns: [Int: SplitF0N] = [:]   // kept across buckets (small)
     var f0nModels: [Int: MLModel] = [:]
     var decPreModels: [Int: MLModel] = [:]
     var genModels: [Int: MLModel] = [:]
+    var foldedGenModels: [Int: MLModel] = [:]
     // The flexible generator is one file; loaded once, never evicted.
     private var flexibleGen: MLModel??
     // Multifunction packages for the bucketed stages, opened (compiled) once.
@@ -124,7 +128,7 @@ class ModelCache: KokoroModelProvider {
         self.stagedComputeUnits = stagedComputeUnits
         if stagedComputeUnits {
             self.durationConfig = Self.makeConfig(.cpuAndGPU)
-            self.f0nConfig = Self.makeConfig(.cpuAndGPU)
+            self.f0nConfig = Self.makeConfig(PipelineConstants.f0ntrainComputeUnits)
             self.generatorConfig = Self.makeConfig(.cpuAndGPU)
         } else {
             self.durationConfig = Self.makeConfig(computeUnits)
@@ -133,7 +137,7 @@ class ModelCache: KokoroModelProvider {
         }
         self.durationChoices = KokoroPipeline.discoverDurationChoices(modelsDirectory: modelsDir)
         if stagedComputeUnits {
-            fputs("  Compute units: staged (duration/f0n/generator=cpuAndGPU, decoderPre=cpuAndNeuralEngine)\n", stderr)
+            fputs("  Compute units: staged (duration by size, f0n=cpuOnly, generator=folded ANE or cpuAndGPU, decoderPre=cpuAndNeuralEngine)\n", stderr)
         } else {
             fputs("  Compute units: \(computeUnitLabel(computeUnits))\n", stderr)
         }
@@ -180,6 +184,45 @@ class ModelCache: KokoroModelProvider {
 
     func generatorModel(bucketSec: Int) throws -> MLModel {
         try generatorModel(bucket: bucketSec)
+    }
+
+    private var hybridGens: [Int: AnyObject] = [:]
+    func hybridGenerator(bucketSec: Int, xPreFrames: Int) throws -> AnyObject? {
+        guard #available(macOS 15.0, *), HybridGenerator.enabled else { return nil }
+        let dir = modelsDir.appendingPathComponent("hybrid")
+        guard let rows = HybridGenerator.rows(bucketSec: bucketSec, xPreFrames: xPreFrames, directory: dir) else { return nil }
+        if let g = hybridGens[rows] { return g }
+        // One resident hybrid generator: with three loaded (159 function
+        // models) the next load failed on an M1 with a misleading
+        // "functionName must be nil" error.
+        hybridGens.removeAll()
+        fputs("  Loading hybrid generator rows=\(rows)...\n", stderr)
+        let g = try HybridGenerator(directory: dir, rows: rows)
+        hybridGens[rows] = g
+        return g
+    }
+
+    func foldedGeneratorModel(bucketSec: Int) throws -> MLModel? {
+        if let cached = foldedGenModels[bucketSec] { return cached }
+        guard PipelineConstants.foldedGeneratorAllowed,
+              let pkgURL = PipelineConstants.foldedGeneratorCandidates(bucketSec: bucketSec)
+                .map({ modelsDir.appendingPathComponent($0) })
+                .first(where: { FileManager.default.fileExists(atPath: $0.path) }) else { return nil }
+        // Keep the compiled URL across bucket evictions: recompiling took ~10 s per switch.
+        let compiled: URL
+        if let url = compiledFolded[pkgURL] {
+            compiled = url
+        } else {
+            fputs("  Compiling folded ANE generator \(bucketSec)s...\n", stderr)
+            compiled = try MLModel.compileModel(at: pkgURL)
+            compiledFolded[pkgURL] = compiled
+        }
+        fputs("  Loading folded ANE generator \(bucketSec)s...\n", stderr)
+        let config = MLModelConfiguration()
+        config.computeUnits = .cpuAndNeuralEngine
+        let model = try MLModel(contentsOf: compiled, configuration: config)
+        foldedGenModels[bucketSec] = model
+        return model
     }
 
     func flexibleGeneratorModel() -> MLModel? {
@@ -280,7 +323,10 @@ class ModelCache: KokoroModelProvider {
         if let cached = durationModels[choice.cacheKey] { return cached }
         let compiled = try compiledDurationURL(choice: choice)
         fputs("  Loading duration \(choice.cacheKey)...\n", stderr)
-        let config = Self.makeConfig(durationConfig.computeUnits)
+        // Staged mirrors the production runtime, including its per-size duration units.
+        let config = Self.makeConfig(stagedComputeUnits
+            ? PipelineConstants.durationComputeUnits(tokenLength: choice.tokenLength)
+            : durationConfig.computeUnits)
         if let functionName = choice.functionName {
             guard #available(macOS 15.0, *) else { throw PipelineError.modelNotLoaded("\(choice.cacheKey): function \(functionName) needs macOS 15") }
             config.functionName = functionName
@@ -288,6 +334,37 @@ class ModelCache: KokoroModelProvider {
         let model = try MLModel(contentsOf: compiled, configuration: config)
         durationModels[choice.cacheKey] = model
         return model
+    }
+
+    /// Staged mode only: the two-part duration model when its packages are in the
+    /// models dir (SplitDuration.swift). Kept across buckets, like the whole model.
+    func splitDuration(choice: DurationModelChoice) throws -> SplitDuration? {
+        guard stagedComputeUnits, SplitDuration.allowed, choice.functionName == nil else { return nil }
+        if let cached = splitDurations[choice.tokenLength] { return cached }
+        let names = SplitDuration.packageNames(tokenLength: choice.tokenLength)
+        let frontURL = modelsDir.appendingPathComponent(names.front), backURL = modelsDir.appendingPathComponent(names.back)
+        guard FileManager.default.fileExists(atPath: frontURL.path), FileManager.default.fileExists(atPath: backURL.path) else { return nil }
+        fputs("  Loading split duration t\(choice.tokenLength)...\n", stderr)
+        let front = try MLModel(contentsOf: try MLModel.compileModel(at: frontURL), configuration: Self.makeConfig(SplitDuration.frontComputeUnits))
+        let back = try MLModel(contentsOf: try MLModel.compileModel(at: backURL), configuration: Self.makeConfig(SplitDuration.backComputeUnits))
+        let split = SplitDuration(front: front, back: back)
+        splitDurations[choice.tokenLength] = split
+        return split
+    }
+
+    /// Staged mode only: the two-part F0Ntrain when its packages are in the models dir.
+    func splitF0N(tFrames: Int) throws -> SplitF0N? {
+        guard stagedComputeUnits, SplitF0N.allowed else { return nil }
+        if let cached = splitF0Ns[tFrames] { return cached }
+        let names = SplitF0N.packageNames(tFrames: tFrames)
+        let frontURL = modelsDir.appendingPathComponent(names.front), backURL = modelsDir.appendingPathComponent(names.back)
+        guard FileManager.default.fileExists(atPath: frontURL.path), FileManager.default.fileExists(atPath: backURL.path) else { return nil }
+        fputs("  Loading split f0ntrain t\(tFrames)...\n", stderr)
+        let front = try MLModel(contentsOf: try MLModel.compileModel(at: frontURL), configuration: Self.makeConfig(SplitF0N.frontComputeUnits))
+        let back = try MLModel(contentsOf: try MLModel.compileModel(at: backURL), configuration: Self.makeConfig(SplitF0N.backComputeUnits))
+        let split = SplitF0N(front: front, back: back)
+        splitF0Ns[tFrames] = split
+        return split
     }
 
     func f0nModel(tFrames: Int) throws -> MLModel {
@@ -340,6 +417,7 @@ class ModelCache: KokoroModelProvider {
         f0nModels = f0nModels.filter { $0.key == tFrames }
         decPreModels = decPreModels.filter { $0.key == bucket }
         genModels = genModels.filter { $0.key == bucket }
+        foldedGenModels = foldedGenModels.filter { $0.key == bucket }
 
         let evicted = (f0nBefore - f0nModels.count) + (decBefore - decPreModels.count) + (genBefore - genModels.count)
         if evicted > 0 {
@@ -739,10 +817,66 @@ func runBatch(modelsDir: String, inputsDir: String, hnsfWeightsPath: String,
     fputs("Batch mode: stdin closed, exiting.\n", stderr)
 }
 
+// MARK: - Hybrid generator check
+
+/// `--hybrid-check DIR`: runs HybridGenerator on the fixed inputs written by
+/// `scripts/export_hybrid_generator.py --check` (DIR/in/*.bin), prints warm
+/// timings and writes DIR/hybrid_logits.bin (float32) for the parity script.
+@available(macOS 15.0, *)
+func runHybridCheck(dir: String, iterations: Int) throws {
+    let url = URL(fileURLWithPath: dir)
+    func bin(_ name: String) throws -> [Float] {
+        let data = try Data(contentsOf: url.appendingPathComponent("in/\(name).bin"))
+        return data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+    }
+    let plan = try JSONSerialization.jsonObject(with: Data(contentsOf: url.appendingPathComponent("plan.json"))) as! [String: Any]
+    let xPre = try bin("x_pre"), w0 = plan["w0"] as! Int
+    let rows = xPre.count / (512 * w0)
+    let t0 = Date()
+    let gen = try HybridGenerator(directory: url, rows: rows)
+    fputs(String(format: "  hybrid load %.1f s, rows %d\n", Date().timeIntervalSince(t0), rows), stderr)
+    let har = try bin("har"), style = try bin("style")
+    let sm1 = try bin("sm1"), zm1 = try bin("zm1"), sm2 = try bin("sm2"), zm2 = try bin("zm2")
+    var times: [Double] = []
+    var logits: MLMultiArray?
+    // KOKORO_CHECK_GAP_MS / KOKORO_CHECK_CPU_MS: idle time or a 2-thread CPU busy
+    // loop before each run (the generator is slower after a break from its own
+    // work; README/Notes/ane-folded-generator.md, "Cold generator after a break").
+    let env = ProcessInfo.processInfo.environment
+    let gapMs = Double(env["KOKORO_CHECK_GAP_MS"] ?? "") ?? 0, cpuMs = Double(env["KOKORO_CHECK_CPU_MS"] ?? "") ?? 0
+    for i in 0..<(iterations + 2) {
+        if cpuMs > 0 {
+            let end = Date().addingTimeInterval(cpuMs / 1000)
+            DispatchQueue.concurrentPerform(iterations: 2) { _ in
+                var x = 1.0
+                while Date() < end { for _ in 0..<1000 { x = x * 1.0000001 + 1e-9 } }
+                if x < 0 { print(x) }
+            }
+        }
+        if gapMs > 0 { usleep(useconds_t(gapMs * 1000)) }
+        let t = Date()
+        logits = try gen.run(xPre: xPre, har: har, style: style, sm1: sm1, zm1: zm1, sm2: sm2, zm2: zm2)
+        if i >= 2 { times.append(Date().timeIntervalSince(t) * 1000) }
+    }
+    if !gen.profile.isEmpty {
+        for (k, v) in gen.profile.sorted(by: { $0.value > $1.value }) { print(String(format: "  %-24@ %7.1f ms", k as NSString, v * 1000)) }
+    }
+    times.sort()
+    print(String(format: "hybrid generator: median %.1f ms, min %.1f ms (n=%d)", times[times.count / 2], times[0], times.count))
+    let out = floatValues(from: logits!)
+    try out.withUnsafeBytes { try Data($0).write(to: url.appendingPathComponent("hybrid_logits.bin")) }
+}
+
 // MARK: - Main
 
 func main() throws {
     let args = CommandLine.arguments
+    if let i = args.firstIndex(of: "--hybrid-check"), i + 1 < args.count {
+        guard #available(macOS 15.0, *) else { throw PipelineError.modelContractMismatch("--hybrid-check needs macOS 15") }
+        let n = args.firstIndex(of: "--iterations").map { Int(args[$0 + 1]) ?? 5 } ?? 5
+        try runHybridCheck(dir: args[i + 1], iterations: n)
+        return
+    }
     var modelsDir: String?
     var inputsDir: String?
     var hnsfWeightsPath: String?

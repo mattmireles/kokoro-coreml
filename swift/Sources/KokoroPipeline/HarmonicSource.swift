@@ -321,7 +321,8 @@ public func sineGenFromF0Frames(
     f0Frames: [Float],
     linearWeights: [Float],
     linearBias: Float,
-    seed: UInt64? = nil
+    seed: UInt64? = nil,
+    noise: consuming [Float]? = nil
 ) -> [Float] {
     let frameCount = f0Frames.count
     let scale = HarmonicConstants.upsampleScale
@@ -362,10 +363,14 @@ public func sineGenFromF0Frames(
     // compute). Each harmonic keeps its Double-precision phase integrator at
     // frame rate and streams the sample-rate work through a small scratch
     // chunk, so the working set stays in cache and nothing full-length is
-    // allocated per task. The arithmetic per value is unchanged from the
-    // sequential form, so the output is bit-identical.
+    // allocated per task.
     let totalNoise = dim * L
-    var gaussianNoise = [Float](repeating: 0, count: totalNoise)
+    // `noise`: the same draws made ahead of time (`harmonicNoise`), so the
+    // ~28 ms (M1, 30 s) generation is off the critical path. Ignored if the
+    // length does not match.
+    var gaussianNoise = (consume noise) ?? []
+    let pregenerated = gaussianNoise.count == totalNoise
+    if !pregenerated { gaussianNoise = [Float](repeating: 0, count: totalNoise) }
     var sineWaves = [Float](repeating: 0, count: dim * L)
     let twoPiTimesScale = 2.0 * Double.pi * Double(scale)
     let chunk = 65_536
@@ -373,7 +378,7 @@ public func sineGenFromF0Frames(
         gaussianNoise.withUnsafeMutableBufferPointer { noisePtr in
             DispatchQueue.concurrentPerform(iterations: dim + 1) { task in
                 if task == dim {
-                    generateGaussianNoise(into: noisePtr, seed: seed)
+                    if !pregenerated { generateGaussianNoise(into: noisePtr, seed: seed) }
                     return
                 }
                 let h = task
@@ -391,29 +396,40 @@ public func sineGenFromF0Frames(
                 }
                 vDSP_vsmulD(cumPhase, 1, [twoPiTimesScale], &phaseScaled, 1, vDSP_Length(frameCount))
 
-                // Same interpolation as linearInterpolateInto, evaluated per chunk.
+                // Same interpolation as linearInterpolateInto, evaluated per chunk with
+                // vDSP (ramp, clamp, linear interpolation), then the sine taken in
+                // Float on the phase reduced to [0, 1) cycles in Double: the scalar
+                // Double loop and Double vvsin cost ~22 ms of a 30 s clip on an A14.
+                // Error ~1e-7 against the Double form (far below the fp16 the
+                // generator reads); testSineGenMatchesSequentialReferenceAcrossChunkBoundary.
                 let srcLen = Double(frameCount)
                 let ratio = srcLen / Double(L)
+                var padded = phaseScaled + [phaseScaled[frameCount - 1]]   // vlint reads index + 1
+                var idx = [Double](repeating: 0, count: chunk)
                 var phaseUp = [Double](repeating: 0, count: chunk)
-                var sinResult = [Double](repeating: 0, count: chunk)
+                var whole = [Double](repeating: 0, count: chunk)
+                var frac = [Float](repeating: 0, count: chunk)
                 var floatSines = [Float](repeating: 0, count: chunk)
+                var lo = 0.0, hi = srcLen - 1
+                var invTwoPi = 1.0 / (2.0 * Double.pi)
+                var two: Float = 2
                 var ampScalar = sineAmp
                 let sineBase = sinePtr.baseAddress!.advanced(by: h * L)
                 var a = 0
                 while a < L {
                     let b = min(a + chunk, L)
                     let n = b - a
-                    for i in a..<b {
-                        let srcIdx = (Double(i) + 0.5) * ratio - 0.5
-                        let srcIdxClamped = max(0, min(srcIdx, srcLen - 1))
-                        let lo = Int(srcIdxClamped)
-                        let hi = min(lo + 1, frameCount - 1)
-                        let frac = srcIdxClamped - Double(lo)
-                        phaseUp[i - a] = phaseScaled[lo] * (1.0 - frac) + phaseScaled[hi] * frac
-                    }
+                    var start = (Double(a) + 0.5) * ratio - 0.5, step = ratio
+                    vDSP_vrampD(&start, &step, &idx, 1, vDSP_Length(n))
+                    vDSP_vclipD(idx, 1, &lo, &hi, &idx, 1, vDSP_Length(n))
+                    vDSP_vlintD(&padded, idx, 1, &phaseUp, 1, vDSP_Length(n), vDSP_Length(frameCount + 1))
+                    vDSP_vsmulD(phaseUp, 1, &invTwoPi, &phaseUp, 1, vDSP_Length(n))   // cycles
                     var count32 = Int32(n)
-                    vvsin(&sinResult, phaseUp, &count32)
-                    vDSP_vdpsp(sinResult, 1, &floatSines, 1, vDSP_Length(n))
+                    vvfloor(&whole, phaseUp, &count32)
+                    vDSP_vsubD(whole, 1, phaseUp, 1, &phaseUp, 1, vDSP_Length(n))      // [0, 1)
+                    vDSP_vdpsp(phaseUp, 1, &frac, 1, vDSP_Length(n))
+                    vDSP_vsmul(frac, 1, &two, &frac, 1, vDSP_Length(n))
+                    vvsinpif(&floatSines, frac, &count32)                               // sin(2*pi*frac)
                     vDSP_vsmul(floatSines, 1, &ampScalar, sineBase.advanced(by: a), 1, vDSP_Length(n))
                     a = b
                 }
@@ -464,6 +480,15 @@ public func sineGenFromF0Frames(
     return merged
 }
 
+/// The Gaussian noise `sineGenFromF0Frames` draws for `f0FrameCount` frames
+/// (harmonic-major, dim × frames × upsampleScale), made ahead of time: it depends
+/// only on the seed and the length, so the executor starts it while F0Ntrain runs.
+public func harmonicNoise(f0FrameCount: Int, seed: UInt64?) -> [Float] {
+    var noise = [Float](repeating: 0, count: HarmonicConstants.harmonicDim * f0FrameCount * HarmonicConstants.upsampleScale)
+    noise.withUnsafeMutableBufferPointer { generateGaussianNoise(into: $0, seed: seed) }
+    return noise
+}
+
 // MARK: - STFT
 
 /// Forward STFT matching ``TorchSTFT.transform`` / ``CustomSTFT.transform``.
@@ -481,20 +506,10 @@ public func stftTransform(_ signal: [Float]) -> (magnitude: [Float], phase: [Flo
     let padLen = nfft / 2                   // 10
 
     // Center padding (replicate mode, matching PyTorch)
-    var padded = [Float](repeating: 0, count: signal.count + 2 * padLen)
-    // Left pad: replicate first sample
-    for i in 0..<padLen {
-        padded[i] = signal[0]
-    }
-    // Copy signal
-    for i in 0..<signal.count {
-        padded[padLen + i] = signal[i]
-    }
-    // Right pad: replicate last sample
-    let lastSample = signal.last ?? 0
-    for i in 0..<padLen {
-        padded[padLen + signal.count + i] = lastSample
-    }
+    var padded = [Float](repeating: signal.first ?? 0, count: padLen)
+    padded.reserveCapacity(signal.count + 2 * padLen)
+    padded += signal
+    padded += [Float](repeating: signal.last ?? 0, count: padLen)
 
     // Number of frames
     let paddedLen = padded.count
@@ -502,61 +517,44 @@ public func stftTransform(_ signal: [Float]) -> (magnitude: [Float], phase: [Flo
 
     // Compute STFT rows with decimated FIR dot products. This is equivalent to
     // the scalar loop over frames/bins, but keeps the hot loop inside vDSP.
+    // Bins run in parallel (each writes only its own rows): one after another
+    // they cost ~45 ms of a 30 s clip on an A14, mostly on the critical path.
     var magnitude = [Float](repeating: 0, count: freqBins * nFrames)
     var phase = [Float](repeating: 0, count: freqBins * nFrames)
-    var real = [Float](repeating: 0, count: nFrames)
-    var imag = [Float](repeating: 0, count: nFrames)
-    var magSquared = [Float](repeating: 0, count: nFrames)
-    var eps = Float(1e-14)
-    var vectorCount = Int32(nFrames)
     let frameCount = vDSP_Length(nFrames)
 
     padded.withUnsafeBufferPointer { paddedPtr in
         HarmonicSTFTBasis.real.withUnsafeBufferPointer { realBasisPtr in
             HarmonicSTFTBasis.imaginary.withUnsafeBufferPointer { imagBasisPtr in
-                for k in 0..<freqBins {
-                    let rowOffset = k * nFrames
-                    let realFilter = realBasisPtr.baseAddress!.advanced(by: k * nfft)
-                    let imagFilter = imagBasisPtr.baseAddress!.advanced(by: k * nfft)
-
-                    real.withUnsafeMutableBufferPointer { realPtr in
-                        vDSP_desamp(
-                            paddedPtr.baseAddress!, vDSP_Stride(hop),
-                            realFilter,
-                            realPtr.baseAddress!,
-                            frameCount,
-                            vDSP_Length(nfft)
-                        )
-                    }
-                    if k == 0 || k == freqBins - 1 {
-                        // DC and Nyquist: the imaginary part is exactly zero.
-                        // Fill +0.0 rather than dot-multiplying a zero filter,
-                        // which yields -0.0 against negative samples and makes
-                        // atan2 report -pi where torch.stft reports +pi. The
-                        // imaginary basis rows for these bins are never read.
-                        vDSP_vclr(&imag, 1, vDSP_Length(nFrames))
-                    } else {
-                        imag.withUnsafeMutableBufferPointer { imagPtr in
-                            vDSP_desamp(
-                                paddedPtr.baseAddress!, vDSP_Stride(hop),
-                                imagFilter,
-                                imagPtr.baseAddress!,
-                                frameCount,
-                                vDSP_Length(nfft)
-                            )
-                        }
-                    }
-
-                    vDSP_vsq(real, 1, &magSquared, 1, frameCount)
-                    vDSP_vma(imag, 1, imag, 1, magSquared, 1, &magSquared, 1, frameCount)
-                    magnitude.withUnsafeMutableBufferPointer { magnitudePtr in
-                        let magnitudeRow = magnitudePtr.baseAddress!.advanced(by: rowOffset)
-                        vDSP_vsadd(magSquared, 1, &eps, magnitudeRow, 1, frameCount)
-                        vvsqrtf(magnitudeRow, magnitudeRow, &vectorCount)
-                    }
+                magnitude.withUnsafeMutableBufferPointer { magnitudePtr in
                     phase.withUnsafeMutableBufferPointer { phasePtr in
-                        let phaseRow = phasePtr.baseAddress!.advanced(by: rowOffset)
-                        vvatan2f(phaseRow, imag, real, &vectorCount)
+                        let magBase = magnitudePtr.baseAddress!, phaseBase = phasePtr.baseAddress!
+                        DispatchQueue.concurrentPerform(iterations: freqBins) { k in
+                            var real = [Float](repeating: 0, count: nFrames)
+                            var imag = [Float](repeating: 0, count: nFrames)
+                            var magSquared = [Float](repeating: 0, count: nFrames)
+                            var eps = Float(1e-14)
+                            var vectorCount = Int32(nFrames)
+                            let rowOffset = k * nFrames
+                            vDSP_desamp(paddedPtr.baseAddress!, vDSP_Stride(hop), realBasisPtr.baseAddress! + k * nfft,
+                                        &real, frameCount, vDSP_Length(nfft))
+                            if k == 0 || k == freqBins - 1 {
+                                // DC and Nyquist: the imaginary part is exactly zero.
+                                // Keep +0.0 rather than dot-multiplying a zero filter,
+                                // which yields -0.0 against negative samples and makes
+                                // atan2 report -pi where torch.stft reports +pi. The
+                                // imaginary basis rows for these bins are never read.
+                            } else {
+                                vDSP_desamp(paddedPtr.baseAddress!, vDSP_Stride(hop), imagBasisPtr.baseAddress! + k * nfft,
+                                            &imag, frameCount, vDSP_Length(nfft))
+                            }
+                            vDSP_vsq(real, 1, &magSquared, 1, frameCount)
+                            vDSP_vma(imag, 1, imag, 1, magSquared, 1, &magSquared, 1, frameCount)
+                            let magnitudeRow = magBase + rowOffset
+                            vDSP_vsadd(magSquared, 1, &eps, magnitudeRow, 1, frameCount)
+                            vvsqrtf(magnitudeRow, magnitudeRow, &vectorCount)
+                            vvatan2f(phaseBase + rowOffset, imag, real, &vectorCount)
+                        }
                     }
                 }
             }
@@ -593,13 +591,15 @@ public func buildHar(
     f0Padded: [Float],
     linearWeights: [Float],
     linearBias: Float,
-    seed: UInt64? = nil
+    seed: UInt64? = nil,
+    noise: consuming [Float]? = nil
 ) -> (har: [Float], nFrames: Int) {
     let components = buildHarComponents(
         f0Padded: f0Padded,
         linearWeights: linearWeights,
         linearBias: linearBias,
-        seed: seed
+        seed: seed,
+        noise: consume noise
     )
     return (har: components.har, nFrames: components.nFrames)
 }
@@ -609,37 +609,31 @@ public func buildHarComponents(
     f0Padded: [Float],
     linearWeights: [Float],
     linearBias: Float,
-    seed: UInt64? = nil
+    seed: UInt64? = nil,
+    noise: consuming [Float]? = nil
 ) -> HarDebugComponents {
+    // KOKORO_HNSF_PROFILE=1: print the sine-generation / STFT split.
+    let profile = ProcessInfo.processInfo.environment["KOKORO_HNSF_PROFILE"] == "1"
+    let t0 = CFAbsoluteTimeGetCurrent()
     // 1. SineGen + SourceModuleHnNSF merge.
     let harSource = sineGenFromF0Frames(
         f0Frames: f0Padded,
         linearWeights: linearWeights,
         linearBias: linearBias,
-        seed: seed
+        seed: seed,
+        noise: consume noise
     )
 
+    let t1 = CFAbsoluteTimeGetCurrent()
     // 2. STFT transform
     let (mag, ph) = stftTransform(harSource)
+    if profile { print(String(format: "HNSF sine %.1f ms stft %.1f ms", (t1 - t0) * 1000, (CFAbsoluteTimeGetCurrent() - t1) * 1000)) }
     let freqBins = HarmonicConstants.stftFreqBins // 11
     let nFrames = mag.count / freqBins
 
-    // 3. Concatenate [magnitude, phase] along channel dim
-    // Output layout: (22, nFrames) in channel-major order
-    // First 11 channels = magnitude, next 11 = phase
-    var har = [Float](repeating: 0, count: HarmonicConstants.harChannels * nFrames)
-    // magnitude channels (0..<11)
-    for k in 0..<freqBins {
-        for t in 0..<nFrames {
-            har[k * nFrames + t] = mag[k * nFrames + t]
-        }
-    }
-    // phase channels (11..<22)
-    for k in 0..<freqBins {
-        for t in 0..<nFrames {
-            har[(freqBins + k) * nFrames + t] = ph[k * nFrames + t]
-        }
-    }
+    // 3. Concatenate [magnitude, phase] along the channel dim: (22, nFrames),
+    // channel-major, first 11 channels magnitude. Both inputs are (11, nFrames).
+    let har = mag + ph
 
     return HarDebugComponents(
         harSource: harSource,
@@ -769,38 +763,47 @@ func generateGaussianNoise(into buffer: UnsafeMutableBufferPointer<Float>, seed:
     var rng = SeededRNG(seed: seed ?? UInt64.random(in: 0..<UInt64.max))
     let pairCount = (count + 1) / 2
     guard pairCount > 0 else { return }
-    let scale = Float(0xFFFFFF)
-    let tiny = Float.ulpOfOne
-    var minusTwo = Float(-2.0)
-    var twoPi = Float(2.0 * Float.pi)
+    // The RNG stream is sequential but cheap; the log/sqrt/cos/sin are not.
+    // Draw every raw value in order first, then transform chunks in parallel:
+    // same values, same per-element arithmetic, bit-identical output. Single-
+    // threaded it ran past F0Ntrain on an A14 and stalled the hn-NSF thread.
+    var raw = [UInt32](repeating: 0, count: 2 * pairCount)
+    raw.withUnsafeMutableBufferPointer { r in
+        for i in 0..<pairCount {
+            r[2 * i] = UInt32(truncatingIfNeeded: rng.next() & 0xFFFFFF)
+            r[2 * i + 1] = UInt32(truncatingIfNeeded: rng.next() & 0xFFFFFF)
+        }
+    }
     let chunkPairs = 32_768
-    var u1 = [Float](repeating: 0, count: chunkPairs)
-    var u2 = [Float](repeating: 0, count: chunkPairs)
-    var radii = [Float](repeating: 0, count: chunkPairs)
-    var theta = [Float](repeating: 0, count: chunkPairs)
-    var cosTheta = [Float](repeating: 0, count: chunkPairs)
-    var sinTheta = [Float](repeating: 0, count: chunkPairs)
     let out = buffer.baseAddress!
-    var p0 = 0
-    while p0 < pairCount {
-        let n = min(chunkPairs, pairCount - p0)
-        for i in 0..<n {
-            u1[i] = max(tiny, Float(rng.next() & 0xFFFFFF) / scale)
-            u2[i] = Float(rng.next() & 0xFFFFFF) / scale
+    raw.withUnsafeBufferPointer { r in
+        DispatchQueue.concurrentPerform(iterations: (pairCount + chunkPairs - 1) / chunkPairs) { c in
+            let p0 = c * chunkPairs
+            let n = min(chunkPairs, pairCount - p0)
+            let scale = Float(0xFFFFFF)
+            let tiny = Float.ulpOfOne
+            var minusTwo = Float(-2.0)
+            var twoPi = Float(2.0 * Float.pi)
+            var u1 = [Float](repeating: 0, count: n), u2 = [Float](repeating: 0, count: n)
+            var radii = [Float](repeating: 0, count: n), theta = [Float](repeating: 0, count: n)
+            var cosTheta = [Float](repeating: 0, count: n), sinTheta = [Float](repeating: 0, count: n)
+            for i in 0..<n {
+                u1[i] = max(tiny, Float(r[2 * (p0 + i)]) / scale)
+                u2[i] = Float(r[2 * (p0 + i) + 1]) / scale
+            }
+            var n32 = Int32(n)
+            vvlogf(&radii, u1, &n32)
+            vDSP_vsmul(radii, 1, &minusTwo, &radii, 1, vDSP_Length(n))
+            vvsqrtf(&radii, radii, &n32)
+            vDSP_vsmul(u2, 1, &twoPi, &theta, 1, vDSP_Length(n))
+            vvcosf(&cosTheta, theta, &n32)
+            vvsinf(&sinTheta, theta, &n32)
+            // buffer[2i] = radii * cos, buffer[2i + 1] = radii * sin (an odd count drops the last sin).
+            vDSP_vmul(radii, 1, cosTheta, 1, out.advanced(by: 2 * p0), 2, vDSP_Length(n))
+            let sinCount = min(n, count / 2 - p0)
+            if sinCount > 0 {
+                vDSP_vmul(radii, 1, sinTheta, 1, out.advanced(by: 2 * p0 + 1), 2, vDSP_Length(sinCount))
+            }
         }
-        var n32 = Int32(n)
-        vvlogf(&radii, u1, &n32)
-        vDSP_vsmul(radii, 1, &minusTwo, &radii, 1, vDSP_Length(n))
-        vvsqrtf(&radii, radii, &n32)
-        vDSP_vsmul(u2, 1, &twoPi, &theta, 1, vDSP_Length(n))
-        vvcosf(&cosTheta, theta, &n32)
-        vvsinf(&sinTheta, theta, &n32)
-        // buffer[2i] = radii * cos, buffer[2i + 1] = radii * sin (an odd count drops the last sin).
-        vDSP_vmul(radii, 1, cosTheta, 1, out.advanced(by: 2 * p0), 2, vDSP_Length(n))
-        let sinCount = min(n, count / 2 - p0)
-        if sinCount > 0 {
-            vDSP_vmul(radii, 1, sinTheta, 1, out.advanced(by: 2 * p0 + 1), 2, vDSP_Length(sinCount))
-        }
-        p0 += n
     }
 }

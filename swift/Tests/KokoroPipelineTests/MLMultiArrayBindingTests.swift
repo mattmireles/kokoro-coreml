@@ -162,6 +162,29 @@ final class MLMultiArrayBindingTests: XCTestCase {
         XCTAssertEqual(floatValues(from: aligned), [1.0, 2.0, 2.0, 3.0, 10.0, 20.0, 20.0, 30.0])
     }
 
+    /// fp16 sources with padded strides (the split duration model's fp16 back
+    /// returns these) take the pointer path: element-wise NSNumber access cost
+    /// ~280 ms at 512 tokens.
+    func testAlignHelpersReadPaddedFloat16Sources() throws {
+        func fp16(shape: [Int], rowPad: Int, values: [Float]) throws -> (MLMultiArray, UnsafeMutableRawPointer) {
+            let last = shape[2] + rowPad
+            let strides = [shape[1] * last, last, 1]
+            let mem = UnsafeMutableRawPointer.allocate(byteCount: shape[1] * last * 2, alignment: 64)
+            let a = try MLMultiArray(dataPointer: mem, shape: shape.map { NSNumber(value: $0) }, dataType: .float16,
+                                     strides: strides.map { NSNumber(value: $0) })
+            for i in 0..<shape[1] { for j in 0..<shape[2] { a[[0, i, j] as [NSNumber]] = NSNumber(value: values[i * shape[2] + j]) } }
+            return (a, mem)
+        }
+        let (tokenMajor, m1) = try fp16(shape: [1, 3, 2], rowPad: 6, values: [10, 100, 20, 200, 30, 300])
+        defer { m1.deallocate() }
+        XCTAssertEqual(floatValues(from: try alignTokenMajorToFrames(source: tokenMajor, predDur: [1, 2, 1], channels: 2, frameCount: 4)),
+                       [10, 20, 20, 30, 100, 200, 200, 300])
+        let (channelMajor, m2) = try fp16(shape: [1, 2, 3], rowPad: 5, values: [1, 2, 3, 10, 20, 30])
+        defer { m2.deallocate() }
+        XCTAssertEqual(floatValues(from: try alignChannelMajorToFrames(source: channelMajor, predDur: [1, 2, 1], channels: 2, frameCount: 4)),
+                       [1, 2, 2, 3, 10, 20, 20, 30])
+    }
+
     func testAlignHelpersRejectWrongChannelShape() throws {
         let tokenMajor = try makeFloatArray(shape: [1, 2, 3], values: [1, 2, 3, 4, 5, 6])
         XCTAssertThrowsError(
