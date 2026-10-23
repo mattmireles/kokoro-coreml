@@ -24,13 +24,13 @@ One-screen summary of everything below; details and numbers in each issue.
 | --- | ---: | ---: | --- |
 | A14 (iPhone 12 Pro) | 683-726 ms | **488-497 ms** (4.25 s) | e5rt arena; Core ML path ~15-30 ms slower |
 | A17 (iPhone 15 Pro) | 379-404 ms | **318-323 ms** (2.51 s) | Core ML (e5rt ties at 30 s, ~25 ms slower at 10 s) |
-| M2 Air | 473-493 ms (Botnet on) | **264-274 ms** Botnet paused (2.3-2.45 s) | Core ML ≈ e5rt |
+| M2 Air | 473-493 ms (Botnet on) | **223 ms** Botnet paused, current packages (2.3-2.45 s) | Core ML |
 | M1 | 405 ms quiet | **291-306 ms** Botnet paused (1.6-3.3 s) | Core ML ≈ e5rt |
 
 Audio 46 dB vs PyTorch throughout. Share of the estimated physics limit:
 A14 ≈ 78-80%, A17 ≈ 65-72%, M1 ≈ 80% of the DRAM-aware floor (~240 ms;
-~62% of the compute-only ~185 ms), M2 Air ≈ 54% of its compute-only ~145 ms
-floor (no DRAM-aware estimate yet). Peak RAM with e5rt is
+~62% of the compute-only ~185 ms), M2 Air ≈ 65% of its compute-only ~145 ms
+floor (223 ms; no DRAM-aware estimate yet). Peak RAM with e5rt is
 20-50% below Core ML (Macs ~667 vs ~850 MB at 30 s; A17 generator 0.84 vs
 1.77 GB; A14 10 s 265 vs 350 MB).
 
@@ -68,9 +68,9 @@ full generator (19 dB), not in unit tests; packages must match `plan.json`
 reviewers and the measurements; >90% needs fewer bytes than the exact model
 moves (a distilled generator, excluded by CLAUDE.md).
 
-**Next.** On the Macs the generator is now ~145-150 ms of a ~270 ms
-30 s clip (M2 Air, Botnet paused), about its compute floor: the ~120 ms of
-front stages (duration, F0Ntrain, DecoderPre, hn-NSF) are the Mac lever.
+**Next.** On the M2 Air the generator is ~151 ms of a 223 ms 30 s clip
+(Botnet paused, current packages); the ~70 ms of front stages (duration 34,
+F0Ntrain 16.5, DecoderPre 18) are the next Mac lever.
 Decide whether the A14 and
 Macs ship the private e5rt path (not App Store-safe); remaining items are
 ~5 ms each (phase-kernel tuning, first-AdaIN stats sharing, padding).
@@ -914,6 +914,16 @@ was bit-exact). Sine 22 → ~19 ms; the hn-NSF stage is still 32-35 ms (~10 ms
 outside sine + STFT, unprofiled). M1 30 s audio: new build vs itself
 45.9 dB, vs the previous build 46.0, previous vs itself 47.0. A14 end to
 end 30 s **490-498 ms** (3 rounds), 10 s 189-193 ms.
+
+**M2 Air was running stale front-stage packages** (19:20 PT). Its bench
+folder (`~/ane-lab-tmp/models_v5`) had the unsplit duration, unsplit
+F0Ntrain and GPU-layout DecoderPre; the M1's `models_v10` had the split and
+ANE-layout ones. With the same set (`models_v10` built from `models_v5` plus
+`coreml-dur-ane/`, `coreml-f0n-split/`, `coreml-dpre-ane/`, `coreml-hybrid/`),
+Botnet paused, 30 s, 10 runs: **223.0 ms** (duration 34.1, F0Ntrain 16.5,
+DecoderPre 17.8, hn-NSF 14.8 overlapped, generator 151.0) vs 272.5 ms with
+the old set (59.5 / 31.0 / 31.8 / 15.9 / 147.1). Benchmarks must use the full
+current package set; check the folder before comparing devices.
 
 **Macs with Botnet paused** (2026-10-22 19:06-19:08 PT; paused with
 `SupervisorCLI pause` over ssh, restored afterwards to the exact prior policy:
