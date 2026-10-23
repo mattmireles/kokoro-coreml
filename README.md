@@ -3,7 +3,8 @@
 
 [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) running on the Apple Neural Engine through Core ML. No Python, no server, no API key. The model is cut at its seams, and each stage runs on the part of the chip that suits it. That includes the vocoder, which the Neural Engine rejects as exported; a reshape that leaves its math unchanged gets it in.
 
-> **Pre-converted models:** [huggingface.co/mattmireles/kokoro-coreml](https://huggingface.co/mattmireles/kokoro-coreml) · **Paper:** [`paper/main.pdf`](paper/main.pdf)
+> **Pre-converted models:** [huggingface.co/mattmireles/kokoro-coreml](https://huggingface.co/mattmireles/kokoro-coreml)
+> **Paper:** [`paper/main.pdf`](paper/main.pdf)
 
 ## Performance
 
@@ -16,7 +17,7 @@ Warm median end-to-end time, token IDs in, 24 kHz audio out. Measured October 23
 | 10s | 71 ms | 124 ms | 156 ms | 186 ms |
 | 15s | 89 ms | 169 ms | 224 ms | 261 ms |
 | 30s (27.4 s input) | **159 ms** | **309 ms** | **319 ms** | **480 ms** |
-| **vs MLX** | 3.5-4.8x | 8.1-9.8x | 8.9-15.1x\* | 9.3-15.2x; MLX runs out of memory at 30 s |
+| **vs MLX** | **3.5-4.8x** | **8.1-9.8x** | **8.9-15.1x\*** | **9.3-15.2x**; MLX runs out of memory at 30 s |
 
 Every device runs at least 57x faster than real time on the 27.4 s input. MLX is [mlx-audio](https://github.com/Blaizzy/mlx-audio) 0.4.3 on Macs and [kokoro-ios](https://github.com/mlalma/kokoro-ios) 1.0.8 on iPhones; the pinned mlx-audio fails every 3 s input.
 
@@ -39,7 +40,7 @@ Peak memory for one synthesis, same run and same inputs as the latency table:
 | 10s | 263 MB | 199 MB | 655 MB | 349 MB |
 | 15s | 275 MB | 247 MB | 869 MB | 500 MB |
 | 30s (27.4 s input) | **434 MB** | **375 MB** | **1,338 MB** | **831 MB** |
-| **MLX** | 786-815 MB | 771-801 MB | not measured | runs out of memory at 30 s |
+| **vs MLX** | **1.9-3.3x less** | **2.1-4.4x less** | not measured yet | MLX runs out of memory at 30 s |
 
 On a Mac this pipeline uses about half of MLX's memory at 30 s (434 vs 815 MB on the M2 Ultra, 375 vs 801 MB on the M1 Mini), and far less on short clips.
 
@@ -57,7 +58,7 @@ iOS thermal state at the end of each run of 14 back-to-back syntheses of the sam
 | 7s | nominal | nominal | nominal | nominal |
 | 10s | nominal | fair | nominal | nominal |
 | 15s | nominal | fair | nominal | nominal |
-| 30s | nominal | **serious** | nominal | killed (out of memory) |
+| 30s | nominal | **serious** (throttled) | nominal | killed (out of memory) |
 
 This pipeline never warmed either phone. MLX did, because it works 10-15x longer for the same speech: by the end of its 30 s run on the iPhone 15 Pro Max, iOS was throttling it (`serious`).
 
