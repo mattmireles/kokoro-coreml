@@ -47,6 +47,23 @@ On a Mac this pipeline uses about half of MLX's memory at 30 s (434 vs 815 MB on
 - **Where the memory goes on iPhone:** the hybrid generator, used at 7 s and longer, buys its speed with memory. If memory matters more than speed, set `KOKORO_HYBRID_GENERATOR=0` to use the all-ANE generator everywhere. At 30 s it peaks at 780 MB on the iPhone 15 Pro Max and 284 MB on the iPhone 12 Pro, but takes 2.5-3.2x longer.
 - **The MLX 3 s figures are missing:** mlx-audio fails every 3 s input.
 
+### Thermal (iPhone)
+
+iOS thermal state at the end of each run of 14 back-to-back syntheses of the same clip. Every run started cool (`nominal`):
+
+| Audio | iPhone 15 Pro Max | MLX | iPhone 12 Pro | MLX |
+| --- | --- | --- | --- | --- |
+| 3s | nominal | nominal | nominal | nominal |
+| 7s | nominal | nominal | nominal | nominal |
+| 10s | nominal | fair | nominal | nominal |
+| 15s | nominal | fair | nominal | nominal |
+| 30s | nominal | **serious** | nominal | killed (out of memory) |
+
+This pipeline never warmed either phone. MLX did, because it works 10-15x longer for the same speech: by the end of its 30 s run on the iPhone 15 Pro Max, iOS was throttling it (`serious`).
+
+- **The four states:** `nominal`, `fair`, `serious` and `critical` are iOS's own reading ([`ProcessInfo.thermalState`](https://developer.apple.com/documentation/foundation/processinfo/thermalstate)), recorded at each call. They are not temperatures.
+- **The old pipeline heated phones too:** before the vocoder moved to the Neural Engine, the iPhone 12 Pro ended its 30 s run at `serious`.
+
 ## How it works
 
 Apple Silicon has three engines: CPU, GPU and the Neural Engine (ANE). The ANE runs fixed-shape convolutions fast and cheaply, but it accepts shapes, not models. Kokoro's vocoder fails ANE compilation because one axis is 720,000 samples long against a 16,384 limit. So the pipeline is cut at its seams, and each stage is reshaped until the right engine accepts it:
