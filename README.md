@@ -1,5 +1,5 @@
 # Kokoro TTS: Surgically Optimized for Apple Silicon
-**15.1x faster than MLX on iPhone 15 Pro Max. 9.8x faster than MLX on M1 Mac Mini. 4.8x faster than MLX on m2 Ultra.** MLX was measured on the same Mac, with the same text, same 27 sec audio duration.
+**15.1x faster than MLX on iPhone 15 Pro Max –  while using 2.1x less RAM.** MLX was measured on the same iPhone, with the same text, same 27 sec audio duration.
 
 [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) running on the Apple Neural Engine through Core ML. No Python, no server, no API key. The model is cut at its seams, and each stage runs on the part of the chip that suits it. That includes the vocoder, which the Neural Engine rejects as exported; a reshape that leaves its math unchanged gets it in.
 
@@ -40,7 +40,7 @@ Peak memory for one synthesis, same run and same inputs as the latency table:
 | 10s | 263 MB | 199 MB | 655 MB | 349 MB |
 | 15s | 275 MB | 247 MB | 869 MB | 500 MB |
 | 30s (27.4 s input) | **434 MB** | **375 MB** | **1,338 MB** | **831 MB** |
-| **vs MLX** | **1.9-3.3x less** | **2.1-4.4x less** | not measured yet | MLX runs out of memory at 30 s |
+| **vs MLX** | **1.9-3.3x less** | **2.1-4.4x less** | **2.9-4.8x less** | **4.9-19x less**; MLX runs out of memory at 30 s |
 
 On a Mac this pipeline uses about half of MLX's memory at 30 s (434 vs 815 MB on the M2 Ultra, 375 vs 801 MB on the M1 Mini), and far less on short clips.
 
@@ -182,7 +182,7 @@ kokoro-coreml/
 
 ## Per-device detail
 
-Every device in the October 23, 2026 run, at every clip length: latency and peak memory for this pipeline next to MLX on the same device, same text and same session. Latency is the warm median. Peak memory is the process's peak resident memory on Macs and the app's peak memory footprint on iPhones. Blank cells are still being measured.
+Every device in the October 23, 2026 run, at every clip length: latency and peak memory for this pipeline next to MLX on the same device, same text and same session. Latency is the warm median. Peak memory is the process's peak resident memory on Macs and the app's peak memory footprint on iPhones. The one blank cell, MLX's memory at 30 s on the iPhone 15 Pro Max, is still being measured; iPhone MLX memory was measured later the same day with the same metric.
 
 ### M2 Ultra Mac Studio
 
@@ -208,20 +208,20 @@ Every device in the October 23, 2026 run, at every clip length: latency and peak
 
 | Audio | Latency | MLX | Faster | Peak memory | MLX | Less memory |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 3s | 62 ms | 551 ms | **8.9x** | 255 MB |  |  |
-| 7s | 103 ms | 1,227 ms | **11.9x** | 551 MB |  |  |
-| 10s | 156 ms | 1,717 ms | **11.0x**\* | 655 MB |  |  |
-| 15s | 224 ms | 2,319 ms | **10.4x**\* | 869 MB |  |  |
+| 3s | 62 ms | 551 ms | **8.9x** | 255 MB | 1,219 MB | **4.8x** |
+| 7s | 103 ms | 1,227 ms | **11.9x** | 551 MB | 1,791 MB | **3.3x** |
+| 10s | 156 ms | 1,717 ms | **11.0x**\* | 655 MB | 2,045 MB | **3.1x** |
+| 15s | 224 ms | 2,319 ms | **10.4x**\* | 869 MB | 2,481 MB | **2.9x** |
 | 30s (27.4 s input) | 319 ms | 4,797 ms | **15.1x**\* | 1,338 MB |  |  |
 
 ### iPhone 12 Pro (A14)
 
 | Audio | Latency | MLX | Faster | Peak memory | MLX | Less memory |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 3s | 98 ms | 911 ms | **9.3x** | 61 MB |  |  |
-| 7s | 145 ms | 2,050 ms | **14.2x** | 282 MB |  |  |
-| 10s | 186 ms | 2,814 ms | **15.2x** | 349 MB |  |  |
-| 15s | 261 ms | 3,951 ms | **15.1x** | 500 MB |  |  |
+| 3s | 98 ms | 911 ms | **9.3x** | 61 MB | 1,182 MB | **19.3x** |
+| 7s | 145 ms | 2,050 ms | **14.2x** | 282 MB | 1,758 MB | **6.2x** |
+| 10s | 186 ms | 2,814 ms | **15.2x** | 349 MB | 2,006 MB | **5.7x** |
+| 15s | 261 ms | 3,951 ms | **15.1x** | 500 MB | 2,444 MB | **4.9x** |
 | 30s (27.4 s input) | 480 ms | out of memory | -- | 831 MB | -- | -- |
 
 ### M2 MacBook Air
