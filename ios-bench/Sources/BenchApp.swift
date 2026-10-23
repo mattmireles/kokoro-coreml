@@ -468,7 +468,10 @@ final class BenchRunner: ObservableObject {
             let p = UnsafeMutableRawPointer.allocate(byteCount: 64 << 20, alignment: 16384); memset(p, 1, 64 << 20); return p } : []
         let cpuThreads = Int(ProcessInfo.processInfo.environment["KOKORO_CHECK_CPU_THREADS"] ?? "") ?? 2
         let allocMB = Int(ProcessInfo.processInfo.environment["KOKORO_CHECK_ALLOC_MB"] ?? "") ?? 0
-        for i in 0..<5 {
+        // KOKORO_CHECK_RUNS: runs (default 5, the last 3 kept). Longer series show
+        // the A14 drifting from boost to sustained speed (334 → ~385 ms over 25 runs).
+        let runs = Int(ProcessInfo.processInfo.environment["KOKORO_CHECK_RUNS"] ?? "") ?? 5
+        for i in 0..<runs {
             if cpuMs > 0 {
                 let end = Date().addingTimeInterval(cpuMs / 1000)
                 DispatchQueue.concurrentPerform(iterations: cpuThreads) { _ in

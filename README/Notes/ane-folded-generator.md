@@ -1050,6 +1050,100 @@ trips cost nothing measurable. Not built into the generator.
 300 ms idle, 17:40 PT): 33 (Core ML's 0x21) 490-551 ms, 21 (Orion) 516-551,
 47 506-521, 9 541-573. Priority does not explain the cold penalty.
 
+**Finding: the standalone check measures boost, the pipeline measures
+sustained speed** (A14, e5rt, 30 s, 2026-10-22 19:40-21:00 PT). The
+pipeline generator ran ~380 ms (r10) and 402-432 ms (r11 forced) against
+333-347 ms for `--mode hybrid-check` at r11, and an immediate second run
+inside the pipeline was no faster. Ruled out in turn: thread QoS (both
+`Task.detached(.userInitiated)`), input data (the check's own inputs run
+inside the pipeline process: 379-404 ms on a cool phone, check 329-343 in
+the same session), resident models (a pipeline run first, models kept or
+freed: +5-15 ms, within noise), memory layout (generator allocated before
+the pipeline run: no change), leftover CPU work (process CPU time per run
+equal). Then `KOKORO_CHECK_RUNS=25` (back to back, no gaps): 427 (first),
+334, 343, 347 … 372, 386, 381, 385, 383, 375 ms. The check's 5-run window
+is the chip's boost; ~10 s of sustained work settles near 370-385 ms (r11),
+which is the regime the ladder benchmark (warm-ups plus iterations back to
+back) measures. So the A14 generator is power- or heat-limited when run
+continuously, and energy per run (DRAM traffic) is the lever there, not
+host overhead. Compare device numbers only within one regime.
+
+**Second opinion, 21:00 PT** (`tmp/second-opinions/brief-20261022-204757-*`,
+Opus 5.5 and GPT-6 Astra): both ranked exact GPU-side changes first (tiled
+`unshuffle`, cheaper `apply_phase`, shared first-AdaIN statistics) and a
+sustained-regime recheck of the spin-wait. All measured on the A14 the same
+night, old and new apps installed alternately, 3 rounds, 30 s:
+
+- **Spin-wait under sustained load: keep.** `KOKORO_CHECK_RUNS=25`, 2 rounds:
+  spin median 357-358 ms, no spin 367-368.
+- **Rejected: tiled `unshuffle`** (phase-by-phase contiguous loads into
+  threadgroup memory, half4 writes; bit-identical, test written). End to end
+  459-469 vs 459-470 ms; `metal.unshuffle` 16.3-16.4 ms both ways. That
+  timer includes waiting behind other chains' command buffers on the shared
+  queue, so it was never a memory-pattern problem. Reverted.
+- **Rejected: half-precision `apply_phase` tile** (exact: values round to
+  half on output anyway). Per-kernel GPU times equal within noise in
+  `KOKORO_HYBRID_CHAINS=1 KOKORO_HYBRID_SERIAL=1 KOKORO_HYBRID_PROFILE=1`.
+  Reverted.
+- **Rejected: one statistics pass shared by a stage's three branches**
+  (`statsOnly` before the branches, each branch finalizes with its own g, b;
+  audio 46.1 dB both paths, same max logit error). End to end 459-466 vs
+  453-469 ms. Removing ~100 MB of GPU reads changes nothing: neither GPU time
+  nor DRAM bytes bind. Reverted.
+
+**Rejected: two concurrent branch chains** (`KOKORO_HYBRID_CHAINS=2`, A14,
+2 rounds, 22:10 PT). 30 s 537-554 vs 486-493 ms, 10 s 215-216 vs 189-192;
+peak 788 vs 736-745 MB, because the layout adds per-stage accumulators and
+keeps all ten stage-2 slots. RAM picture at 30 s (r10, e5rt, A14): the arena
+is ~385 MB (ten 37 MB stage-2 slots plus inputs and logits) of a 642 MB peak;
+~83 MB is base process and models, up to ~170 MB front-stage temporaries.
+Wider rows cannot shrink the halo share: the ANE's 16,384 axis cap allows a
+core of at most 248 frames (overhead 6.5% vs 7.1% now).
+
+**Where the ANE waits** (`KOKORO_HYBRID_CALLS=1`, r11 check, run 334 ms):
+setup to first call 4.7 ms; stage-1 noise chains 15-100 ms (nr0, nr1),
+stage-1 branches 98-173, `ups1` 175-180, stage-2 branches 191-331, `post`
+339-343. ANE gaps at the boundaries total ~28 ms (stage-2 entry 11.5 ms:
+unshuffle, noise join, first AdaIN of three branches; final branch sum
+8 ms). Each boundary waits on a whole-clip AdaIN statistic, so it cannot be
+pipelined without changing the math. Inside the branch phases the ANE is
+~80% busy, with calls I/O-bound. The generator is close to what this layout
+allows; the remaining exact lever is the layout's own bytes (the 8-frame
+halo per 224-frame row is 7% extra width).
+
+**Rejected: AdaIN statistics computed on the Neural Engine** (21:30 PT).
+Idea: the conv that feeds each pair's second AdaIN also emits shifted,
+masked means of y and y² (`(y - y[..., :1]) * m`, `reduce_mean`), so half
+the GPU stats passes disappear. Precision is workable (macOS ANE, random
+data: variance error 0.06% median, 0.7% worst), but the ANE does not fuse
+the reductions into the conv. A14, `tools/ane-lab`, 11 x 128 x 14,880 k3
+conv, IOSurface I/O: conv alone 2.9 ms, conv + stats 12.5 ms (7 ANE ops),
+against ~3-4 ms for a GPU stats pass of the same tensor. The ANE is the
+bottleneck already, so this would be slower.
+
+**Rejected: GPU warm-up while the front stages run** (`KOKORO_GPU_WARM=alu`
+register-only kernel or `copy` 16 MB blits, started at duration, F0Ntrain or
+DecoderPre, stopped before the generator; A14 30 s, 3 rounds). Generator
+353-364 vs 366-373 ms, end to end 462-473 vs 471-481 ms (`copy` slowed
+hn-NSF 25 → 34 ms). About 1.5% bought with wasted GPU power, which works
+against the sustained limit above and against battery. Code removed.
+
+**Rejected: spinning on an e5rt completion event instead of
+`execute_sync`** (`submit_async`, a `MTLSharedEvent` completion event, host
+spin on `signaledValue`; audio 46.1 dB). A14 30 s end to end 484-490 vs
+479-483 ms. The ANE wake-up path is not where the time goes. Code removed.
+
+**Rejected: duration back as two concurrent CPU models** (M2 Air, Botnet
+paused, 30 s, 2 × 10 runs per arm, 19:20 PT). The text-encoder LSTM
+(`t_en`) does not feed the durations, so the back split cleanly into
+`back_pred` (predictor text encoder, duration LSTM, projection) and
+`back_ten` (one LSTM). Outputs were bit-identical on CPU (t64-t512, 5 random
+inputs each). The back fell from 21.4 to 18.5 ms (the predictor half is most
+of it), the duration stage from 34 to 31.5 ms, but wall time stayed
+219-222 ms in both arms (generator noise ±2 ms). Eight extra packages for a
+gain the clip cannot show; code reverted. Padding is not the lever either:
+the 30 s input fills 476 of its 512 tokens.
+
 **Kept: two chunks in flight for multi-chunk text** (14:00 PT).
 `executeKokoroSynthesisPipelined` (`PipelinedSynthesis.swift`) runs chunk
 i+1's duration stage while chunk i runs its bucket stages (F0Ntrain,
