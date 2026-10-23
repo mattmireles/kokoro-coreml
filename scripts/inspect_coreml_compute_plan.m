@@ -66,11 +66,15 @@ int main(int argc, const char *argv[]) {
         if (@available(macOS 14.4, *)) {
             NSString *modelPath = nil;
             NSString *computeUnitsRaw = @"all";
+            NSString *functionName = nil;
             for (int i = 1; i < argc; i++) {
                 NSString *arg = [NSString stringWithUTF8String:argv[i]];
                 if ([arg isEqualToString:@"--model"]) {
                     if (++i >= argc) Usage(@"--model requires a path");
                     modelPath = [NSString stringWithUTF8String:argv[i]];
+                } else if ([arg isEqualToString:@"--function"]) {   // one function of a multifunction package
+                    if (++i >= argc) Usage(@"--function requires a name");
+                    functionName = [NSString stringWithUTF8String:argv[i]];
                 } else if ([arg isEqualToString:@"--compute-units"]) {
                     if (++i >= argc) Usage(@"--compute-units requires a value");
                     computeUnitsRaw = [NSString stringWithUTF8String:argv[i]];
@@ -98,6 +102,7 @@ int main(int argc, const char *argv[]) {
 
             MLModelConfiguration *configuration = [MLModelConfiguration new];
             configuration.computeUnits = ComputeUnits(computeUnitsRaw);
+            if (functionName) configuration.functionName = functionName;
 
             dispatch_semaphore_t sema = dispatch_semaphore_create(0);
             __block MLComputePlan *plan = nil;
@@ -119,13 +124,26 @@ int main(int argc, const char *argv[]) {
                 fprintf(stderr, "model is not an ML Program\n");
                 return 1;
             }
-            MLModelStructureProgramFunction *mainFunction = program.functions[@"main"];
-            if (!mainFunction) {
-                fprintf(stderr, "ML Program has no main function\n");
+            // Multifunction packages (e.g. the hybrid generator, one function per
+            // conv) have no "main": count every function, and report each one.
+            NSMutableArray<MLModelStructureProgramOperation *> *operations = [NSMutableArray array];
+            NSMutableDictionary *perFunction = [NSMutableDictionary dictionary];
+            NSArray<NSString *> *names = functionName ? @[functionName]
+                : program.functions[@"main"] ? @[@"main"] : [program.functions.allKeys sortedArrayUsingSelector:@selector(compare:)];
+            if (names.count == 0) {
+                fprintf(stderr, "ML Program has no functions\n");
                 return 1;
             }
-
-            NSArray<MLModelStructureProgramOperation *> *operations = CollectOperations(mainFunction.block);
+            for (NSString *name in names) {
+                NSArray *ops = CollectOperations(program.functions[name].block);
+                [operations addObjectsFromArray:ops];
+                NSMutableDictionary<NSString *, NSNumber *> *counts = [NSMutableDictionary dictionary];
+                for (MLModelStructureProgramOperation *operation in ops) {
+                    MLComputePlanDeviceUsage *usage = [plan computeDeviceUsageForMLProgramOperation:operation];
+                    Increment(counts, usage ? DeviceName(usage.preferredComputeDevice) : @"unknown");
+                }
+                perFunction[name] = counts;
+            }
             NSMutableDictionary<NSString *, NSNumber *> *preferredCounts = [NSMutableDictionary dictionary];
             NSMutableDictionary<NSString *, NSNumber *> *supportedCounts = [NSMutableDictionary dictionary];
             NSMutableDictionary<NSString *, NSNumber *> *costByPreferred = [NSMutableDictionary dictionary];
@@ -171,6 +189,7 @@ int main(int argc, const char *argv[]) {
                 @"supportedDeviceCounts": supportedCounts,
                 @"costWeightByPreferredDevice": costByPreferred,
                 @"operations": byOp,
+                @"functions": perFunction,
             };
             NSData *json = [NSJSONSerialization dataWithJSONObject:report
                                                            options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys

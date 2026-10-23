@@ -1,0 +1,74 @@
+[
+ {
+  "dump": "/private/tmp/claude-505/-Users-mm-Documents-GitHub-kokoro-coreml/906a92cf-d475-41fb-b511-b8f0bb1b34db/scratchpad/q014dump/folded_10s",
+  "input_key": "10s",
+  "natural_frames": 385,
+  "samples": 231000,
+  "snr_db": 43.84,
+  "corr": 0.99998,
+  "pass": true
+ },
+ {
+  "dump": "/private/tmp/claude-505/-Users-mm-Documents-GitHub-kokoro-coreml/906a92cf-d475-41fb-b511-b8f0bb1b34db/scratchpad/q014dump/folded_15s",
+  "input_key": "15s",
+  "natural_frames": 556,
+  "samples": 333600,
+  "snr_db": 44.01,
+  "corr": 0.99998,
+  "pass": true
+ },
+ {
+  "dump": "/private/tmp/claude-505/-Users-mm-Documents-GitHub-kokoro-coreml/906a92cf-d475-41fb-b511-b8f0bb1b34db/scratchpad/q014dump/folded_30s",
+  "input_key": "30s",
+  "natural_frames": 1096,
+  "samples": 657600,
+  "snr_db": 43.88,
+  "corr": 0.99998,
+  "pass": true
+ },
+ {
+  "dump": "/private/tmp/claude-505/-Users-mm-Documents-GitHub-kokoro-coreml/906a92cf-d475-41fb-b511-b8f0bb1b34db/scratchpad/q014dump/folded_3s",
+  "input_key": "3s",
+  "natural_frames": 112,
+  "samples": 67200,
+  "snr_db": 43.7,
+  "corr": 0.999979,
+  "pass": true
+ },
+ {
+  "dump": "/private/tmp/claude-505/-Users-mm-Documents-GitHub-kokoro-coreml/906a92cf-d475-41fb-b511-b8f0bb1b34db/scratchpad/q014dump/folded_7s",
+  "input_key": "7s",
+  "natural_frames": 270,
+  "samples": 162000,
+  "snr_db": 43.66,
+  "corr": 0.999979,
+  "pass": true
+ },
+ {
+  "dump": "/private/tmp/claude-505/-Users-mm-Documents-GitHub-kokoro-coreml/906a92cf-d475-41fb-b511-b8f0bb1b34db/scratchpad/q014dump/folded_hard_numbers",
+  "input_key": "hard_numbers",
+  "natural_frames": 703,
+  "samples": 421800,
+  "snr_db": 44.06,
+  "corr": 0.99998,
+  "pass": true
+ },
+ {
+  "dump": "/private/tmp/claude-505/-Users-mm-Documents-GitHub-kokoro-coreml/906a92cf-d475-41fb-b511-b8f0bb1b34db/scratchpad/q014dump/folded_hard_punct",
+  "input_key": "hard_punct",
+  "natural_frames": 253,
+  "samples": 151800,
+  "snr_db": 43.41,
+  "corr": 0.999978,
+  "pass": true
+ },
+ {
+  "dump": "/private/tmp/claude-505/-Users-mm-Documents-GitHub-kokoro-coreml/906a92cf-d475-41fb-b511-b8f0bb1b34db/scratchpad/q014dump/folded_hard_short",
+  "input_key": "hard_short",
+  "natural_frames": 49,
+  "samples": 29400,
+  "snr_db": 40.83,
+  "corr": 0.99996,
+  "pass": true
+ }
+]

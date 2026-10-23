@@ -1,0 +1,209 @@
+{
+  "compiledModel" : "\/var\/folders\/fs\/s_sdzhg52ml5q24wbwmy2yyc0000gn\/T\/kokoro_generator_fold_30s_5F35C1E9-0A4C-4727-BC9F-C3E71A48400A.mlmodelc",
+  "computeUnits" : "cpuAndNeuralEngine",
+  "costWeightByPreferredDevice" : {
+    "cpu" : 0,
+    "neuralEngine" : 0,
+    "unknown" : 0
+  },
+  "functions" : {
+    "main" : {
+      "cpu" : 96,
+      "neuralEngine" : 1544,
+      "unknown" : 1571
+    }
+  },
+  "model" : "\/Users\/mattmireles\/kokoro-014\/models_014\/kokoro_generator_fold_30s.mlpackage",
+  "operationCount" : 3211,
+  "operations" : {
+    "const" : {
+      "costWeight" : 0,
+      "count" : 1571,
+      "preferredDevices" : {
+        "unknown" : 1571
+      },
+      "supportedDevices" : {
+        "unknown" : 1571
+      }
+    },
+    "ios16.reduce_mean" : {
+      "costWeight" : 0,
+      "count" : 268,
+      "preferredDevices" : {
+        "neuralEngine" : 268
+      },
+      "supportedDevices" : {
+        "cpu" : 268,
+        "gpu" : 268,
+        "neuralEngine" : 268
+      }
+    },
+    "ios18.add" : {
+      "costWeight" : 0,
+      "count" : 218,
+      "preferredDevices" : {
+        "neuralEngine" : 218
+      },
+      "supportedDevices" : {
+        "cpu" : 218,
+        "gpu" : 218,
+        "neuralEngine" : 218
+      }
+    },
+    "ios18.concat" : {
+      "costWeight" : 0,
+      "count" : 4,
+      "preferredDevices" : {
+        "neuralEngine" : 4
+      },
+      "supportedDevices" : {
+        "cpu" : 4,
+        "gpu" : 4,
+        "neuralEngine" : 4
+      }
+    },
+    "ios18.conv" : {
+      "costWeight" : 0,
+      "count" : 53,
+      "preferredDevices" : {
+        "neuralEngine" : 53
+      },
+      "supportedDevices" : {
+        "cpu" : 53,
+        "gpu" : 53,
+        "neuralEngine" : 53
+      }
+    },
+    "ios18.leaky_relu" : {
+      "costWeight" : 0,
+      "count" : 3,
+      "preferredDevices" : {
+        "neuralEngine" : 3
+      },
+      "supportedDevices" : {
+        "cpu" : 3,
+        "gpu" : 3,
+        "neuralEngine" : 3
+      }
+    },
+    "ios18.linear" : {
+      "costWeight" : 0,
+      "count" : 48,
+      "preferredDevices" : {
+        "neuralEngine" : 48
+      },
+      "supportedDevices" : {
+        "cpu" : 48,
+        "gpu" : 48,
+        "neuralEngine" : 48
+      }
+    },
+    "ios18.mul" : {
+      "costWeight" : 0,
+      "count" : 518,
+      "preferredDevices" : {
+        "cpu" : 48,
+        "neuralEngine" : 470
+      },
+      "supportedDevices" : {
+        "cpu" : 518,
+        "gpu" : 518,
+        "neuralEngine" : 518
+      }
+    },
+    "ios18.real_div" : {
+      "costWeight" : 0,
+      "count" : 132,
+      "preferredDevices" : {
+        "neuralEngine" : 132
+      },
+      "supportedDevices" : {
+        "cpu" : 132,
+        "gpu" : 132,
+        "neuralEngine" : 132
+      }
+    },
+    "ios18.reshape" : {
+      "costWeight" : 0,
+      "count" : 66,
+      "preferredDevices" : {
+        "neuralEngine" : 66
+      },
+      "supportedDevices" : {
+        "cpu" : 66,
+        "gpu" : 66,
+        "neuralEngine" : 66
+      }
+    },
+    "ios18.rsqrt" : {
+      "costWeight" : 0,
+      "count" : 44,
+      "preferredDevices" : {
+        "neuralEngine" : 44
+      },
+      "supportedDevices" : {
+        "cpu" : 44,
+        "gpu" : 44,
+        "neuralEngine" : 44
+      }
+    },
+    "ios18.sin" : {
+      "costWeight" : 0,
+      "count" : 48,
+      "preferredDevices" : {
+        "cpu" : 48
+      },
+      "supportedDevices" : {
+        "cpu" : 48,
+        "gpu" : 48
+      }
+    },
+    "ios18.slice_by_index" : {
+      "costWeight" : 0,
+      "count" : 99,
+      "preferredDevices" : {
+        "neuralEngine" : 99
+      },
+      "supportedDevices" : {
+        "cpu" : 99,
+        "gpu" : 99,
+        "neuralEngine" : 99
+      }
+    },
+    "ios18.sub" : {
+      "costWeight" : 0,
+      "count" : 136,
+      "preferredDevices" : {
+        "neuralEngine" : 136
+      },
+      "supportedDevices" : {
+        "cpu" : 136,
+        "gpu" : 136,
+        "neuralEngine" : 136
+      }
+    },
+    "ios18.transpose" : {
+      "costWeight" : 0,
+      "count" : 3,
+      "preferredDevices" : {
+        "neuralEngine" : 3
+      },
+      "supportedDevices" : {
+        "cpu" : 3,
+        "gpu" : 3,
+        "neuralEngine" : 3
+      }
+    }
+  },
+  "preferredDeviceCounts" : {
+    "cpu" : 96,
+    "neuralEngine" : 1544,
+    "unknown" : 1571
+  },
+  "supportedDeviceCounts" : {
+    "cpu" : 1640,
+    "gpu" : 1640,
+    "neuralEngine" : 1592,
+    "unknown" : 1571
+  }
+}

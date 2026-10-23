@@ -1,0 +1,249 @@
+{
+  "compiledModel" : "\/var\/folders\/fs\/s_sdzhg52ml5q24wbwmy2yyc0000gn\/T\/hybrid_generator_r10_BD4D16FD-C46D-4A44-BF3A-1261C42566CB.mlmodelc",
+  "computeUnits" : "cpuAndNeuralEngine",
+  "costWeightByPreferredDevice" : {
+    "neuralEngine" : 1,
+    "unknown" : 0
+  },
+  "functions" : {
+    "nc0" : {
+      "unknown" : 12
+    },
+    "nc1" : {
+      "unknown" : 8
+    },
+    "nr0_c1_0" : {
+      "unknown" : 8
+    },
+    "nr0_c1_1" : {
+      "unknown" : 12
+    },
+    "nr0_c1_2" : {
+      "unknown" : 12
+    },
+    "nr0_c2_0" : {
+      "unknown" : 8
+    },
+    "nr0_c2_1" : {
+      "unknown" : 8
+    },
+    "nr0_c2_2" : {
+      "unknown" : 8
+    },
+    "nr1_c1_0" : {
+      "unknown" : 8
+    },
+    "nr1_c1_1" : {
+      "unknown" : 12
+    },
+    "nr1_c1_2" : {
+      "unknown" : 12
+    },
+    "nr1_c2_0" : {
+      "unknown" : 8
+    },
+    "nr1_c2_1" : {
+      "unknown" : 8
+    },
+    "nr1_c2_2" : {
+      "unknown" : 8
+    },
+    "post" : {
+      "neuralEngine" : 2,
+      "unknown" : 8
+    },
+    "rb0_c1_0" : {
+      "unknown" : 8
+    },
+    "rb0_c1_1" : {
+      "unknown" : 8
+    },
+    "rb0_c1_2" : {
+      "unknown" : 8
+    },
+    "rb0_c2_0" : {
+      "unknown" : 8
+    },
+    "rb0_c2_1" : {
+      "unknown" : 8
+    },
+    "rb0_c2_2" : {
+      "unknown" : 8
+    },
+    "rb1_c1_0" : {
+      "unknown" : 8
+    },
+    "rb1_c1_1" : {
+      "unknown" : 12
+    },
+    "rb1_c1_2" : {
+      "unknown" : 12
+    },
+    "rb1_c2_0" : {
+      "unknown" : 8
+    },
+    "rb1_c2_1" : {
+      "unknown" : 8
+    },
+    "rb1_c2_2" : {
+      "unknown" : 8
+    },
+    "rb2_c1_0" : {
+      "unknown" : 8
+    },
+    "rb2_c1_1" : {
+      "unknown" : 12
+    },
+    "rb2_c1_2" : {
+      "unknown" : 12
+    },
+    "rb2_c2_0" : {
+      "unknown" : 8
+    },
+    "rb2_c2_1" : {
+      "unknown" : 8
+    },
+    "rb2_c2_2" : {
+      "unknown" : 8
+    },
+    "rb3_c1_0" : {
+      "unknown" : 8
+    },
+    "rb3_c1_1" : {
+      "unknown" : 8
+    },
+    "rb3_c1_2" : {
+      "unknown" : 8
+    },
+    "rb3_c2_0" : {
+      "unknown" : 8
+    },
+    "rb3_c2_1" : {
+      "unknown" : 8
+    },
+    "rb3_c2_2" : {
+      "unknown" : 8
+    },
+    "rb4_c1_0" : {
+      "unknown" : 8
+    },
+    "rb4_c1_1" : {
+      "unknown" : 12
+    },
+    "rb4_c1_2" : {
+      "unknown" : 12
+    },
+    "rb4_c2_0" : {
+      "unknown" : 8
+    },
+    "rb4_c2_1" : {
+      "unknown" : 8
+    },
+    "rb4_c2_2" : {
+      "unknown" : 8
+    },
+    "rb5_c1_0" : {
+      "unknown" : 8
+    },
+    "rb5_c1_1" : {
+      "unknown" : 12
+    },
+    "rb5_c1_2" : {
+      "unknown" : 12
+    },
+    "rb5_c2_0" : {
+      "unknown" : 8
+    },
+    "rb5_c2_1" : {
+      "unknown" : 8
+    },
+    "rb5_c2_2" : {
+      "unknown" : 8
+    },
+    "ups0" : {
+      "unknown" : 14
+    },
+    "ups1" : {
+      "unknown" : 14
+    }
+  },
+  "model" : "\/Users\/mattmireles\/kokoro-014\/models_014\/hybrid\/hybrid_generator_r10.mlpackage",
+  "operationCount" : 490,
+  "operations" : {
+    "const" : {
+      "costWeight" : 0,
+      "count" : 407,
+      "preferredDevices" : {
+        "unknown" : 407
+      },
+      "supportedDevices" : {
+        "unknown" : 407
+      }
+    },
+    "ios18.concat" : {
+      "costWeight" : 0,
+      "count" : 2,
+      "preferredDevices" : {
+        "unknown" : 2
+      },
+      "supportedDevices" : {
+        "unknown" : 2
+      }
+    },
+    "ios18.conv" : {
+      "costWeight" : 0.25831236370057636,
+      "count" : 53,
+      "preferredDevices" : {
+        "neuralEngine" : 1,
+        "unknown" : 52
+      },
+      "supportedDevices" : {
+        "cpu" : 1,
+        "neuralEngine" : 1,
+        "unknown" : 52
+      }
+    },
+    "ios18.leaky_relu" : {
+      "costWeight" : 0.74168763629942358,
+      "count" : 3,
+      "preferredDevices" : {
+        "neuralEngine" : 1,
+        "unknown" : 2
+      },
+      "supportedDevices" : {
+        "cpu" : 1,
+        "neuralEngine" : 1,
+        "unknown" : 2
+      }
+    },
+    "ios18.reshape" : {
+      "costWeight" : 0,
+      "count" : 24,
+      "preferredDevices" : {
+        "unknown" : 24
+      },
+      "supportedDevices" : {
+        "unknown" : 24
+      }
+    },
+    "ios18.slice_by_index" : {
+      "costWeight" : 0,
+      "count" : 1,
+      "preferredDevices" : {
+        "unknown" : 1
+      },
+      "supportedDevices" : {
+        "unknown" : 1
+      }
+    }
+  },
+  "preferredDeviceCounts" : {
+    "neuralEngine" : 2,
+    "unknown" : 488
+  },
+  "supportedDeviceCounts" : {
+    "cpu" : 2,
+    "neuralEngine" : 2,
+    "unknown" : 488
+  }
+}

@@ -1,0 +1,88 @@
+{
+  "cpu_preferred_ops": [
+    {
+      "cost_weight": 0.00044670197921500897,
+      "op": "ios18.reshape",
+      "outputs": [
+        "var_107_cast_fp16"
+      ]
+    }
+  ],
+  "per_op_type": {
+    "ios16.reduce_mean": {
+      "neuralEngine": 268
+    },
+    "ios18.add": {
+      "neuralEngine": 314
+    },
+    "ios18.concat": {
+      "neuralEngine": 4
+    },
+    "ios18.conv": {
+      "neuralEngine": 53
+    },
+    "ios18.leaky_relu": {
+      "neuralEngine": 3
+    },
+    "ios18.linear": {
+      "neuralEngine": 48
+    },
+    "ios18.mul": {
+      "neuralEngine": 662
+    },
+    "ios18.real_div": {
+      "neuralEngine": 132
+    },
+    "ios18.reshape": {
+      "cpu": 1,
+      "neuralEngine": 65
+    },
+    "ios18.round": {
+      "neuralEngine": 48
+    },
+    "ios18.rsqrt": {
+      "neuralEngine": 44
+    },
+    "ios18.slice_by_index": {
+      "neuralEngine": 99
+    },
+    "ios18.sub": {
+      "neuralEngine": 184
+    },
+    "ios18.transpose": {
+      "neuralEngine": 3
+    }
+  },
+  "preferred_device_fractions": {
+    "cpu": 0.0005186721991701245,
+    "neuralEngine": 0.9994813278008299
+  },
+  "preferred_device_histogram": {
+    "cpu": 1,
+    "neuralEngine": 1927
+  },
+  "provenance": {
+    "compute_units": "CPU_AND_NE",
+    "coremltools": "8.3.0",
+    "developer_disk_image": true,
+    "developer_mode": "enabled",
+    "device_identifier": "F383FC46-FD64-5346-AEC6-59E3E2F8C9CA",
+    "device_name": "Webcam ",
+    "device_os_build": "24A446",
+    "device_os_version": "27.0.1",
+    "device_product_type": "iPhone13,3",
+    "device_type": "iphone",
+    "device_udid": "00008101-001134561A0A001E",
+    "package": "coreml-fold/kokoro_generator_fold_poly_30s.mlpackage",
+    "package_sha256": "a464dbdd8b6d9e92c54651c0330bed3cd2e76c7855b284552b8b379831496ff6",
+    "pairing_state": "paired",
+    "signing_bundle_identifier": "com.mattmireles.CoreMLModelRunner",
+    "signing_development_team": "6ETYBAJKY8",
+    "signing_mode": "automatic",
+    "signing_provisioning_profile_uuid": null,
+    "transport_type": "wired",
+    "tunnel_state": "connected",
+    "where": "device"
+  },
+  "total_costed_ops": 1928
+}

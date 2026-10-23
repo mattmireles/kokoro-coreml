@@ -1,0 +1,8 @@
+3s unsplit 112 split 112 EQUAL
+7s unsplit 270 split 270 EQUAL
+10s unsplit 385 split 385 EQUAL
+15s unsplit 556 split 556 EQUAL
+30s unsplit 1096 split 1096 EQUAL
+hard_numbers unsplit 703 split 703 EQUAL
+hard_punct unsplit 253 split 253 EQUAL
+hard_short unsplit 49 split 49 EQUAL

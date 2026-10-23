@@ -1,0 +1,36 @@
+{
+ "date_pt": "2026-10-23",
+ "method": "owner listening (Gemini judge not used; its billing was blocked and the owner chose human listening)",
+ "listener": "repo owner",
+ "verdict": "pass on all five ('sounds perfect')",
+ "build": "903f1fc1, frozen package manifest outputs/frozen_rerun_014/manifest.json, rendered on m2-studio with kokoro-bench --seed 42",
+ "clips": [
+  {
+   "file": "1-longest-30s.wav",
+   "sha256": "c1b9288f806559d0c56e04191567288ce44259b39c3e844bba053eda3f43ebd2"
+  },
+  {
+   "file": "2-numbers.wav",
+   "sha256": "036e6b63a725e60c2cac5f1aa44cda9dabfdbe324b2544d6bc6781518c706c3c"
+  },
+  {
+   "file": "3-punctuation.wav",
+   "sha256": "8b7c3c1b0f4de66049687bca12cac86c43144dbe5b63f9c9992253586c39f079"
+  },
+  {
+   "file": "4-shortest-Hi.wav",
+   "sha256": "1e85b827cfea494eb25aeea38d1717c380b741251e37eee417e31b82ba050930"
+  },
+  {
+   "file": "5-folded-generator-10s.wav",
+   "sha256": "a69517b43e712a867fa1fb743e6b21ddfb04eff4bfdd1988cf1a88ee5253008c"
+  }
+ ],
+ "sources": {
+  "1-longest-30s": "hybrid 30s",
+  "2-numbers": "hybrid hard_numbers",
+  "3-punctuation": "hybrid hard_punct",
+  "4-shortest-Hi": "hard_short (folded generator, < 7 s)",
+  "5-folded-generator-10s": "folded 10s"
+ }
+}

@@ -1,0 +1,22 @@
+{
+ "m2-air_hybrid_r10": {
+  "functions": 53,
+  "preferred_device_op_counts": {
+   "neuralEngine": 83,
+   "unknown": 407
+  },
+  "conv_ops": {
+   "neuralEngine": 53
+  },
+  "note": "one compute plan per function; ops of other functions and const ops report no device (unknown/none)"
+ },
+ "iphone-12-pro_hybrid_r10": {
+  "functions": 53,
+  "preferred_device_op_counts": {
+   "ne": 83,
+   "none": 25887
+  },
+  "conv_ops": null,
+  "note": "one compute plan per function; ops of other functions and const ops report no device (unknown/none)"
+ }
+}

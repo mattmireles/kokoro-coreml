@@ -1,0 +1,42 @@
+{
+ "iphone-12-pro_hybrid_10s": {
+  "n": 10,
+  "span_ms": 149.5,
+  "ane_busy_ms": 108.0,
+  "gpu_busy_ms": 107.0,
+  "both_ms": 70.5,
+  "neither_ms": 5.0,
+  "ane_share": 0.722,
+  "gpu_share": 0.716
+ },
+ "iphone-12-pro_hybrid_30s": {
+  "n": 10,
+  "span_ms": 375.0,
+  "ane_busy_ms": 291.5,
+  "gpu_busy_ms": 267.5,
+  "both_ms": 192.0,
+  "neither_ms": 8.0,
+  "ane_share": 0.777,
+  "gpu_share": 0.713
+ },
+ "iphone-15-pro-max_hybrid_10s": {
+  "n": 10,
+  "span_ms": 101.5,
+  "ane_busy_ms": 76.0,
+  "gpu_busy_ms": 62.0,
+  "both_ms": 40.0,
+  "neither_ms": 4.0,
+  "ane_share": 0.749,
+  "gpu_share": 0.611
+ },
+ "iphone-15-pro-max_hybrid_30s": {
+  "n": 10,
+  "span_ms": 240.0,
+  "ane_busy_ms": 185.5,
+  "gpu_busy_ms": 171.0,
+  "both_ms": 122.5,
+  "neither_ms": 6.0,
+  "ane_share": 0.773,
+  "gpu_share": 0.713
+ }
+}

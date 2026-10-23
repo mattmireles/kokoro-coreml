@@ -1,0 +1,1098 @@
+{
+  "agentBuild" : "2026102304",
+  "doctorReady" : false,
+  "engineServices" : [
+    {
+      "activeExecutionIDs" : [
+
+      ],
+      "activeJobs" : 0,
+      "configuredCap" : 1,
+      "displayName" : "apple dictation",
+      "doctorHealthy" : true,
+      "draining" : false,
+      "effectiveCap" : 1,
+      "enabled" : true,
+      "executorFamily" : "pack_engine",
+      "installed" : true,
+      "loadedIntoMemory" : false,
+      "protocolCompatible" : true,
+      "reason" : "ready",
+      "resourceDomain" : "apple_inference",
+      "runtimeVersion" : "apple_dictation_309b0c89c861-531c9fc61f42",
+      "serviceId" : "apple_dictation_309b0c89c861",
+      "stage" : "cold"
+    },
+    {
+      "activeExecutionIDs" : [
+
+      ],
+      "activeJobs" : 0,
+      "configuredCap" : 1,
+      "displayName" : "apple speech",
+      "doctorHealthy" : true,
+      "draining" : false,
+      "effectiveCap" : 1,
+      "enabled" : true,
+      "executorFamily" : "pack_engine",
+      "installed" : true,
+      "loadedIntoMemory" : false,
+      "protocolCompatible" : true,
+      "reason" : "ready",
+      "resourceDomain" : "apple_inference",
+      "runtimeVersion" : "apple_speech_3a716bb83cee-531c9fc61f42",
+      "serviceId" : "apple_speech_3a716bb83cee",
+      "stage" : "cold"
+    },
+    {
+      "activeExecutionIDs" : [
+
+      ],
+      "activeJobs" : 0,
+      "configuredCap" : 1,
+      "displayName" : "chirpy multilingual v1",
+      "doctorHealthy" : false,
+      "draining" : false,
+      "effectiveCap" : 0,
+      "enabled" : false,
+      "executorFamily" : "pack_engine",
+      "installed" : false,
+      "loadedIntoMemory" : false,
+      "protocolCompatible" : true,
+      "reason" : "service_not_installed",
+      "resourceDomain" : "apple_inference",
+      "runtimeVersion" : "chirpy_multilingual_v1_9ff266102721-531c9fc61f42",
+      "serviceId" : "chirpy_multilingual_v1_9ff266102721",
+      "stage" : "not_installed"
+    },
+    {
+      "activeExecutionIDs" : [
+
+      ],
+      "activeJobs" : 0,
+      "configuredCap" : 1,
+      "displayName" : "chirpy multilingual v1 score",
+      "doctorHealthy" : true,
+      "draining" : false,
+      "effectiveCap" : 1,
+      "enabled" : true,
+      "executorFamily" : "pack_engine",
+      "installed" : true,
+      "loadedIntoMemory" : false,
+      "protocolCompatible" : true,
+      "reason" : "ready",
+      "resourceDomain" : "apple_inference",
+      "runtimeVersion" : "chirpy_multilingual_v1_score_574d603c8754-531c9fc61f42",
+      "serviceId" : "chirpy_multilingual_v1_score_574d603c8754",
+      "stage" : "cold"
+    },
+    {
+      "activeExecutionIDs" : [
+
+      ],
+      "activeJobs" : 0,
+      "configuredCap" : 1,
+      "displayName" : "chirpy v1",
+      "doctorHealthy" : false,
+      "draining" : false,
+      "effectiveCap" : 0,
+      "enabled" : false,
+      "executorFamily" : "pack_engine",
+      "installed" : false,
+      "loadedIntoMemory" : false,
+      "protocolCompatible" : true,
+      "reason" : "service_not_installed",
+      "resourceDomain" : "apple_inference",
+      "runtimeVersion" : "chirpy_v1_431ce2c3d429-531c9fc61f42",
+      "serviceId" : "chirpy_v1_431ce2c3d429",
+      "stage" : "not_installed"
+    },
+    {
+      "activeExecutionIDs" : [
+
+      ],
+      "activeJobs" : 0,
+      "configuredCap" : 1,
+      "displayName" : "chirpy v1 score",
+      "doctorHealthy" : true,
+      "draining" : false,
+      "effectiveCap" : 1,
+      "enabled" : true,
+      "executorFamily" : "pack_engine",
+      "installed" : true,
+      "loadedIntoMemory" : false,
+      "protocolCompatible" : true,
+      "reason" : "ready",
+      "resourceDomain" : "apple_inference",
+      "runtimeVersion" : "chirpy_v1_score_a9c110bed4c4-531c9fc61f42",
+      "serviceId" : "chirpy_v1_score_a9c110bed4c4",
+      "stage" : "cold"
+    },
+    {
+      "activeExecutionIDs" : [
+
+      ],
+      "activeJobs" : 0,
+      "configuredCap" : 1,
+      "displayName" : "Botnet dispatch probe (M2 24 GB, macOS 27)",
+      "doctorHealthy" : true,
+      "draining" : false,
+      "effectiveCap" : 0,
+      "enabled" : true,
+      "executorFamily" : "pack_engine",
+      "installed" : true,
+      "loadedIntoMemory" : false,
+      "protocolCompatible" : true,
+      "reason" : "ready",
+      "resourceDomain" : "apple_inference",
+      "runtimeVersion" : "dispatch_probe_m2_24g_mac27-2c4cd135f4f3",
+      "serviceId" : "dispatch_probe_m2_24g_mac27",
+      "stage" : "exclusive_wait"
+    },
+    {
+      "activeExecutionIDs" : [
+
+      ],
+      "activeJobs" : 0,
+      "configuredCap" : 1,
+      "displayName" : "Kokoro Speech",
+      "doctorHealthy" : true,
+      "draining" : false,
+      "effectiveCap" : 1,
+      "enabled" : true,
+      "executorFamily" : "pack_engine",
+      "installed" : true,
+      "loadedIntoMemory" : false,
+      "protocolCompatible" : true,
+      "reason" : "ready",
+      "resourceDomain" : "apple_inference",
+      "runtimeVersion" : "kokoro_v1-d4f869bbc72c",
+      "serviceId" : "kokoro_v1",
+      "stage" : "cold"
+    },
+    {
+      "activeExecutionIDs" : [
+
+      ],
+      "activeJobs" : 0,
+      "configuredCap" : 1,
+      "displayName" : "Parakeet English v1",
+      "doctorHealthy" : true,
+      "draining" : false,
+      "effectiveCap" : 1,
+      "enabled" : true,
+      "executorFamily" : "pack_engine",
+      "installed" : true,
+      "loadedIntoMemory" : false,
+      "protocolCompatible" : true,
+      "reason" : "ready",
+      "resourceDomain" : "apple_inference",
+      "runtimeVersion" : "parakeet_english_v1-6b55ec36dc6f",
+      "serviceId" : "parakeet_english_v1",
+      "stage" : "cold"
+    },
+    {
+      "activeExecutionIDs" : [
+
+      ],
+      "activeJobs" : 0,
+      "configuredCap" : 1,
+      "displayName" : "Parakeet Multilingual v1",
+      "doctorHealthy" : true,
+      "draining" : false,
+      "effectiveCap" : 1,
+      "enabled" : true,
+      "executorFamily" : "pack_engine",
+      "installed" : true,
+      "loadedIntoMemory" : false,
+      "protocolCompatible" : true,
+      "reason" : "ready",
+      "resourceDomain" : "apple_inference",
+      "runtimeVersion" : "parakeet_multilingual_v1-2fb845d40323",
+      "serviceId" : "parakeet_multilingual_v1",
+      "stage" : "cold"
+    },
+    {
+      "activeExecutionIDs" : [
+
+      ],
+      "activeJobs" : 0,
+      "configuredCap" : 1,
+      "displayName" : "Qwen3.5-9B teacher score (Apple M2, 24 GB)",
+      "doctorHealthy" : true,
+      "draining" : false,
+      "effectiveCap" : 1,
+      "enabled" : true,
+      "executorFamily" : "pack_engine",
+      "installed" : true,
+      "loadedIntoMemory" : false,
+      "protocolCompatible" : true,
+      "reason" : "ready",
+      "resourceDomain" : "apple_inference",
+      "runtimeVersion" : "qt_score_m2_24g_mac27-05ccc1b9fb68",
+      "serviceId" : "qt_score_m2_24g_mac27",
+      "stage" : "cold"
+    },
+    {
+      "activeExecutionIDs" : [
+        "a2_2ce4930a98b834ba0b3b29f35ec842c083a647e25fb6afe1",
+        "a2_51d49cb2040c63ca39f157feec726cfe1c8964e38074a487",
+        "a2_7fcf3236fc5e67b3662a28b7592e7159c7cfb03e558619cb",
+        "a2_956da71101ffc224d3d222c3bd163e583a65f20fe52115d6",
+        "a2_ab9d9f2fc0d725d471491df3d87cfdf25eeda1c072ff3631",
+        "a2_afe2f9de07d9dc6d25c9dbf0d42312993fcc33a75d7ef3f3",
+        "a2_c7d23eab2c1a68ae56b4b48bfda1056ef53961fda6108bf0",
+        "a2_d115fd5fbb09816ea5c92572391fadc97a5d071ff4ac7a20",
+        "a2_e0dfd7016b9d08cc7d02623b3b86b37478694207178b9255",
+        "a2_e24859628b7e7e586ce04492349efbe8d7e4a4a96bcdcc9f"
+      ],
+      "activeJobs" : 10,
+      "configuredCap" : 1,
+      "displayName" : "Qwen3.5-0.8B student triage_q6 (Apple M2, 24 GB)",
+      "doctorHealthy" : true,
+      "draining" : false,
+      "effectiveCap" : 1,
+      "enabled" : true,
+      "executorFamily" : "pack_engine",
+      "installed" : true,
+      "loadedIntoMemory" : true,
+      "protocolCompatible" : true,
+      "reason" : "ready",
+      "resourceDomain" : "apple_inference",
+      "resources" : {
+        "capturedAt" : "2026-10-23T19:21:04Z",
+        "cpuPercent" : {
+          "quality" : "measured",
+          "scope" : "serviceProcessTree",
+          "unit" : "percent",
+          "value" : 0.057414909127572585
+        },
+        "neuralFootprintBytes" : {
+          "quality" : "measured",
+          "scope" : "serviceProcessTree",
+          "unit" : "bytes",
+          "value" : 0
+        },
+        "physicalFootprintBytes" : {
+          "quality" : "measured",
+          "scope" : "serviceProcessTree",
+          "unit" : "bytes",
+          "value" : 1384318656
+        },
+        "schemaVersion" : 1,
+        "serviceID" : "qt_triage_q6_m2_24g_mac27"
+      },
+      "runtimeVersion" : "qt_triage_q6_m2_24g_mac27-d9b9e678ec1e",
+      "serviceId" : "qt_triage_q6_m2_24g_mac27",
+      "stage" : "warm"
+    },
+    {
+      "activeExecutionIDs" : [
+
+      ],
+      "activeJobs" : 0,
+      "configuredCap" : 1,
+      "displayName" : "Qween bench (M2 24 GB, macOS 27)",
+      "doctorHealthy" : true,
+      "draining" : false,
+      "effectiveCap" : 0,
+      "enabled" : true,
+      "executorFamily" : "pack_engine",
+      "installed" : true,
+      "loadedIntoMemory" : false,
+      "protocolCompatible" : true,
+      "reason" : "ready",
+      "resourceDomain" : "apple_inference",
+      "runtimeVersion" : "qween_bench_m2_24g_mac27-d4e46900c392",
+      "serviceId" : "qween_bench_m2_24g_mac27",
+      "stage" : "exclusive_wait"
+    },
+    {
+      "activeExecutionIDs" : [
+
+      ],
+      "activeJobs" : 0,
+      "configuredCap" : 1,
+      "displayName" : "qwen rung 8975",
+      "doctorHealthy" : true,
+      "draining" : false,
+      "effectiveCap" : 1,
+      "enabled" : true,
+      "executorFamily" : "pack_engine",
+      "installed" : true,
+      "loadedIntoMemory" : false,
+      "protocolCompatible" : true,
+      "reason" : "ready",
+      "resourceDomain" : "apple_inference",
+      "runtimeVersion" : "qwen_rung_8975_2548abafb3a5-531c9fc61f42",
+      "serviceId" : "qwen_rung_8975_2548abafb3a5",
+      "stage" : "cold"
+    },
+    {
+      "activeExecutionIDs" : [
+
+      ],
+      "activeJobs" : 0,
+      "configuredCap" : 1,
+      "displayName" : "silero probe",
+      "doctorHealthy" : true,
+      "draining" : false,
+      "effectiveCap" : 1,
+      "enabled" : true,
+      "executorFamily" : "pack_engine",
+      "installed" : true,
+      "loadedIntoMemory" : false,
+      "protocolCompatible" : true,
+      "reason" : "ready",
+      "resourceDomain" : "apple_inference",
+      "runtimeVersion" : "silero_probe_958a0aa62999-531c9fc61f42",
+      "serviceId" : "silero_probe_958a0aa62999",
+      "stage" : "cold"
+    },
+    {
+      "activeExecutionIDs" : [
+
+      ],
+      "activeJobs" : 0,
+      "configuredCap" : 1,
+      "displayName" : "talktastic v1",
+      "doctorHealthy" : false,
+      "draining" : false,
+      "effectiveCap" : 0,
+      "enabled" : false,
+      "executorFamily" : "pack_engine",
+      "installed" : false,
+      "loadedIntoMemory" : false,
+      "protocolCompatible" : true,
+      "reason" : "service_not_installed",
+      "resourceDomain" : "apple_inference",
+      "runtimeVersion" : "talktastic_v1_861f096a8a3c-531c9fc61f42",
+      "serviceId" : "talktastic_v1_861f096a8a3c",
+      "stage" : "not_installed"
+    },
+    {
+      "activeExecutionIDs" : [
+
+      ],
+      "activeJobs" : 0,
+      "configuredCap" : 1,
+      "displayName" : "Apple Vision OCR",
+      "doctorHealthy" : true,
+      "draining" : false,
+      "effectiveCap" : 1,
+      "enabled" : true,
+      "executorFamily" : "pack_engine",
+      "installed" : true,
+      "loadedIntoMemory" : false,
+      "protocolCompatible" : true,
+      "reason" : "ready",
+      "resourceDomain" : "cpu_io",
+      "runtimeVersion" : "vision_apple_ocr-f30615f9d99d",
+      "serviceId" : "vision_apple_ocr",
+      "stage" : "cold"
+    },
+    {
+      "activeExecutionIDs" : [
+
+      ],
+      "activeJobs" : 0,
+      "configuredCap" : 1,
+      "displayName" : "whisper ckpt 12926",
+      "doctorHealthy" : false,
+      "draining" : false,
+      "effectiveCap" : 0,
+      "enabled" : false,
+      "executorFamily" : "pack_engine",
+      "installed" : false,
+      "loadedIntoMemory" : false,
+      "protocolCompatible" : true,
+      "reason" : "service_not_installed",
+      "resourceDomain" : "apple_inference",
+      "runtimeVersion" : "whisper_ckpt_12926_9aeced68abaf-531c9fc61f42",
+      "serviceId" : "whisper_ckpt_12926_9aeced68abaf",
+      "stage" : "not_installed"
+    },
+    {
+      "activeExecutionIDs" : [
+
+      ],
+      "activeJobs" : 0,
+      "configuredCap" : 1,
+      "displayName" : "Whisper Large v3 Turbo",
+      "doctorHealthy" : false,
+      "draining" : false,
+      "effectiveCap" : 0,
+      "enabled" : false,
+      "executorFamily" : "pack_engine",
+      "installed" : false,
+      "loadedIntoMemory" : false,
+      "protocolCompatible" : true,
+      "reason" : "service_not_installed",
+      "resourceDomain" : "apple_inference",
+      "runtimeVersion" : "whisper_large_v3_turbo-dc8a448f7ee7",
+      "serviceId" : "whisper_large_v3_turbo",
+      "stage" : "not_installed"
+    }
+  ],
+  "fleetHostState" : {
+    "aggregateExecutionBudget" : 64,
+    "connectionEpoch" : 162,
+    "domainSlots" : [
+      {
+        "activeExecutionIDs" : [
+
+        ],
+        "calibratedCap" : 0,
+        "reductionReasons" : [
+
+        ],
+        "resourceDomain" : "apple_inference"
+      },
+      {
+        "activeExecutionIDs" : [
+
+        ],
+        "calibratedCap" : 1,
+        "reductionReasons" : [
+
+        ],
+        "resourceDomain" : "browser"
+      },
+      {
+        "activeExecutionIDs" : [
+
+        ],
+        "calibratedCap" : 0,
+        "reductionReasons" : [
+
+        ],
+        "resourceDomain" : "cpu_io"
+      }
+    ],
+    "operatingMode" : "automatic",
+    "participationState" : "active",
+    "policyRevision" : 144,
+    "reserveRole" : "none",
+    "services" : [
+      {
+        "activeJobs" : 0,
+        "configuredCap" : 1,
+        "doctorHealthy" : true,
+        "draining" : false,
+        "effectiveCap" : 1,
+        "enabled" : true,
+        "executorFamily" : "browser_scrape",
+        "installed" : true,
+        "protocolCompatible" : true,
+        "reason" : "ready",
+        "resourceDomain" : "browser",
+        "runtimeVersion" : "0.1.3",
+        "serviceId" : "scraper",
+        "stage" : "cold_agent_owned"
+      },
+      {
+        "activeExecutionIDs" : [
+
+        ],
+        "activeJobs" : 0,
+        "configuredCap" : 16,
+        "doctorHealthy" : true,
+        "draining" : false,
+        "effectiveCap" : 16,
+        "enabled" : true,
+        "executorFamily" : "audio_segment",
+        "installed" : true,
+        "protocolCompatible" : true,
+        "reason" : "ready",
+        "resourceDomain" : "cpu_io",
+        "runtimeVersion" : "agent-executor",
+        "serviceId" : "audio.segment_whisper"
+      }
+    ]
+  },
+  "fleetPullPlans" : [
+    {
+      "at" : "2026-10-23T19:21:07Z",
+      "capability" : "engine.bundle.v1",
+      "freeSlots" : 1,
+      "grants" : 1,
+      "hint" : false,
+      "leases" : 0,
+      "nextPullAt" : "2026-10-23T19:21:07Z",
+      "outcome" : "answered",
+      "resourceDomain" : "apple_inference",
+      "revisionIDs" : [
+        "pack-apple-dictation-309b0c89c861-94ef0e6c7ba7"
+      ],
+      "serviceID" : "apple_dictation_309b0c89c861",
+      "slots" : 64,
+      "started" : 0
+    },
+    {
+      "at" : "2026-10-23T19:21:03Z",
+      "capability" : "engine.bundle.v1",
+      "freeSlots" : 1,
+      "grants" : 1,
+      "hint" : false,
+      "leases" : 0,
+      "nextPullAt" : "2026-10-23T19:21:09Z",
+      "outcome" : "answered",
+      "resourceDomain" : "apple_inference",
+      "revisionIDs" : [
+        "pack-apple-speech-3a716bb83cee-8073de31c756"
+      ],
+      "serviceID" : "apple_speech_3a716bb83cee",
+      "slots" : 64,
+      "started" : 0
+    },
+    {
+      "at" : "2026-10-23T19:21:03Z",
+      "capability" : "audio.recording_detect_bundle.v1",
+      "freeSlots" : 1,
+      "grants" : 1,
+      "hint" : false,
+      "leases" : 0,
+      "nextPullAt" : "2026-10-23T19:21:08Z",
+      "outcome" : "answered",
+      "resourceDomain" : "cpu_io",
+      "revisionIDs" : [
+        "audio-segment-87cc6c32f00cf665"
+      ],
+      "serviceID" : "audio.segment_whisper",
+      "slots" : 16,
+      "started" : 0
+    },
+    {
+      "at" : "2026-10-23T19:21:07Z",
+      "capability" : "engine.bundle.v1",
+      "freeSlots" : 0,
+      "grants" : 0,
+      "nextPullAt" : "2026-10-23T19:13:00Z",
+      "outcome" : "no_free_slots",
+      "resourceDomain" : "apple_inference",
+      "revisionIDs" : [
+        "pack-chirpy-multilingual-v1-score-574d603c8754-0f3faf2cf7e7"
+      ],
+      "serviceID" : "chirpy_multilingual_v1_score_574d603c8754",
+      "slots" : 64
+    },
+    {
+      "at" : "2026-10-23T19:21:07Z",
+      "capability" : "engine.bundle.v1",
+      "freeSlots" : 0,
+      "grants" : 0,
+      "nextPullAt" : "2026-10-23T19:13:01Z",
+      "outcome" : "no_free_slots",
+      "resourceDomain" : "apple_inference",
+      "revisionIDs" : [
+        "pack-chirpy-v1-score-a9c110bed4c4-ba3e63c326bb"
+      ],
+      "serviceID" : "chirpy_v1_score_a9c110bed4c4",
+      "slots" : 64
+    },
+    {
+      "at" : "2026-10-23T19:21:07Z",
+      "capability" : "engine.bundle.v1",
+      "freeSlots" : 0,
+      "grants" : 0,
+      "nextPullAt" : "2026-10-23T19:13:03Z",
+      "outcome" : "no_free_slots",
+      "resourceDomain" : "apple_inference",
+      "revisionIDs" : [
+        "pack-dispatch-probe-m2-24g-mac27-372216499698"
+      ],
+      "serviceID" : "dispatch_probe_m2_24g_mac27",
+      "slots" : 64
+    },
+    {
+      "at" : "2026-10-23T19:21:07Z",
+      "capability" : "engine.bundle.v1",
+      "freeSlots" : 0,
+      "grants" : 0,
+      "nextPullAt" : "2026-10-23T19:13:04Z",
+      "outcome" : "no_free_slots",
+      "resourceDomain" : "apple_inference",
+      "revisionIDs" : [
+        "pack-kokoro-v1-5179061e617f"
+      ],
+      "serviceID" : "kokoro_v1",
+      "slots" : 64
+    },
+    {
+      "at" : "2026-10-23T19:21:07Z",
+      "capability" : "engine.bundle.v1",
+      "freeSlots" : 0,
+      "grants" : 0,
+      "nextPullAt" : "2026-10-23T19:13:05Z",
+      "outcome" : "no_free_slots",
+      "resourceDomain" : "apple_inference",
+      "revisionIDs" : [
+        "pack-parakeet-english-v1-6abc82005867"
+      ],
+      "serviceID" : "parakeet_english_v1",
+      "slots" : 64
+    },
+    {
+      "at" : "2026-10-23T19:21:07Z",
+      "capability" : "engine.bundle.v1",
+      "freeSlots" : 0,
+      "grants" : 0,
+      "outcome" : "no_free_slots",
+      "resourceDomain" : "apple_inference",
+      "revisionIDs" : [
+        "pack-parakeet-multilingual-v1-c9961fe5bfd8"
+      ],
+      "serviceID" : "parakeet_multilingual_v1",
+      "slots" : 64
+    },
+    {
+      "at" : "2026-10-23T19:21:07Z",
+      "capability" : "engine.bundle.v1",
+      "freeSlots" : 0,
+      "grants" : 0,
+      "nextPullAt" : "2026-10-23T19:13:07Z",
+      "outcome" : "no_free_slots",
+      "resourceDomain" : "apple_inference",
+      "revisionIDs" : [
+        "pack-qt-score-m2-24g-mac27-0ed28664cc99"
+      ],
+      "serviceID" : "qt_score_m2_24g_mac27",
+      "slots" : 64
+    },
+    {
+      "at" : "2026-10-23T19:21:07Z",
+      "capability" : "engine.bundle.v1",
+      "freeSlots" : 0,
+      "grants" : 0,
+      "nextPullAt" : "2026-10-23T19:21:04Z",
+      "outcome" : "no_free_slots",
+      "resourceDomain" : "apple_inference",
+      "revisionIDs" : [
+        "pack-qt-triage-q6-m2-24g-mac27-1719b2ac858a"
+      ],
+      "serviceID" : "qt_triage_q6_m2_24g_mac27",
+      "slots" : 64
+    },
+    {
+      "at" : "2026-10-23T19:21:07Z",
+      "capability" : "engine.bundle.v1",
+      "freeSlots" : 0,
+      "grants" : 0,
+      "outcome" : "no_free_slots",
+      "resourceDomain" : "apple_inference",
+      "revisionIDs" : [
+        "pack-qween-bench-m2-24g-mac27-d8148f3378f9"
+      ],
+      "serviceID" : "qween_bench_m2_24g_mac27",
+      "slots" : 64
+    },
+    {
+      "at" : "2026-10-23T19:21:07Z",
+      "capability" : "engine.bundle.v1",
+      "freeSlots" : 0,
+      "grants" : 0,
+      "outcome" : "no_free_slots",
+      "resourceDomain" : "apple_inference",
+      "revisionIDs" : [
+        "pack-qwen-rung-8975-2548abafb3a5-66ef62e2a323"
+      ],
+      "serviceID" : "qwen_rung_8975_2548abafb3a5",
+      "slots" : 64
+    },
+    {
+      "at" : "2026-10-23T19:21:05Z",
+      "capability" : "engine.bundle.v1",
+      "freeSlots" : 1,
+      "grants" : 1,
+      "hint" : false,
+      "leases" : 0,
+      "nextPullAt" : "2026-10-23T19:21:10Z",
+      "outcome" : "answered",
+      "resourceDomain" : "apple_inference",
+      "revisionIDs" : [
+        "pack-silero-probe-958a0aa62999-6ff22b672699"
+      ],
+      "serviceID" : "silero_probe_958a0aa62999",
+      "slots" : 64,
+      "started" : 0
+    },
+    {
+      "at" : "2026-10-23T19:21:07Z",
+      "capability" : "engine.bundle.v1",
+      "freeSlots" : 0,
+      "grants" : 0,
+      "nextPullAt" : "2026-10-23T19:21:05Z",
+      "outcome" : "share_denied",
+      "resourceDomain" : "cpu_io",
+      "revisionIDs" : [
+        "pack-vision-apple-ocr-a245cba9c41a"
+      ],
+      "serviceID" : "vision_apple_ocr",
+      "slots" : 64
+    }
+  ],
+  "foregroundApplicationNames" : [
+    "loginwindow"
+  ],
+  "hostShare" : {
+    "mode" : "adaptive",
+    "nextChangeReported" : true,
+    "otherAccountHoldsMac" : false,
+    "pausePendingWrite" : false,
+    "policy" : {
+      "defaultMode" : "adaptive",
+      "manualOverride" : {
+        "expiry" : "next_scheduled_change",
+        "mode" : "adaptive",
+        "setAt" : "2026-10-23T19:11:50Z"
+      },
+      "revision" : 51,
+      "rules" : [
+
+      ],
+      "scheduleEnabled" : false,
+      "schemaVersion" : 1,
+      "updatedAt" : "2026-10-23T19:11:50Z"
+    },
+    "source" : "override"
+  },
+  "hostShareController" : {
+    "controller" : "adaptive",
+    "headroomBytes" : 12552077312,
+    "memoryBudgetBytes" : 17129216142,
+    "mode" : "adaptive",
+    "nextStepUpAt" : "2026-10-23T19:21:07Z",
+    "pressure" : "normal",
+    "reclaimableBytes" : 13088948224,
+    "retryWaitSeconds" : {
+
+    },
+    "sampledAt" : "2026-10-23T19:21:07Z",
+    "services" : [
+      {
+        "coldBytes" : 1237319680,
+        "learnedColdObservations" : 8,
+        "learnedWarmObservations" : 8,
+        "serviceID" : "scraper",
+        "warm" : false,
+        "warmBytes" : 467091456
+      },
+      {
+        "coldBytes" : 81391616,
+        "learnedColdObservations" : 1,
+        "learnedWarmObservations" : 0,
+        "serviceID" : "audio.segment_whisper",
+        "warm" : false,
+        "warmBytes" : 55177216
+      },
+      {
+        "coldBytes" : 1237319680,
+        "learnedColdObservations" : 0,
+        "learnedWarmObservations" : 0,
+        "serviceID" : "apple_dictation_309b0c89c861",
+        "warm" : false,
+        "warmBytes" : 268435456
+      },
+      {
+        "coldBytes" : 1237319680,
+        "learnedColdObservations" : 0,
+        "learnedWarmObservations" : 0,
+        "serviceID" : "apple_speech_3a716bb83cee",
+        "warm" : false,
+        "warmBytes" : 268435456
+      },
+      {
+        "coldBytes" : 1237319680,
+        "learnedColdObservations" : 0,
+        "learnedWarmObservations" : 0,
+        "serviceID" : "chirpy_multilingual_v1_9ff266102721",
+        "warm" : false,
+        "warmBytes" : 268435456
+      },
+      {
+        "coldBytes" : 1439784960,
+        "learnedColdObservations" : 6,
+        "learnedWarmObservations" : 8,
+        "serviceID" : "chirpy_multilingual_v1_score_574d603c8754",
+        "warm" : false,
+        "warmBytes" : 518643712
+      },
+      {
+        "coldBytes" : 1237319680,
+        "learnedColdObservations" : 0,
+        "learnedWarmObservations" : 0,
+        "serviceID" : "chirpy_v1_431ce2c3d429",
+        "warm" : false,
+        "warmBytes" : 268435456
+      },
+      {
+        "coldBytes" : 1496793088,
+        "learnedColdObservations" : 1,
+        "learnedWarmObservations" : 2,
+        "serviceID" : "chirpy_v1_score_a9c110bed4c4",
+        "warm" : false,
+        "warmBytes" : 1023975424
+      },
+      {
+        "coldBytes" : 1073741824,
+        "learnedColdObservations" : 6,
+        "learnedWarmObservations" : 0,
+        "serviceID" : "dispatch_probe_m2_24g_mac27",
+        "warm" : false,
+        "warmBytes" : 1073741824
+      },
+      {
+        "coldBytes" : 1237319680,
+        "learnedColdObservations" : 0,
+        "learnedWarmObservations" : 0,
+        "serviceID" : "kokoro_v1",
+        "warm" : false,
+        "warmBytes" : 136314880
+      },
+      {
+        "coldBytes" : 1073741824,
+        "learnedColdObservations" : 0,
+        "learnedWarmObservations" : 0,
+        "serviceID" : "parakeet_english_v1",
+        "warm" : false,
+        "warmBytes" : 117440512
+      },
+      {
+        "coldBytes" : 12884901888,
+        "learnedColdObservations" : 0,
+        "learnedWarmObservations" : 0,
+        "serviceID" : "parakeet_multilingual_v1",
+        "warm" : false,
+        "warmBytes" : 1418723328
+      },
+      {
+        "coldBytes" : 4607081160,
+        "learnedColdObservations" : 1,
+        "learnedWarmObservations" : 2,
+        "serviceID" : "qt_score_m2_24g_mac27",
+        "warm" : false,
+        "warmBytes" : 4607081160
+      },
+      {
+        "coldBytes" : 4577138830,
+        "learnedColdObservations" : 8,
+        "learnedWarmObservations" : 8,
+        "serviceID" : "qt_triage_q6_m2_24g_mac27",
+        "warm" : true,
+        "warmBytes" : 4577138830
+      },
+      {
+        "coldBytes" : 8589934592,
+        "learnedColdObservations" : 8,
+        "learnedWarmObservations" : 8,
+        "serviceID" : "qween_bench_m2_24g_mac27",
+        "warm" : false,
+        "warmBytes" : 8589934592
+      },
+      {
+        "coldBytes" : 9307152384,
+        "learnedColdObservations" : 8,
+        "learnedWarmObservations" : 1,
+        "serviceID" : "qwen_rung_8975_2548abafb3a5",
+        "warm" : false,
+        "warmBytes" : 3311288320
+      },
+      {
+        "coldBytes" : 536870912,
+        "learnedColdObservations" : 0,
+        "learnedWarmObservations" : 0,
+        "serviceID" : "silero_probe_958a0aa62999",
+        "warm" : false,
+        "warmBytes" : 58720256
+      },
+      {
+        "coldBytes" : 1237319680,
+        "learnedColdObservations" : 0,
+        "learnedWarmObservations" : 0,
+        "serviceID" : "talktastic_v1_861f096a8a3c",
+        "warm" : false,
+        "warmBytes" : 268435456
+      },
+      {
+        "coldBytes" : 1073741824,
+        "learnedColdObservations" : 5,
+        "learnedWarmObservations" : 6,
+        "serviceID" : "vision_apple_ocr",
+        "warm" : false,
+        "warmBytes" : 117440512
+      },
+      {
+        "coldBytes" : 1237319680,
+        "learnedColdObservations" : 0,
+        "learnedWarmObservations" : 0,
+        "serviceID" : "whisper_ckpt_12926_9aeced68abaf",
+        "warm" : false,
+        "warmBytes" : 268435456
+      },
+      {
+        "coldBytes" : 5368709120,
+        "learnedColdObservations" : 0,
+        "learnedWarmObservations" : 0,
+        "serviceID" : "whisper_large_v3_turbo",
+        "warm" : false,
+        "warmBytes" : 591396864
+      }
+    ],
+    "slots" : 1,
+    "stepUpToken" : true,
+    "swapoutsLastSample" : 0,
+    "unloadServiceIDs" : [
+
+    ]
+  },
+  "minimumProtocolVersion" : {
+    "major" : 1,
+    "minor" : 0
+  },
+  "ownerShutdownDraining" : false,
+  "pausedAdmissionObservedServiceIDs" : [
+
+  ],
+  "policy" : {
+    "aggregateExecutionBudget" : 64,
+    "hostMode" : "automatic",
+    "lastActiveHostMode" : "automatic",
+    "revision" : 144,
+    "schemaVersion" : 1,
+    "segmentLaneOverride" : 16,
+    "serviceAdmissionMode" : {
+      "audio.segment_whisper" : "enforce",
+      "scraper" : "enforce"
+    },
+    "serviceEnabled" : {
+      "chirpy_multilingual_v1" : false,
+      "chirpy_v1" : false,
+      "qwen_rung_8975" : true,
+      "talktastic_v1" : false,
+      "whisper_ckpt_12926" : false,
+      "whisper_large_v3_turbo" : false
+    },
+    "supervisorOwned" : {
+      "audio.segment_whisper" : true,
+      "scraper" : true
+    },
+    "updatedAt" : "2026-10-23T19:11:50Z"
+  },
+  "privateHardwareSensorsEnabled" : true,
+  "protocolVersion" : {
+    "major" : 1,
+    "minor" : 0
+  },
+  "resourceTelemetry" : {
+    "capturedAt" : "2026-10-23T19:21:04Z",
+    "schemaVersion" : 1,
+    "serviceCPUReconciled" : true,
+    "services" : [
+      {
+        "capturedAt" : "2026-10-23T19:21:04Z",
+        "cpuPercent" : {
+          "quality" : "measured",
+          "scope" : "serviceProcessTree",
+          "unit" : "percent",
+          "value" : 0.057414909127572585
+        },
+        "neuralFootprintBytes" : {
+          "quality" : "measured",
+          "scope" : "serviceProcessTree",
+          "unit" : "bytes",
+          "value" : 0
+        },
+        "physicalFootprintBytes" : {
+          "quality" : "measured",
+          "scope" : "serviceProcessTree",
+          "unit" : "bytes",
+          "value" : 1384318656
+        },
+        "schemaVersion" : 1,
+        "serviceID" : "qt_triage_q6_m2_24g_mac27"
+      }
+    ],
+    "systemHardware" : {
+      "anePower" : {
+        "quality" : "estimated",
+        "scope" : "wholeMac",
+        "unavailableReason" : "unknownHardware",
+        "unit" : "watts"
+      },
+      "capturedAt" : "2026-10-23T19:21:04Z",
+      "gpuActiveResidency" : {
+        "quality" : "measuredSystemEstimate",
+        "scope" : "wholeMac",
+        "unavailableReason" : "unknownHardware",
+        "unit" : "percent"
+      },
+      "gpuAverageFrequency" : {
+        "quality" : "measuredSystemEstimate",
+        "scope" : "wholeMac",
+        "unavailableReason" : "unknownHardware",
+        "unit" : "megahertz"
+      },
+      "gpuPower" : {
+        "quality" : "estimated",
+        "scope" : "wholeMac",
+        "unavailableReason" : "unknownHardware",
+        "unit" : "watts"
+      }
+    }
+  },
+  "services" : [
+    {
+      "activeExecutionIDs" : [
+
+      ],
+      "activeJobs" : 0,
+      "configuredCap" : 1,
+      "doctorHealthy" : true,
+      "draining" : false,
+      "effectiveCap" : 1,
+      "enabled" : true,
+      "executorFamily" : "browser_scrape",
+      "installed" : true,
+      "protocolCompatible" : true,
+      "reason" : "ready",
+      "resourceDomain" : "browser",
+      "runtimeVersion" : "0.1.3",
+      "serviceId" : "scraper",
+      "stage" : "cold_agent_owned"
+    },
+    {
+      "activeExecutionIDs" : [
+
+      ],
+      "activeJobs" : 0,
+      "configuredCap" : 16,
+      "doctorHealthy" : true,
+      "draining" : false,
+      "effectiveCap" : 16,
+      "enabled" : true,
+      "executorFamily" : "audio_segment",
+      "installed" : true,
+      "protocolCompatible" : true,
+      "reason" : "ready",
+      "resourceDomain" : "cpu_io",
+      "runtimeVersion" : "agent-executor",
+      "serviceId" : "audio.segment_whisper"
+    }
+  ],
+  "telemetry" : {
+    "botnetCPUPercent" : 0.07248384464240096,
+    "botnetResidentBytes" : 1160642560,
+    "capturedAt" : "2026-10-23T19:21:07Z",
+    "diskAvailableBytes" : 205322396341,
+    "diskCapacityBytes" : 494384795648,
+    "lowPowerModeEnabled" : false,
+    "otherAppsCPUPercent" : 25.685091912933355,
+    "otherAppsResidentBytes" : 9359867904,
+    "physicalMemoryBytes" : 25769803776,
+    "thermalState" : "fair",
+    "totalCPUPercent" : 25.757575757575758,
+    "totalResidentBytes" : 10520510464,
+    "vmPressure" : "normal"
+  },
+  "updateState" : "complete"
+}
