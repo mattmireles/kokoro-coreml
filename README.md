@@ -180,6 +180,65 @@ kokoro-coreml/
 
 </details>
 
+## Per-device detail
+
+Every device in the October 23, 2026 run, at every clip length: latency and peak memory for this pipeline next to MLX on the same device, same text and same session. Latency is the warm median. Peak memory is the process's peak resident memory on Macs and the app's peak memory footprint on iPhones. Blank cells are still being measured.
+
+### M2 Ultra Mac Studio
+
+| Audio | Latency | MLX | Faster | Peak memory | MLX | Less memory |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 3s | 74 ms | fails | -- | 144 MB | -- | -- |
+| 7s | 54 ms | 189 ms | **3.5x** | 235 MB | 786 MB | **3.3x** |
+| 10s | 71 ms | 273 ms | **3.9x** | 263 MB | 796 MB | **3.0x** |
+| 15s | 89 ms | 340 ms | **3.8x** | 275 MB | 791 MB | **2.9x** |
+| 30s (27.4 s input) | 159 ms | 770 ms | **4.8x** | 434 MB | 815 MB | **1.9x** |
+
+### M1 Mac Mini
+
+| Audio | Latency | MLX | Faster | Peak memory | MLX | Less memory |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 3s | 95 ms | fails | -- | 134 MB | -- | -- |
+| 7s | 99 ms | 801 ms | **8.1x** | 177 MB | 771 MB | **4.4x** |
+| 10s | 124 ms | 1,103 ms | **8.9x** | 199 MB | 777 MB | **3.9x** |
+| 15s | 169 ms | 1,542 ms | **9.2x** | 247 MB | 782 MB | **3.2x** |
+| 30s (27.4 s input) | 309 ms | 3,015 ms | **9.8x** | 375 MB | 801 MB | **2.1x** |
+
+### iPhone 15 Pro Max (A17 Pro)
+
+| Audio | Latency | MLX | Faster | Peak memory | MLX | Less memory |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 3s | 62 ms | 551 ms | **8.9x** | 255 MB |  |  |
+| 7s | 103 ms | 1,227 ms | **11.9x** | 551 MB |  |  |
+| 10s | 156 ms | 1,717 ms | **11.0x**\* | 655 MB |  |  |
+| 15s | 224 ms | 2,319 ms | **10.4x**\* | 869 MB |  |  |
+| 30s (27.4 s input) | 319 ms | 4,797 ms | **15.1x**\* | 1,338 MB |  |  |
+
+### iPhone 12 Pro (A14)
+
+| Audio | Latency | MLX | Faster | Peak memory | MLX | Less memory |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 3s | 98 ms | 911 ms | **9.3x** | 61 MB |  |  |
+| 7s | 145 ms | 2,050 ms | **14.2x** | 282 MB |  |  |
+| 10s | 186 ms | 2,814 ms | **15.2x** | 349 MB |  |  |
+| 15s | 261 ms | 3,951 ms | **15.1x** | 500 MB |  |  |
+| 30s (27.4 s input) | 480 ms | out of memory | -- | 831 MB | -- | -- |
+
+### M2 MacBook Air
+
+| Audio | Latency | MLX | Faster | Peak memory | MLX | Less memory |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 3s | 73 ms | fails | -- | 135 MB | -- | -- |
+| 7s | 72 ms | 1,432 ms | **19.9x** | 183 MB | 780 MB | **4.3x** |
+| 10s | 240 ms | 1,818 ms | **7.6x** | 206 MB | 785 MB | **3.8x** |
+| 15s | 273 ms | 2,426 ms | **8.9x** | 251 MB | 789 MB | **3.1x** |
+| 30s (27.4 s input) | 377 ms | 5,187 ms | **13.7x** | 376 MB | 806 MB | **2.1x** |
+
+- **\* Upper bound:** MLX ended these runs hot (`fair` or `serious`) and was being throttled.
+- **Mac rows are upper bounds:** no Mac reached the quiet-host gate.
+- **M2 MacBook Air:** it was the noisiest host (background load 3-5). Its MLX ran about 2.4x slower than in October's run, so its ratios overstate the gap and are not used anywhere else in this README.
+- **MLX failures:** the pinned mlx-audio fails every 3 s input on Macs, and kokoro-ios is killed for running out of memory at 30 s on the iPhone 12 Pro.
+
 ---
 
 Built on [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) by [hexgrad](https://huggingface.co/hexgrad), [StyleTTS 2](https://github.com/yl4579/StyleTTS2) by [@yl4579](https://huggingface.co/yl4579), [MisakiSwift](https://github.com/mattmireles/MisakiSwift), and Apple's coremltools.
