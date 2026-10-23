@@ -30,16 +30,16 @@ Full protocol, every cell with its min-max range, the ablation and raw data: [pa
 
 ### Memory
 
-Peak memory for one synthesis, in MB, same run and same inputs as the latency table:
+Peak memory for one synthesis, same run and same inputs as the latency table:
 
 | Audio | M2 Ultra | M1 Mini | iPhone 15 Pro Max | iPhone 12 Pro |
 | --- | ---: | ---: | ---: | ---: |
-| 3s | 144 | 134 | 255 | 61 |
-| 7s | 235 | 177 | 551 | 282 |
-| 10s | 263 | 199 | 655 | 349 |
-| 15s | 275 | 247 | 869 | 500 |
-| 30s (27.4 s input) | **434** | **375** | **1,338** | **831** |
-| **MLX** | 786-815 | 771-801 | not measured | runs out of memory at 30 s |
+| 3s | 144 MB | 134 MB | 255 MB | 61 MB |
+| 7s | 235 MB | 177 MB | 551 MB | 282 MB |
+| 10s | 263 MB | 199 MB | 655 MB | 349 MB |
+| 15s | 275 MB | 247 MB | 869 MB | 500 MB |
+| 30s (27.4 s input) | **434 MB** | **375 MB** | **1,338 MB** | **831 MB** |
+| **MLX** | 786-815 MB | 771-801 MB | not measured | runs out of memory at 30 s |
 
 On a Mac this pipeline uses about half of MLX's memory at 30 s (434 vs 815 MB on the M2 Ultra, 375 vs 801 MB on the M1 Mini), and far less on short clips.
 
