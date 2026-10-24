@@ -1,0 +1,127 @@
+{
+ "metric": "process phys_footprint lifetime peak (task_vm_info.ledger_phys_footprint_peak) read at record time, one fresh app launch per cell; same footprintMB() call as the Core ML cells",
+ "app_build_sha256_without_signature": "cf87044311445e31565e8be9a9ed0e9a35b6ab738af6c2767104f9d460dd0c0e",
+ "app_build_source": "checkout 41c4f009 plus the ios-bench MLX footprint change in this commit; frozen 014 Core ML packages; MLX weights from the plan 013 app (kokoro-v1_0.safetensors sha256 4e9ecdf0..., voices.npz 56dbfa2f...)",
+ "mlx_impl": "kokoro-ios 1.0.8 (ios-bench Vendor/kokoro-ios), MLX GPU cache capped at 256 MB",
+ "protocol": "3 warm-ups + 1 cold + 10 warm calls per launch; cooldown 180 s (A14) / 360 s (A17), nominal thermal state at launch or one extra cooldown and retry",
+ "date_pt": "2026-10-23",
+ "phones": {
+  "iphone-12-pro": {
+   "device": "A14 (iPhone 12 Pro, iPhone13,3)",
+   "physical_memory_bytes": 5993496576,
+   "physical_memory_gib": 5.58,
+   "cells": {
+    "hybrid|10s": {
+     "peak_mb": 349.6,
+     "thermal_start": "nominal",
+     "thermal_end": "nominal",
+     "warm_median_ms": 196.1,
+     "file": "mem/iphone-12-pro/hybrid_10s_a1_1555.json",
+     "run_014_peak_mb": 349.0
+    },
+    "hybrid|30s": {
+     "peak_mb": 822.8,
+     "thermal_start": "nominal",
+     "thermal_end": "nominal",
+     "warm_median_ms": 510.0,
+     "file": "mem/iphone-12-pro/hybrid_30s_a1_1619.json",
+     "run_014_peak_mb": 830.6
+    },
+    "mlx|10s": {
+     "peak_mb": 2006.2,
+     "thermal_start": "nominal",
+     "thermal_end": "nominal",
+     "warm_median_ms": 2854.2,
+     "file": "mem/iphone-12-pro/mlx_10s_a1_1558.json"
+    },
+    "mlx|15s": {
+     "peak_mb": 2443.5,
+     "thermal_start": "nominal",
+     "thermal_end": "nominal",
+     "warm_median_ms": 4068.6,
+     "file": "mem/iphone-12-pro/mlx_15s_a2_1615.json"
+    },
+    "mlx|3s": {
+     "peak_mb": 1181.8,
+     "thermal_start": "nominal",
+     "thermal_end": "nominal",
+     "warm_median_ms": 964.1,
+     "file": "mem/iphone-12-pro/mlx_3s_a1_1548.json"
+    },
+    "mlx|7s": {
+     "peak_mb": 1758.0,
+     "thermal_start": "nominal",
+     "thermal_end": "nominal",
+     "warm_median_ms": 2083.9,
+     "file": "mem/iphone-12-pro/mlx_7s_a1_1551.json"
+    },
+    "mlx|30s": {
+     "peak_mb": null,
+     "result": "OOM-killed (signal 9) during the first call, twice (16:23, 16:26 PT); no footprint line logged before the kill"
+    }
+   },
+   "notes": [
+    "mlx|15s: first attempt stalled after 9 calls with peak 2,402 MB (console log) and was terminated; the retry completed (value above)."
+   ]
+  },
+  "iphone-15-pro-max": {
+   "device": "A17 Pro (iPhone 15 Pro Max, iPhone16,2)",
+   "physical_memory_bytes": 8027406336,
+   "physical_memory_gib": 7.48,
+   "cells": {
+    "hybrid|10s": {
+     "peak_mb": 646.3,
+     "thermal_start": "nominal",
+     "thermal_end": "nominal",
+     "warm_median_ms": 130.9,
+     "file": "mem/iphone-15-pro-max/hybrid_10s_a1_1605.json",
+     "run_014_peak_mb": 655.0
+    },
+    "hybrid|30s": {
+     "peak_mb": 1334.3,
+     "thermal_start": "nominal",
+     "thermal_end": "nominal",
+     "warm_median_ms": 326.8,
+     "file": "mem/iphone-15-pro-max/hybrid_30s_a1_1631.json",
+     "run_014_peak_mb": 1337.8
+    },
+    "mlx|10s": {
+     "peak_mb": 2045.1,
+     "thermal_start": "nominal",
+     "thermal_end": "nominal",
+     "warm_median_ms": 1640.4,
+     "file": "mem/iphone-15-pro-max/mlx_10s_a2_1618.json"
+    },
+    "mlx|15s": {
+     "peak_mb": 2481.3,
+     "thermal_start": "nominal",
+     "thermal_end": "nominal",
+     "warm_median_ms": 2346.0,
+     "file": "mem/iphone-15-pro-max/mlx_15s_a1_1624.json"
+    },
+    "mlx|30s": {
+     "peak_mb": 3192.1,
+     "thermal_start": "nominal",
+     "thermal_end": "serious",
+     "warm_median_ms": 4806.2,
+     "file": "mem/iphone-15-pro-max/mlx_30s_a1_1744.json"
+    },
+    "mlx|3s": {
+     "peak_mb": 1218.7,
+     "thermal_start": "nominal",
+     "thermal_end": "nominal",
+     "warm_median_ms": 542.1,
+     "file": "mem/iphone-15-pro-max/mlx_3s_a1_1552.json"
+    },
+    "mlx|7s": {
+     "peak_mb": 1791.3,
+     "thermal_start": "nominal",
+     "thermal_end": "nominal",
+     "warm_median_ms": 1207.4,
+     "file": "mem/iphone-15-pro-max/mlx_7s_a1_1559.json"
+    }
+   },
+   "notes": []
+  }
+ }
+}

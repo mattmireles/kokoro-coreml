@@ -426,6 +426,7 @@ final class BenchRunner: ObservableObject {
         let payload: [String: Any] = [
             "device": UIDevice.current.model,
             "hardware": hw,  // e.g. iPhone13,3 = iPhone 12 Pro, iPhone16,2 = 15 Pro Max
+            "physical_memory_bytes": ProcessInfo.processInfo.physicalMemory,
             "system": "\(UIDevice.current.systemName) \(UIDevice.current.systemVersion)",
             "warmups": Self.warmups,
             "iterations": Self.iterations,
@@ -924,7 +925,10 @@ final class BenchRunner: ObservableObject {
                     thermal.append(thermalStateName())
                     if i == Self.warmups { cold = t1 - t0 }
                     if i > Self.warmups { times.append(t1 - t0) }
-                    await log("mlx \(key) iter \(i): \(String(format: "%.3f", t1 - t0))s audio=\(String(format: "%.1f", audioSeconds))s")
+                    // Footprint after every call (same metric as the Core ML cells), so a
+                    // jetsam kill still leaves the last value in the console log.
+                    let fp = footprintMB()
+                    await log("mlx \(key) iter \(i): \(String(format: "%.3f", t1 - t0))s audio=\(String(format: "%.1f", audioSeconds))s footprint \(Int(fp.now)) MB peak \(Int(fp.peak)) MB")
                 } catch {
                     failure = String(describing: error)
                     await log("mlx \(key) iter \(i) FAILED: \(error)")
@@ -941,6 +945,8 @@ final class BenchRunner: ObservableObject {
                 "median_s": med,
                 "observed_audio_s": audioSeconds,
                 "rtf": audioSeconds > 0 && med > 0 ? med / audioSeconds : 0,
+                "footprint_mb": footprintMB().now,
+                "peak_footprint_mb": footprintMB().peak,
                 "error": failure ?? NSNull(),
             ] as [String: Any])
         }

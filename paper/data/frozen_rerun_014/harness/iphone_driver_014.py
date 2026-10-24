@@ -134,6 +134,10 @@ def _nominal_start(f):
 # A cell counts as done only with a result that started at nominal thermal state.
 done_cells = {tuple(f.name.split("_a")[0].rsplit("_", 1)) for f in OUT.glob("*_a*_*.json") if _nominal_start(f)}
 STEPS = [s for s in STEPS if (s[1], s[0]) not in done_cells]
+# CELLS="mlx:*,hybrid:10s": run only these (arm:bucket, * = every bucket).
+if os.environ.get("CELLS"):
+    want = [c.split(":") for c in os.environ["CELLS"].split(",")]
+    STEPS = [s for s in STEPS if any(a == s[1] and k in ("*", s[0]) for a, k in want)]
 if os.environ.get("VALIDATE") == "1":
     STEPS.insert(0, ("3s", "folded"))
 ev(f"COOL_S {COOL_S}; STEPS {len(STEPS)}: {STEPS}")
