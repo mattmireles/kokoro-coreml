@@ -15,12 +15,15 @@ tags:
   - on-device
 ---
 
-# Kokoro TTS: Surgically Optimized for Apple Silicon
-**15.1x faster than MLX on iPhone 15 Pro Max –  while using 2.4x less RAM.** MLX was measured on the same iPhone, with the same text, same 27 sec audio duration.
+# Kokoro TTS: Surgically Altered for Speed on Apple Silicon
+**15.1x faster than MLX on iPhone 15 Pro Max – while using 2.4x less RAM.** MLX was measured on the same iPhone, with the same text, same 27 sec audio duration.
 
-[Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) running on the Apple Neural Engine through Core ML. No Python, no server, no API key. The model is cut at its seams, and each stage runs on the part of the chip that suits it. That includes the vocoder, which the Neural Engine rejects as exported; a reshape that leaves its math unchanged gets it in.
+[Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) running on all three of Apple Silicon's key compute components (Neural Engine, GPU and CPU) through Core ML. No Python, no server, no API key. The model is cut into pieces at its seams, and each stage runs on the chip that suits it. That includes the vocoder, which the Neural Engine rejects as exported; a reshape that leaves its math unchanged gets it in.
 
-> **Source code, Swift SDK and benchmarks:** [github.com/mattmireles/kokoro-coreml](https://github.com/mattmireles/kokoro-coreml) · **Paper:** [PDF](https://github.com/mattmireles/kokoro-coreml/blob/main/paper/main.pdf)
+**Redesign the inference pipeline, not the model.** The paper has the full story: [`paper/main.pdf`](https://github.com/mattmireles/kokoro-coreml/blob/main/paper/main.pdf).
+
+> **Source code, Swift SDK and benchmarks:** [github.com/mattmireles/kokoro-coreml](https://github.com/mattmireles/kokoro-coreml)
+
 
 ## Performance
 
@@ -78,7 +81,7 @@ iOS thermal state at the end of each run of 14 back-to-back syntheses of the sam
 
 \* In a second run, MLX ended 10 s and 15 s at `nominal`, and again ended 30 s at `serious`, with the same speed (4,806 vs 4,797 ms).
 
-This pipeline ended every run at `nominal` on both phones. MLX did, because it works 10-15x longer for the same speech: by the end of its 30 s run on the iPhone 15 Pro Max, iOS was throttling it (`serious`).
+This pipeline ended every run at `nominal` on both phones. MLX didn't: it works 10-15x longer for the same speech, and by the end of its 30 s run on the iPhone 15 Pro Max, iOS was throttling it (`serious`).
 
 - **The four states:** `nominal`, `fair`, `serious` and `critical` are iOS's own reading ([`ProcessInfo.thermalState`](https://developer.apple.com/documentation/foundation/processinfo/thermalstate)), recorded at each call. They are not temperatures.
 - **The old pipeline heated phones too:** before the vocoder moved to the Neural Engine, the iPhone 12 Pro ended its 30 s run at `serious`.
@@ -115,8 +118,6 @@ Apple Silicon has three engines: CPU, GPU and the Neural Engine (ANE). The ANE r
 - **Hybrid.** Inside the generator, the ANE is slow at elementwise work and the GPU at convolutions. So the hybrid gives each engine the half it is good at. At every input of 7 s and longer, on all five devices measured, it takes 16-78% less time than the all-ANE version (up to 4.4x faster).
 
 Audio matches the fp32 PyTorch reference at 40.8-45.8 dB SNR per clip.
-
-**Redesign the inference pipeline, not the model.** The paper has the full story: [`paper/main.pdf`](https://github.com/mattmireles/kokoro-coreml/blob/main/paper/main.pdf).
 
 ## Reproduce the benchmark
 
