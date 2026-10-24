@@ -48,7 +48,7 @@
 \begin{abstract}
 On-device generative inference usually means choosing one backend, and single-backend deployment leaves most of a heterogeneous SoC idle. We present \emph{Surgical Inference}: compile a generative model as a set of fixed-shape submodels and native stages, reshape each stage --- without changing its math --- until the engine that should run it admits it, and place every stage on the CPU, GPU or Neural Engine (ANE) by measurement.
 
-On Kokoro-82M text-to-speech, the ANE rejects the vocoder, 89\% of the model's FLOPs, on tensor geometry. Folding its time axis into overlapping rows, rewriting each rejected op into an admitted equivalent and keeping exact global normalization statistics puts all but one of its 1,928 ops on the ANE. Splitting each vocoder stage so the ANE runs the convolutions while the GPU runs normalization and activations, over shared memory, keeps both engines busy at once. The pipeline synthesizes 27 s of speech in 309 ms on an M1 Mac Mini, 9.8$\times$ faster than MLX on the same machine, and in 319 ms on an iPhone 15 Pro Max, at 40.8--45.8 dB SNR against the fp32 reference. On Magenta RealTime 2, a streaming music model with a 40 ms frame deadline, the same procedure runs faster than real time on an iPhone 15 Pro Max in bounded runs, though not yet in a 10-minute soak, and finds two more structural admission rules: in-graph state mutation, not attention, is the ANE compile cliff, and tensor layout decides whether FP16 output stays finite on each engine.
+On Kokoro-82M text-to-speech, the ANE rejects the vocoder, 89\% of the model's FLOPs, on tensor geometry. Folding its time axis into overlapping rows, rewriting each rejected op into an admitted equivalent and keeping exact global normalization statistics puts all but one of its 1,928 ops on the ANE. Splitting each vocoder stage so the ANE runs the convolutions while the GPU runs normalization and activations, over shared memory, keeps both engines busy at once. The pipeline synthesizes 27 s of speech in 309 ms on an M1 Mac Mini, 9.8$\times$ faster than MLX on the same machine, and in 319 ms on an iPhone 15 Pro Max, at 40.8--45.8 dB SNR against the fp32 reference. It needs about half of MLX's peak memory on the Mac and 2.4--19$\times$ less on iPhones, and on the iPhone stays thermally nominal while MLX, on the same work, reaches throttling. On Magenta RealTime 2, a streaming music model with a 40 ms frame deadline, the same procedure runs faster than real time on an iPhone 15 Pro Max in bounded runs, though not yet in a 10-minute soak, and finds two more structural admission rules: in-graph state mutation, not attention, is the ANE compile cliff, and tensor layout decides whether FP16 output stays finite on each engine.
 
 Negative results are reported as results: no valid monolithic export, a list of optimizations that failed, and an estimated ceiling for the exact model below 90\% of the hardware floor. Code, models and benchmarks are open source.
 \end{abstract}
@@ -76,7 +76,7 @@ We make five contributions:
 
 \item \textbf{Structural ANE admission findings} from the streaming case study (\S\ref{sec:cs2}): in-graph state mutation, not attention math, is the compile cliff for streaming transformers; internal layout decides FP16 numerical survival per compute unit; and weight-bound stages cost weight bytes $\div$ DRAM bandwidth per call on every engine.
 
-\item \textbf{Measured results, a cumulative ablation and negative results} on three Macs and two iPhones under a frozen protocol (\S\ref{sec:cs1-eval}): a one-change-at-a-time ladder from the previous pipeline to the current one, a lab estimate of the remaining distance to the hardware floor, a monolithic-export control that fails, and the optimizations that did not work.
+\item \textbf{Measured results, a cumulative ablation and negative results} on three Macs and two iPhones under a frozen protocol (\S\ref{sec:cs1-eval}): a one-change-at-a-time ladder from the previous pipeline to the current one, peak memory and phone thermal state against MLX, a lab estimate of the remaining distance to the hardware floor, a monolithic-export control that fails, and the optimizations that did not work.
 \end{enumerate}
 
 Code, pre-converted Core ML models and benchmark data for Kokoro are at \url{https://github.com/mattmireles/kokoro-coreml} and \url{https://huggingface.co/mattmireles/kokoro-coreml}. MRT2's conversion and validation layer is at \url{https://github.com/mattmireles/magenta-realtime-2-iphone}; its streaming runtime lives in a fork that is private at the time of writing (Appendix~\ref{app:artifacts}).
@@ -202,7 +202,7 @@ The hybrid scores 40.8--45.8 dB; its worst clip, a 1.2 s ``Hi.'', runs on the fo
 
 \subsection{Evaluation}\label{sec:cs1-eval}
 
-\textbf{Hardware.} M1 Mac Mini (16 GB, 68 GB/s), M2 MacBook Air (24 GB, 100 GB/s), M2 Ultra Mac Studio (64 GB, 800 GB/s), iPhone 12 Pro (A14, 4 GB) and iPhone 15 Pro Max (A17 Pro). The M2 Ultra ran macOS 26.7.1, the M2 Air and M1 macOS 27.0.1, and both iPhones iOS 27.0.1.
+\textbf{Hardware.} M1 Mac Mini (16 GB, 68 GB/s), M2 MacBook Air (24 GB, 100 GB/s), M2 Ultra Mac Studio (64 GB, 800 GB/s), iPhone 12 Pro (A14, 6 GB) and iPhone 15 Pro Max (A17 Pro, 8 GB). The M2 Ultra ran macOS 26.7.1, the M2 Air and M1 macOS 27.0.1, and both iPhones iOS 27.0.1.
 
 \textbf{Inputs and boundary.} Five frozen inputs targeting the runtime buckets (2.80, 6.75, 9.60, 13.90 and 27.38 s of audio), voice \code{af\_heart}, speed 1.0. Timing runs from token IDs and voice embedding in to a 24 kHz waveform in memory (Appendix~\ref{app:boundaries}).
 
@@ -234,7 +234,7 @@ Input & Surg. & MLX & $\times$ & Surg. & MLX & $\times$ & Surg. & MLX & $\times$
 \begin{table}[h]
 \centering
 \small
-\caption{iPhone Release-build warm medians (ms), sustained regime. e5rt is the private-API path (\S\ref{sec:cs1-e5rt}); it is not used in any ratio. ``OOM'': the memory watchdog killed kokoro-ios on the 4 GB A14, twice. $^\S$The MLX cell ended above a nominal thermal state (``fair'' at 10 and 15 s, ``serious'' at 30 s), so MLX was throttled and the ratio is an upper bound.}
+\caption{iPhone Release-build warm medians (ms), sustained regime. e5rt is the private-API path (\S\ref{sec:cs1-e5rt}); it is not used in any ratio. ``OOM'': the memory watchdog killed kokoro-ios on the 6 GB A14, twice. $^\S$The MLX cell ended above a nominal thermal state (``fair'' at 10 and 15 s, ``serious'' at 30 s), so MLX was throttled and the ratio is an upper bound.}
 \label{tab:cs1-iphone}
 \begin{tabular}{lrrrrrrrr}
 \toprule
@@ -250,7 +250,7 @@ Input & Surg. & MLX & $\times$ & e5rt & Surg. & MLX & $\times$ & e5rt \\
 \end{tabular}
 \end{table}
 
-The 27.38 s input synthesizes in 159 ms on the M2 Ultra, 309 ms on the M1 Mini, 319 ms on the iPhone 15 Pro Max and 480 ms on the iPhone 12 Pro: 172, 89, 86 and 57$\times$ real time. Against MLX on the same device and session, the pipeline is 3.5--4.8$\times$ faster on the M2 Ultra, 8.1--9.8$\times$ on the M1, 8.9--15.1$\times$ on the A17 Pro and 9.3--15.2$\times$ on the A14 (Figure~\ref{fig:cs1-latency}). The pinned mlx-audio fails every 3 s Mac input, and kokoro-ios is killed by the memory watchdog at 30 s on the 4 GB A14; both failures reproduce the October 2026 run. Against the October 2026 run (another session, quieter Macs, so indicative only), one cell regressed: on the M2 Ultra the 3 s input, which runs the folded generator, takes 74 ms against 64 ms for October's GPU generator under similar load (45 ms in its quiet pass; Appendix~\ref{app:october}); on every other device the 3 s input got faster. The A17 Pro's ratios at 10 s and longer are upper bounds, because its MLX cells ran hot.
+The 27.38 s input synthesizes in 159 ms on the M2 Ultra, 309 ms on the M1 Mini, 319 ms on the iPhone 15 Pro Max and 480 ms on the iPhone 12 Pro: 172, 89, 86 and 57$\times$ real time. Against MLX on the same device and session, the pipeline is 3.5--4.8$\times$ faster on the M2 Ultra, 8.1--9.8$\times$ on the M1, 8.9--15.1$\times$ on the A17 Pro and 9.3--15.2$\times$ on the A14 (Figure~\ref{fig:cs1-latency}). The pinned mlx-audio fails every 3 s Mac input, and kokoro-ios is killed by the memory watchdog at 30 s on the 6 GB A14; both failures reproduce the October 2026 run. Against the October 2026 run (another session, quieter Macs, so indicative only), one cell regressed: on the M2 Ultra the 3 s input, which runs the folded generator, takes 74 ms against 64 ms for October's GPU generator under similar load (45 ms in its quiet pass; Appendix~\ref{app:october}); on every other device the 3 s input got faster. The A17 Pro's ratios at 10 s and longer are upper bounds, because its MLX cells ran hot.
 
 \begin{figure}[t]
 \centering
@@ -258,6 +258,52 @@ The 27.38 s input synthesizes in 159 ms on the M2 Ultra, 309 ms on the M1 Mini, 
 \caption{End-to-end warm median latency, the shipped pipeline vs MLX on the same device and session (log scale), from Tables~\ref{tab:cs1-mac} and~\ref{tab:cs1-iphone}. The M2 Air is omitted because its host was too loaded for a fair ratio. The pinned mlx-audio fails every 3 s Mac input, and kokoro-ios is killed by the memory watchdog at 30 s on the A14.}
 \label{fig:cs1-latency}
 \end{figure}
+
+\subsubsection{Memory and heat}\label{sec:cs1-memory-thermal}
+
+The same run recorded peak memory for every cell and the iPhone's thermal state at every call. Neither was an endpoint of the plan fixed before the run, so we report both as observations.
+
+\begin{table}[h]
+\centering
+\small
+\caption{Peak memory (MB) for one synthesis, shipped pipeline vs MLX, same inputs and session as Tables~\ref{tab:cs1-mac} and~\ref{tab:cs1-iphone}. Macs: maximum resident set size of a fresh process per cell. iPhones: peak \code{phys\_footprint} over one app launch per cell. MLX fails every 3 s Mac input (its 3 s process peak is shown in parentheses), and is killed at 30 s on the A14, a 6 GB phone. The iPhone MLX cells were measured in a separate session with the same metric; Surgical cells re-measured there matched within 1.4\%.}
+\label{tab:cs1-memory}
+\begin{tabular}{lrrrrrrrr}
+\toprule
+ & \multicolumn{2}{c}{M2 Ultra} & \multicolumn{2}{c}{M1 Mini} & \multicolumn{2}{c}{A17 Pro} & \multicolumn{2}{c}{A14} \\
+Input & Surg. & MLX & Surg. & MLX & Surg. & MLX & Surg. & MLX \\
+\midrule
+3s  & 144 & (778) & 134 & (763) & 255 & 1219 & 61 & 1182 \\
+7s  & 235 & 786 & 177 & 771 & 551 & 1791 & 282 & 1758 \\
+10s & 263 & 796 & 199 & 777 & 655 & 2045 & 349 & 2006 \\
+15s & 275 & 791 & 247 & 782 & 869 & 2481 & 500 & 2444 \\
+30s & 434 & 815 & 375 & 801 & 1338 & 3192 & 831 & OOM \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+On the Macs, MLX's peak is nearly flat across inputs (763--815 MB): its weights and runtime dominate. The pipeline's grows with the input, from 134--144 MB at 3 s to 375--434 MB at 30 s, so it uses 3.3--4.4$\times$ less memory than MLX at 7 s and 1.9--2.1$\times$ less at 30 s. On the iPhones the gap is wider: MLX peaks at 1,182--3,192 MB, so the pipeline uses 2.4--4.8$\times$ less memory on the A17 Pro and 4.9--19$\times$ less on the A14; at 30 s MLX does not fit on the 6 GB A14 at all, while the pipeline peaks at 831 MB. On the phones the hybrid generator is what costs memory (\S\ref{sec:cs1-fold-vs-hybrid}): at 30 s the folded generator peaks at 780 MB on the A17 Pro and 284 MB on the A14, against 1,338 and 831 MB for the hybrid.
+
+\begin{table}[h]
+\centering
+\small
+\caption{iOS thermal state (\code{ProcessInfo.thermalState}) at the end of each cell: 14 back-to-back syntheses of the same input, every cell starting at \code{nominal}. ``Folded'' is the all-ANE generator; at 3 s the shipped pipeline runs it too. In a second session with longer cooldowns, MLX again ended 30 s on the A17 Pro at \code{serious}, but ended 10 and 15 s at \code{nominal}.}
+\label{tab:cs1-thermal}
+\begin{tabular}{lllllll}
+\toprule
+ & \multicolumn{3}{c}{iPhone 15 Pro Max (A17 Pro)} & \multicolumn{3}{c}{iPhone 12 Pro (A14)} \\
+Input & Surgical & Folded & MLX & Surgical & Folded & MLX \\
+\midrule
+3s  & nominal & nominal & nominal & nominal & nominal & nominal \\
+7s  & nominal & nominal & nominal & nominal & nominal & nominal \\
+10s & nominal & nominal & fair & nominal & nominal & nominal \\
+15s & nominal & nominal & fair & nominal & nominal & nominal \\
+30s & nominal & nominal & \textbf{serious} & nominal & nominal & killed (OOM) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The pipeline ended every cell at \code{nominal} on both phones, with either generator. MLX ended at \code{serious}, the state in which iOS throttles, at 30 s on the A17 Pro, and did so again in the separate memory session, after a six-minute cooldown, with an unchanged median (4,806 against 4,797 ms). Its \code{fair} endings at 10 and 15 s did not repeat there; that run's six-minute cooldowns were longer than the main run's three. On the A14 MLX stayed \code{nominal} through 15 s and was killed at 30 s. The previous pipeline also heated the A14: its 30 s cell (R0, Table~\ref{tab:cs1-ablation}) ended at \code{serious}. Two cautions bound this finding. First, it compares the heat of the same work, not of the same time: MLX needs 9--15$\times$ longer for the same 14 syntheses, so the phone runs it longer. Second, the thermal state is a coarse four-level signal, observed once per cell, and we have no power measurements for Kokoro (\S\ref{sec:disc-limitations}); we therefore do not claim an energy saving. A paired power capture of the two pipelines on the same work is the experiment that would.
 
 \subsubsection{Where the gain comes from: a cumulative ablation}\label{sec:cs1-ablation}
 
@@ -470,7 +516,7 @@ Failures shaped the pipeline as much as successes. In Kokoro: a monolithic expor
 
 \subsection{When Surgical Inference Is Worth It}\label{sec:disc-worth}
 
-The method costs real engineering: per-bucket exports with validation, native DSP, per-stage ablations, a disciplined benchmark harness. It pays when the workload is compute-bound and has distinct stages (vocoders, codecs, image decoders, speech encoders), when it must run across a range of devices --- the margin is largest on base chips and phones, where GPU frameworks fail outright (in October 2026, PyTorch MPS failed the 15 s and 30 s inputs on every Mac and kokoro-ios was killed for memory on the 4 GB phone) --- and when the GPU is needed for something else. It pays least for large language models, whose cost is weight bandwidth (\S\ref{sec:cs2-bandwidth}), and for small models where framework overhead is already negligible.
+The method costs real engineering: per-bucket exports with validation, native DSP, per-stage ablations, a disciplined benchmark harness. It pays when the workload is compute-bound and has distinct stages (vocoders, codecs, image decoders, speech encoders), when it must run across a range of devices --- the margin is largest on base chips and phones, where GPU frameworks fail outright (in October 2026, PyTorch MPS failed the 15 s and 30 s inputs on every Mac and kokoro-ios was killed for memory on the 6 GB iPhone 12 Pro) --- and when the GPU is needed for something else. It pays least for large language models, whose cost is weight bandwidth (\S\ref{sec:cs2-bandwidth}), and for small models where framework overhead is already negligible.
 
 \subsection{Limitations}\label{sec:disc-limitations}
 
@@ -496,7 +542,7 @@ The method costs real engineering: per-bucket exports with validation, native DS
 
 \section{Conclusion}\label{sec:conclusion}
 
-The ANE rejected Kokoro's vocoder, and the rejection turned out to be about one axis's length. Folding that axis into rows, without changing the math, put the vocoder on the ANE; splitting each stage by op class between the ANE and the GPU made it fast. The result synthesizes 27 s of speech in 309 ms on an M1 Mac Mini, 9.8$\times$ faster than MLX on the same machine, and in 319 ms on an iPhone 15 Pro Max. The same procedure carried a 230M-parameter streaming music model onto a phone, faster than real time in bounded runs though not yet in a 10-minute soak, and found the same pattern twice more: state mutation, not attention, was the compile cliff, and layout decided whether FP16 output was finite.
+The ANE rejected Kokoro's vocoder, and the rejection turned out to be about one axis's length. Folding that axis into rows, without changing the math, put the vocoder on the ANE; splitting each stage by op class between the ANE and the GPU made it fast. The result synthesizes 27 s of speech in 309 ms on an M1 Mac Mini, 9.8$\times$ faster than MLX on the same machine, and in 319 ms on an iPhone 15 Pro Max, with about half of MLX's memory on the Mac and without warming the phone, where MLX on the same work reached thermal throttling. The same procedure carried a 230M-parameter streaming music model onto a phone, faster than real time in bounded runs though not yet in a 10-minute soak, and found the same pattern twice more: state mutation, not attention, was the compile cliff, and layout decided whether FP16 output was finite.
 
 The useful question for on-device AI is not ``which accelerator should run this model?'' It is ``what is the smallest set of static packages and native kernels --- each reshaped until its engine admits it --- that lets the whole chip do the work?''
 

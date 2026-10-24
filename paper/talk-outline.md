@@ -24,6 +24,7 @@ put the vocoder on the Neural Engine and made 27 s of speech take 309 ms on an M
 | 6 | One stage, two engines | Convolutions on the ANE, AdaIN and Snake on the GPU, shared IOSurface memory, both busy at once | A14 trace: ANE 292 ms and GPU 268 ms inside a 375 ms span, both busy for 192 ms |
 | 7 | The result | 27 s of speech in 309 ms on an M1 Mac Mini (9.8× MLX) and 319 ms on an iPhone 15 Pro Max; MLX is killed for memory at 30 s on the iPhone 12 Pro | Regenerated `fig-cs1-latency.pdf` |
 | 8 | Where the speed came from | A14 at 30 s: folding gives 63% of the gain, the hybrid split 32%; on the M2 Air the split gives 57% | Ablation ladder bars R0→R4 (new) |
+| 8b | Half the memory, no heat | Mac: 1.9-4.4x less peak memory than MLX. iPhone 15 Pro Max: our runs end thermally nominal; MLX on the same 14 clips ends at serious (throttling). Same work, not same time; no power data yet | Memory table + thermal table (tab:cs1-memory, tab:cs1-thermal) |
 | 9 | Music in real time: a 40 ms clock that never stops | Streaming changes the metric from median to p99 | `figures/fig-mrt2-pipeline.pdf` |
 | 10 | State mutation is the ANE cliff | The full 12-layer stack with caches in and updates out is ANE-clean; mutating state in-graph fails to compile | `figures/fig-ane-ladder.pdf` |
 | 11 | Layout decides NaN vs music | Same FP16 decoder: finite on the ANE, NaN on CPU and GPU | Per-engine bar + finite marker (new) |

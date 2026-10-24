@@ -40,7 +40,7 @@ Peak memory for one synthesis, same run and same inputs as the latency table:
 | 10s | 263 MB | 199 MB | 655 MB | 349 MB |
 | 15s | 275 MB | 247 MB | 869 MB | 500 MB |
 | 30s (27.4 s input) | **434 MB** | **375 MB** | **1,338 MB** | **831 MB** |
-| **vs MLX** | **1.9-3.3x less** | **2.1-4.4x less** | **2.9-4.8x less** | **4.9-19x less**; MLX runs out of memory at 30 s |
+| **vs MLX** | **1.9-3.3x less** | **2.1-4.4x less** | **2.4-4.8x less** | **4.9-19x less**; MLX runs out of memory at 30 s |
 
 On a Mac this pipeline uses about half of MLX's memory at 30 s (434 vs 815 MB on the M2 Ultra, 375 vs 801 MB on the M1 Mini), and far less on short clips.
 
@@ -56,9 +56,11 @@ iOS thermal state at the end of each run of 14 back-to-back syntheses of the sam
 | --- | --- | --- | --- | --- |
 | 3s | nominal | nominal | nominal | nominal |
 | 7s | nominal | nominal | nominal | nominal |
-| 10s | nominal | fair | nominal | nominal |
-| 15s | nominal | fair | nominal | nominal |
+| 10s | nominal | fair\* | nominal | nominal |
+| 15s | nominal | fair\* | nominal | nominal |
 | 30s | nominal | **serious** (throttled) | nominal | killed (out of memory) |
+
+\* In a second run with longer cooldowns between launches, MLX ended 10 s and 15 s at `nominal`, and again ended 30 s at `serious`, with the same speed (4,806 vs 4,797 ms).
 
 This pipeline never warmed either phone. MLX did, because it works 10-15x longer for the same speech: by the end of its 30 s run on the iPhone 15 Pro Max, iOS was throttling it (`serious`).
 
@@ -182,7 +184,7 @@ kokoro-coreml/
 
 ## Per-device detail
 
-Every device in the October 23, 2026 run, at every clip length: latency and peak memory for this pipeline next to MLX on the same device, same text and same session. Latency is the warm median. Peak memory is the process's peak resident memory on Macs and the app's peak memory footprint on iPhones. The one blank cell, MLX's memory at 30 s on the iPhone 15 Pro Max, is still being measured; iPhone MLX memory was measured later the same day with the same metric.
+Every device in the October 23, 2026 run, at every clip length: latency and peak memory for this pipeline next to MLX on the same device, same text and same session. Latency is the warm median. Peak memory is the process's peak resident memory on Macs and the app's peak memory footprint on iPhones. iPhone MLX memory was measured later the same day with the same metric; this pipeline's memory, re-measured in that session, matched within 1.4%.
 
 ### M2 Ultra Mac Studio
 
@@ -212,7 +214,7 @@ Every device in the October 23, 2026 run, at every clip length: latency and peak
 | 7s | 103 ms | 1,227 ms | **11.9x** | 551 MB | 1,791 MB | **3.3x** |
 | 10s | 156 ms | 1,717 ms | **11.0x**\* | 655 MB | 2,045 MB | **3.1x** |
 | 15s | 224 ms | 2,319 ms | **10.4x**\* | 869 MB | 2,481 MB | **2.9x** |
-| 30s (27.4 s input) | 319 ms | 4,797 ms | **15.1x**\* | 1,338 MB |  |  |
+| 30s (27.4 s input) | 319 ms | 4,797 ms | **15.1x**\* | 1,338 MB | 3,192 MB | **2.4x** |
 
 ### iPhone 12 Pro (A14)
 
