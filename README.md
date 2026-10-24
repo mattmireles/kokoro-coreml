@@ -1,5 +1,5 @@
 # Kokoro TTS: Surgically Optimized for Apple Silicon
-**15.1x faster than MLX on iPhone 15 Pro Max –  while using 2.1x less RAM.** MLX was measured on the same iPhone, with the same text, same 27 sec audio duration.
+**15.1x faster than MLX on iPhone 15 Pro Max –  while using 2.4x less RAM.** MLX was measured on the same iPhone, with the same text, same 27 sec audio duration.
 
 [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) running on the Apple Neural Engine through Core ML. No Python, no server, no API key. The model is cut at its seams, and each stage runs on the part of the chip that suits it. That includes the vocoder, which the Neural Engine rejects as exported; a reshape that leaves its math unchanged gets it in.
 
