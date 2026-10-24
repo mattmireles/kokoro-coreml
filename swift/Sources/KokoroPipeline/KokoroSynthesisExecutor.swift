@@ -155,6 +155,11 @@ private func flexibleXPreTime(_ model: MLModel, realFrames: Int) throws -> Int? 
                                 granule: PipelineConstants.flexibleXPreGranuleFrames, stage: "generator")
 }
 
+/// HybridGenerator owns fixed IOSurface tensors and an arena, so two concurrent
+/// `synthesize` calls on one instance corrupt each other (non-finite audio).
+/// The SDK never overlaps them; this guards other callers of the public executor.
+private let hybridSynthesisLock = NSLock()
+
 public func executeKokoroSynthesis(
     request: KokoroSynthesisRequest,
     modelProvider: KokoroModelProvider,
@@ -470,6 +475,8 @@ private func executeKokoroSynthesisBody(
     if #available(macOS 15.0, iOS 18.0, *), let hybrid = hybridGen as? HybridGenerator {
         hybridStart = CFAbsoluteTimeGetCurrent()
         do {
+            hybridSynthesisLock.lock()
+            defer { hybridSynthesisLock.unlock() }
             hybridAudio = try hybrid.synthesize(xPre: xPre, validXPreFrames: originalF0Len, har: harFlat,
                                                 harFrames: harFrames, refS: request.refS)
         } catch {
@@ -646,6 +653,18 @@ private func validTokenCount(predDurTokenCount: Int, attentionMask: [Int32]) -> 
     min(predDurTokenCount, attentionMask.reduce(0) { $0 + ($1 == 0 ? 0 : 1) })
 }
 
+/// Test hook: the duration model's input features, padded to `choice.tokenLength`.
+public func makeDurationInputFeatures(
+    inputIds: [Int32],
+    attentionMask: [Int32],
+    refS: [Float],
+    speed: Float,
+    choice: DurationModelChoice
+) throws -> MLFeatureProvider {
+    try buildDurationInput(inputIds: inputIds, attentionMask: attentionMask, refS: refS,
+                           speed: speed, choice: choice).provider
+}
+
 private func buildDurationInput(
     inputIds: [Int32],
     attentionMask: [Int32],
@@ -661,13 +680,18 @@ private func buildDurationInput(
     let refSArray = try makeZeroArray2D(dim: PipelineConstants.voiceEmbeddingDim)
     let speedArray = try MLMultiArray(shape: [1], dataType: .float32)
 
+    // MLMultiArray(shape:dataType:) does not zero its buffer. When the real
+    // token count is shorter than the padded length, the tail would hold stale
+    // heap (often an earlier request's ids, mask 1) and shift every duration.
     let idsPtr = idsArray.dataPointer.assumingMemoryBound(to: Int32.self)
+    idsPtr.initialize(repeating: 0, count: tokenLength)
     let refSPtr = refSArray.dataPointer.assumingMemoryBound(to: Float.self)
     for i in 0..<min(inputIds.count, tokenLength) {
         idsPtr[i] = inputIds[i]
     }
     if let maskArray {
         let maskPtr = maskArray.dataPointer.assumingMemoryBound(to: Int32.self)
+        maskPtr.initialize(repeating: 0, count: tokenLength)
         for i in 0..<min(attentionMask.count, tokenLength) {
             maskPtr[i] = attentionMask[i]
         }
