@@ -20,8 +20,7 @@ tags:
 
 [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) running on the Apple Neural Engine through Core ML. No Python, no server, no API key. The model is cut at its seams, and each stage runs on the part of the chip that suits it. That includes the vocoder, which the Neural Engine rejects as exported; a reshape that leaves its math unchanged gets it in.
 
-> **Pre-converted models:** [huggingface.co/mattmireles/kokoro-coreml](https://huggingface.co/mattmireles/kokoro-coreml)
-> **Paper:** [`paper/main.pdf`](https://github.com/mattmireles/kokoro-coreml/blob/main/paper/main.pdf)
+> **Source code, Swift SDK and benchmarks:** [github.com/mattmireles/kokoro-coreml](https://github.com/mattmireles/kokoro-coreml) · **Paper:** [PDF](https://github.com/mattmireles/kokoro-coreml/blob/main/paper/main.pdf)
 
 ## Performance
 
