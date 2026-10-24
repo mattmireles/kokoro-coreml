@@ -245,4 +245,6 @@ Every device in the October 23, 2026 run, at every clip length: latency and peak
 
 Built on [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) by [hexgrad](https://huggingface.co/hexgrad), [StyleTTS 2](https://github.com/yl4579/StyleTTS2) by [@yl4579](https://huggingface.co/yl4579), [MisakiSwift](https://github.com/mattmireles/MisakiSwift), and Apple's coremltools.
 
+Thanks to Apple's Core ML team for fixing a kernel bug we reported in August 2025: Kokoro's LSTM stages crashed intermittently inside Core ML's CPU compute kernels (BNNS), which stalled this work until macOS 26.2 fixed it.
+
 Run it on your Mac. [Tell us how fast it is.](https://discord.gg/QuGxSWBfQy)
