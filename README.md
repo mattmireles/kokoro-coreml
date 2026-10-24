@@ -60,9 +60,9 @@ iOS thermal state at the end of each run of 14 back-to-back syntheses of the sam
 | 15s | nominal | fair\* | nominal | nominal |
 | 30s | nominal | **serious** (throttled) | nominal | killed (out of memory) |
 
-\* In a second run with longer cooldowns between launches, MLX ended 10 s and 15 s at `nominal`, and again ended 30 s at `serious`, with the same speed (4,806 vs 4,797 ms).
+\* In a second run, MLX ended 10 s and 15 s at `nominal`, and again ended 30 s at `serious`, with the same speed (4,806 vs 4,797 ms).
 
-This pipeline never warmed either phone. MLX did, because it works 10-15x longer for the same speech: by the end of its 30 s run on the iPhone 15 Pro Max, iOS was throttling it (`serious`).
+This pipeline ended every run at `nominal` on both phones. MLX did, because it works 10-15x longer for the same speech: by the end of its 30 s run on the iPhone 15 Pro Max, iOS was throttling it (`serious`).
 
 - **The four states:** `nominal`, `fair`, `serious` and `critical` are iOS's own reading ([`ProcessInfo.thermalState`](https://developer.apple.com/documentation/foundation/processinfo/thermalstate)), recorded at each call. They are not temperatures.
 - **The old pipeline heated phones too:** before the vocoder moved to the Neural Engine, the iPhone 12 Pro ended its 30 s run at `serious`.
