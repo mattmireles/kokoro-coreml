@@ -16,7 +16,7 @@ tags:
 ---
 
 # Kokoro TTS: Surgically Altered for Speed on Apple Silicon
-**15.1x faster than MLX on iPhone 15 Pro Max – while using 2.4x less RAM.** MLX was measured on the same iPhone, with the same text, same 27 sec audio duration.
+**15.1x faster than MLX on iPhone 15 Pro Max – while using 58% less RAM (1,338 MB vs 3,192 MB).** MLX was measured on the same iPhone, with the same text, same 27 sec audio duration.
 
 [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) running on all three of Apple Silicon's key compute components (Neural Engine, GPU and CPU) through Core ML. No Python, no server, no API key. The model is cut into pieces at its seams, and each stage runs on the chip that suits it. That includes the vocoder, which the Neural Engine rejects as exported; a reshape that leaves its math unchanged gets it in.
 
@@ -59,9 +59,9 @@ Peak memory for one synthesis, same run and same inputs as the latency table:
 | 10s | 263 MB | 199 MB | 655 MB | 349 MB |
 | 15s | 275 MB | 247 MB | 869 MB | 500 MB |
 | 30s (27.4 s input) | **434 MB** | **375 MB** | **1,338 MB** | **831 MB** |
-| **vs MLX** | **1.9-3.3x less** | **2.1-4.4x less** | **2.4-4.8x less** | **4.9-19x less**; MLX runs out of memory at 30 s |
+| **vs MLX** | **47-70% less** | **53-77% less** | **58-79% less** | **80-95% less**; MLX runs out of memory at 30 s |
 
-On a Mac this pipeline uses about half of MLX's memory at 30 s (434 vs 815 MB on the M2 Ultra, 375 vs 801 MB on the M1 Mini), and far less on short clips.
+Percent less is (MLX − this pipeline) / MLX, rounded to the nearest percent, on the clips MLX completed. At 30 s on a Mac that is 47% less on the M2 Ultra (434 vs 815 MB) and 53% less on the M1 Mini (375 vs 801 MB). At 7 s the cut is 70% and 77%.
 
 - **What's counted:** on Macs, the peak resident memory of a fresh process doing one synthesis; on iPhones, the app's peak memory footprint over the whole run.
 - **Where the memory goes on iPhone:** the hybrid generator, used at 7 s and longer, buys its speed with memory. If memory matters more than speed, set `KOKORO_HYBRID_GENERATOR=0` to use the all-ANE generator everywhere. At 30 s it peaks at 780 MB on the iPhone 15 Pro Max and 284 MB on the iPhone 12 Pro, but takes 2.5-3.2x longer.
@@ -205,53 +205,53 @@ Every device in the October 23, 2026 run, at every clip length: latency and peak
 
 ### M2 Ultra Mac Studio
 
-| Audio | Latency | MLX | Faster | Peak memory | MLX | Less memory |
+| Audio | Latency | MLX | Faster | Peak memory | MLX | % less |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | 3s | 74 ms | fails | -- | 144 MB | -- | -- |
-| 7s | 54 ms | 189 ms | **3.5x** | 235 MB | 786 MB | **3.3x** |
-| 10s | 71 ms | 273 ms | **3.9x** | 263 MB | 796 MB | **3.0x** |
-| 15s | 89 ms | 340 ms | **3.8x** | 275 MB | 791 MB | **2.9x** |
-| 30s (27.4 s input) | 159 ms | 770 ms | **4.8x** | 434 MB | 815 MB | **1.9x** |
+| 7s | 54 ms | 189 ms | **3.5x** | 235 MB | 786 MB | **70%** |
+| 10s | 71 ms | 273 ms | **3.9x** | 263 MB | 796 MB | **67%** |
+| 15s | 89 ms | 340 ms | **3.8x** | 275 MB | 791 MB | **65%** |
+| 30s (27.4 s input) | 159 ms | 770 ms | **4.8x** | 434 MB | 815 MB | **47%** |
 
 ### M1 Mac Mini
 
-| Audio | Latency | MLX | Faster | Peak memory | MLX | Less memory |
+| Audio | Latency | MLX | Faster | Peak memory | MLX | % less |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | 3s | 95 ms | fails | -- | 134 MB | -- | -- |
-| 7s | 99 ms | 801 ms | **8.1x** | 177 MB | 771 MB | **4.4x** |
-| 10s | 124 ms | 1,103 ms | **8.9x** | 199 MB | 777 MB | **3.9x** |
-| 15s | 169 ms | 1,542 ms | **9.2x** | 247 MB | 782 MB | **3.2x** |
-| 30s (27.4 s input) | 309 ms | 3,015 ms | **9.8x** | 375 MB | 801 MB | **2.1x** |
+| 7s | 99 ms | 801 ms | **8.1x** | 177 MB | 771 MB | **77%** |
+| 10s | 124 ms | 1,103 ms | **8.9x** | 199 MB | 777 MB | **74%** |
+| 15s | 169 ms | 1,542 ms | **9.2x** | 247 MB | 782 MB | **68%** |
+| 30s (27.4 s input) | 309 ms | 3,015 ms | **9.8x** | 375 MB | 801 MB | **53%** |
 
 ### iPhone 15 Pro Max (A17 Pro)
 
-| Audio | Latency | MLX | Faster | Peak memory | MLX | Less memory |
+| Audio | Latency | MLX | Faster | Peak memory | MLX | % less |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 3s | 62 ms | 551 ms | **8.9x** | 255 MB | 1,219 MB | **4.8x** |
-| 7s | 103 ms | 1,227 ms | **11.9x** | 551 MB | 1,791 MB | **3.3x** |
-| 10s | 156 ms | 1,717 ms | **11.0x**\* | 655 MB | 2,045 MB | **3.1x** |
-| 15s | 224 ms | 2,319 ms | **10.4x**\* | 869 MB | 2,481 MB | **2.9x** |
-| 30s (27.4 s input) | 319 ms | 4,797 ms | **15.1x**\* | 1,338 MB | 3,192 MB | **2.4x** |
+| 3s | 62 ms | 551 ms | **8.9x** | 255 MB | 1,219 MB | **79%** |
+| 7s | 103 ms | 1,227 ms | **11.9x** | 551 MB | 1,791 MB | **69%** |
+| 10s | 156 ms | 1,717 ms | **11.0x**\* | 655 MB | 2,045 MB | **68%** |
+| 15s | 224 ms | 2,319 ms | **10.4x**\* | 869 MB | 2,481 MB | **65%** |
+| 30s (27.4 s input) | 319 ms | 4,797 ms | **15.1x**\* | 1,338 MB | 3,192 MB | **58%** |
 
 ### iPhone 12 Pro (A14)
 
-| Audio | Latency | MLX | Faster | Peak memory | MLX | Less memory |
+| Audio | Latency | MLX | Faster | Peak memory | MLX | % less |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 3s | 98 ms | 911 ms | **9.3x** | 61 MB | 1,182 MB | **19.3x** |
-| 7s | 145 ms | 2,050 ms | **14.2x** | 282 MB | 1,758 MB | **6.2x** |
-| 10s | 186 ms | 2,814 ms | **15.2x** | 349 MB | 2,006 MB | **5.7x** |
-| 15s | 261 ms | 3,951 ms | **15.1x** | 500 MB | 2,444 MB | **4.9x** |
+| 3s | 98 ms | 911 ms | **9.3x** | 61 MB | 1,182 MB | **95%** |
+| 7s | 145 ms | 2,050 ms | **14.2x** | 282 MB | 1,758 MB | **84%** |
+| 10s | 186 ms | 2,814 ms | **15.2x** | 349 MB | 2,006 MB | **83%** |
+| 15s | 261 ms | 3,951 ms | **15.1x** | 500 MB | 2,444 MB | **80%** |
 | 30s (27.4 s input) | 480 ms | out of memory | -- | 831 MB | -- | -- |
 
 ### M2 MacBook Air
 
-| Audio | Latency | MLX | Faster | Peak memory | MLX | Less memory |
+| Audio | Latency | MLX | Faster | Peak memory | MLX | % less |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | 3s | 73 ms | fails | -- | 135 MB | -- | -- |
-| 7s | 72 ms | 1,432 ms | **19.9x** | 183 MB | 780 MB | **4.3x** |
-| 10s | 240 ms | 1,818 ms | **7.6x** | 206 MB | 785 MB | **3.8x** |
-| 15s | 273 ms | 2,426 ms | **8.9x** | 251 MB | 789 MB | **3.1x** |
-| 30s (27.4 s input) | 377 ms | 5,187 ms | **13.7x** | 376 MB | 806 MB | **2.1x** |
+| 7s | 72 ms | 1,432 ms | **19.9x** | 183 MB | 780 MB | **77%** |
+| 10s | 240 ms | 1,818 ms | **7.6x** | 206 MB | 785 MB | **74%** |
+| 15s | 273 ms | 2,426 ms | **8.9x** | 251 MB | 789 MB | **68%** |
+| 30s (27.4 s input) | 377 ms | 5,187 ms | **13.7x** | 376 MB | 806 MB | **53%** |
 
 - **\* Upper bound:** MLX ended these runs hot (`fair` or `serious`) and was being throttled.
 - **Mac rows are upper bounds:** no Mac reached the quiet-host gate.
