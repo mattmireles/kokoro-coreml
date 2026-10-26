@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate fig-power.pdf: Section 6.7 paired power comparison on A14.
+"""Generate fig-power.pdf: Section 5.5 paired power comparison on A14.
 
 Four small paired-bar panels (one per metric, native units) contrasting the
 all-ANE temporal policy against the temporal-GPU control. Identical graphs and
@@ -7,10 +7,10 @@ workload; only the temporal stage's compute policy varied; 60 s capture. The
 contrast to make unmissable: GPU impact goes to zero and CPU instructions roughly
 halve under the ANE policy.
 
-data: main.tex Section 6.7 "Power" paragraph. iPhone 12 Pro (A14),
+data: main.tex Section 5.5 "Power" paragraph. iPhone 12 Pro (A14),
 Power Profiler paired capture.
-  gpuImpact:            ANE 0.000  vs  GPU 2.23
-  cpuImpact:            ANE 1.38   vs  GPU 2.63
+  gpuImpact:            ANE 0.000  vs  GPU 2.231
+  cpuImpact:            ANE 1.380  vs  GPU 2.625
   CPU instructions:     ANE 48.1 B vs  GPU 110.3 B (over 60 s)
   producer duty cycle:  ANE 57%    vs  GPU 93%   (ANE sleeps 43% under backpressure)
 
@@ -35,8 +35,8 @@ plt.rcParams.update({
 
 # metric label, unit label, ANE value, GPU value, value format
 PANELS = [
-    ("GPU impact",        "process gpuImpact",       0.000, 2.23,  "{:.2f}"),
-    ("CPU impact",        "process cpuImpact",       1.38,  2.63,  "{:.2f}"),
+    ("GPU impact",        "process gpuImpact",       0.000, 2.231, "{:.3f}"),
+    ("CPU impact",        "process cpuImpact",       1.380, 2.625, "{:.3f}"),
     ("CPU instructions",  "billions, 60 s",          48.1,  110.3, "{:.1f}"),
     ("Producer duty",     "% wall-clock active",     57.0,  93.0,  "{:.0f}%"),
 ]

@@ -36,10 +36,10 @@ encoding.
 | File | Type | Data source | Generator |
 |------|------|-------------|-----------|
 | `fig-kokoro-pipeline.pdf` | TikZ | §4.1 + Table `tab:cs1-placement` (shipped placement) + §`sec:cs1-hybrid` (hybrid generator) | `fig-kokoro-pipeline.tex` |
-| `fig-mrt2-pipeline.pdf` | TikZ | §6.2 (per-frame loop) + §6.7 (placement, per-stage ms) + §6.1 (40 ms deadline) | `fig-mrt2-pipeline.tex` |
+| `fig-mrt2-pipeline.pdf` | TikZ | §5 (streaming loop) + §5.5 / Table `tab:cs2-sustain` (placement, per-stage ms) | `fig-mrt2-pipeline.tex` |
 | `fig-cs1-latency.pdf` | matplotlib | Tables `tab:cs1-mac` + `tab:cs1-iphone` (plan 014 rerun; Surgical vs MLX) | `src/fig_cs1_latency.py` |
-| `fig-ane-ladder.pdf` | matplotlib | §6.3 (falsification ladder table) | `src/fig_ane_ladder.py` |
-| `fig-power.pdf` | matplotlib | §6.7 (A14 paired power) | `src/fig_power.py` |
+| `fig-ane-ladder.pdf` | matplotlib | §5.1 (falsification ladder table) | `src/fig_ane_ladder.py` |
+| `fig-power.pdf` | matplotlib | §5.5 (A14 paired power) | `src/fig_power.py` |
 
 ## Draft captions
 
@@ -56,13 +56,12 @@ on the ANE and AdaIN, Snake and branch joins in Metal on the GPU, sharing IOSurf
 memory without copies. Below 7 s, and as the fallback if Metal fails, a folded all-ANE
 generator runs instead. The iSTFT tail and trim run in Swift.*
 
-**fig-mrt2-pipeline** — *The Magenta RealTime 2 per-frame streaming loop. Every frame
-must complete within the 40 ms (25 Hz) audio deadline, which never pauses. Audio-rate
-tensors never enter a Core ML graph — the codec decoder stops at STFT-rate features and
-the host synthesizes PCM — and the three Core ML stages ship on three different engines
-(temporal on GPU, depth rollout FP16 on CPU, NCHW codec decoder on ANE; per-stage p50
-on A17 Pro shown). Generation runs ahead of playback through a lock-free SPSC ring feeding
-an `AVAudioSourceNode`; the render callback never blocks on the model.*
+**fig-mrt2-pipeline** — *The MRT2 streaming loop on the A17 Pro: temporal step on
+the ANE, depth rollout (FP16) on the CPU, codec decoder on the ANE (the A14 requests an
+FP32 decoder instead). The host (Swift and a C++ render core) owns the K/V ring,
+sampling noise, codebook summation and iSTFT. Stage costs are iteration-normalized p50s over a 610 s run, in ms per frame
+(decoder amortized over one 25-frame call per 12 frames). The producer must average at
+least 25 frames/s; the render callback never blocks on the model.*
 
 **fig-cs1-latency** — *Kokoro-82M end-to-end latency, the shipped Surgical pipeline
 (hybrid generator, folded below 7 s) vs. MLX, warm medians across five input buckets on
@@ -73,20 +72,17 @@ and~\ref{tab:cs1-iphone}). The Surgical pipeline is faster on every completed ce
 input with a broadcast-shape error, and the memory watchdog kills kokoro-ios at 30 s on
 the 4 GB A14.*
 
-**fig-ane-ladder** — *The falsification ladder that located the ANE admission cliff for
-streaming transformers (p99 per frame, iPhone 12 Pro / A14, FP16; §6.3). Every rung is
-ANE-clean (ANE cost share 1.000) and the ANE placement beats both CPU-only and CPU+GPU —
-including the complete 12-layer stack with all 48 K/V caches read in and 48 one-token
-updates written out, at 15.0 ms. The one thing that must be absent is in-graph cache
-mutation: attention, softmax, concatenation, and update outputs are all admissible; the
-state write is the cliff.*
+**fig-ane-ladder** — *The falsification ladder (A14, FP16, p99 per call; §5.1). Every
+rung is ANE-clean, and the ANE matches or beats CPU-only on every rung and beats CPU+GPU
+by 1.8–6.3×, except on the attention-only rung, whose CPU+GPU arm Core ML ran on the
+CPU; this holds up to the complete 12-layer stack with all caches read in and all
+updates written out. The one thing that must be absent is in-graph cache mutation.*
 
-**fig-power** — *Paired power comparison on the A14 (iPhone 12 Pro), all-ANE temporal
-policy vs. a temporal-GPU control running identical graphs over 60 s (§6.7). The ANE
-policy eliminates process-attributed GPU impact entirely (2.23 → 0.000) and cuts CPU
-instructions by 56% (110.3 B → 48.1 B), while the producer's duty cycle drops from 93%
-to 57% — it finishes each second of audio fast enough to sleep 43% of the run under
-backpressure.*
+**fig-power** — *Paired power comparison on the A14, all-ANE temporal policy vs a
+temporal-GPU control, identical graphs, 60 s (§5.5). The ANE policy removes process GPU
+impact (2.231 → 0.000) and cuts CPU instructions by 56%; producer duty comes from a
+separate 60 s run of the same build. The build predates the correctness fixes, and the
+A17 Pro pair, which may have run a stale app bundle, did not separate.*
 
 ## Notes / deviations from spec
 
@@ -99,10 +95,10 @@ backpressure.*
   (Duration, F0Ntrain, Generator), with a dashed divider below each centered title.
   The Generator's GPU half is Metal, not Core ML, so the legend has a separate
   "Metal (GPU)" entry. No Core ML stage ships on CPU+GPU any more.
-- **fig-mrt2-pipeline** annotates each Core ML stage with its **shipped** per-frame p50
-  from §6.7 (temporal 12.2 / depth 8.4 / decoder 8.3 ms, A17 Pro) and labels temporal
-  placement as CPU+GPU (shipped) with "ANE provable, §6.3" — matching the paper's honest
-  "what ships vs. what was proven" framing rather than implying temporal ships on ANE.
+- **fig-mrt2-pipeline** annotates each Core ML stage with its A17 Pro
+  iteration-normalized p50 per frame from the 610 s context-12 run (temporal 11.2 /
+  depth 9.8 / decoder 2.3 ms; Table `tab:cs2-sustain`), and shows the July 2026
+  placement: stateless one-frame temporal step and decoder on the ANE, depth on CPU.
 - **fig-power** is rendered as four native-unit panels rather than one normalized chart,
   because the four metrics have incommensurable units (impact score, billions of
   instructions, percent); normalizing would hide the absolute magnitudes the paper quotes.

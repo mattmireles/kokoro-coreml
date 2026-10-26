@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Generate fig-ane-ladder.pdf: the Section 6.3 falsification ladder (money figure).
+"""Generate fig-ane-ladder.pdf: the Section 5.1 falsification ladder (money figure).
 
-Horizontal grouped bars: p99 frame time per rung (7 rungs) x three compute-unit
+Horizontal grouped bars: p99 per-call time per rung (7 rungs) x three compute-unit
 policies (ANE / CPU-only / CPU+GPU). Every rung is ANE-clean (ANE cost share 1.000);
 the story to make legible is that even the full 12-layer stack with 48 caches-in /
 48 one-token-updates-out compiles ANE-resident and lands at 15.0 ms, beating both
 CPU-only and CPU+GPU -- provided in-graph cache mutation is absent.
 
-data: main.tex Section 6.3 ladder table. iPhone 12 Pro (A14), FP16,
+data: main.tex Section 5.1 ladder table. iPhone 12 Pro (A14), FP16,
 p99 ms over warmed runs, MLComputePlan placement evidence. Every rung: ANE cost
 share 1.000.
 
@@ -30,7 +30,7 @@ plt.rcParams.update({
     "ytick.major.width": 0.6,
 })
 
-# --- Data (main.tex Section 6.3). p99 ms, A14, FP16. ----------
+# --- Data (main.tex Section 5.1). p99 ms, A14, FP16. ----------
 # Order top->bottom follows the ladder's build-up; the headline full stack is last.
 RUNGS = [
     "12-layer FFN stack, stateless",
@@ -70,7 +70,7 @@ for yi, va, vc, vg in zip(y, P99_ANE, P99_CPU, P99_CPU_GPU):
 
 ax.set_yticks(y)
 ax.set_yticklabels(RUNGS, fontsize=7.2)
-ax.set_xlabel("p99 frame time (ms) -- iPhone 12 Pro (A14), FP16", fontsize=8)
+ax.set_xlabel("p99 per call (ms) -- iPhone 12 Pro (A14), FP16", fontsize=8)
 ax.set_xlim(0, 30)
 ax.grid(axis="x", linewidth=0.3, alpha=0.35, zorder=0)
 ax.tick_params(labelsize=7)
