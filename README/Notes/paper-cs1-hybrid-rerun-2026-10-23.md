@@ -192,6 +192,49 @@ generator on the same inputs (`quality_014.py`), and equal predicted frames.
 Paused for the runs, restored to the prior override: m2-studio `paused` (as
 found), m2-air `paused` (as found), irvine-m1 `dedicated`.
 
+## Disk custody (2026-10-28)
+
+`~/kokoro-014` on the M2 Studio was the working directory for this rerun. The
+pieces that already had a home were not copied again. The pieces that existed
+only on that disk are on R2.
+
+Already kept elsewhere:
+
+- Frozen packages: Hugging Face `mattmireles/kokoro-coreml` at `e65729b9`.
+- Summarized matrix, RAM, placement, quality, and harness scripts:
+  `paper/data/frozen_rerun_014/`.
+- Bench inputs: `outputs/swift_bench_inputs/` in this repo.
+
+R2 prefix:
+
+`r2-model-archive:oasis-corpus/local-disk-mirror/home-20261028/kokoro-014/`
+
+- `outputs/power_014/` — paired powermetrics run from 2026-10-23. Surgical
+  hybrid vs MLX, same 27.4 s input, energy per synthesis =
+  (E[30 iterations] − E[5 iterations]) / 25. `power_summary.json` verdict is
+  `surgical lower`. Per synthesis: surgical 3.22 J then 0.79 J; MLX 22.52 J
+  then 21.82 J. MLX/surgical ratio 11.06. The raw trace is
+  `m2-studio/pm.plist`.
+- `power_driver.sh` and `power_analyze.py` — the runner and the summary script.
+- `outputs/frozen_rerun_014/m2-studio/` — raw WAVs and RAM logs. The repo copy
+  of that directory has the timing logs only.
+- `outputs/external_bakeoff/` — the small bakeoff WAVs and JSON from this
+  directory.
+
+Not copied, and not needed as a second archive: `models_014` and
+`models_014_r01` (the Hugging Face upload above), `swift/.build`, and
+`scripts/` (this repo at `903f1fc1`).
+
+Restore:
+
+```bash
+rclone copy r2-model-archive:oasis-corpus/local-disk-mirror/home-20261028/kokoro-014/ ~/kokoro-014-from-r2/
+```
+
+`rclone check --download --one-way` on 2026-10-28 reported 0 differences
+(27 power files, 55 frozen-rerun files, 6 bakeoff files, and the two scripts).
+`~/kokoro-014` was then removed from the Studio.
+
 ## Not measured
 
 - The SDK's own provider paths (`KokoroSDKModelProvider` hybrid, split, fold):
