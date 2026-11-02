@@ -127,7 +127,7 @@ Figure~\ref{fig:kokoro-pipeline} shows the decomposed pipeline: four Core ML mod
 
 \begin{figure}[H]
 \centering
-\IfFileExists{figures/fig-kokoro-pipeline.pdf}{\includegraphics[width=0.8\linewidth]{fig-kokoro-pipeline}}{\pendingfig{fig-kokoro-pipeline}}
+\IfFileExists{figures/fig-kokoro-pipeline.pdf}{\includegraphics[width=0.8\linewidth,height=0.55\textheight,keepaspectratio]{fig-kokoro-pipeline}}{\pendingfig{fig-kokoro-pipeline}}
 \caption{The decomposed Kokoro-82M pipeline: four Core ML model families and three native Swift stages. Color is placement. Duration and F0Ntrain are split between the CPU and the ANE; the generator runs its convolutions on the ANE and its normalization and activations on the GPU (hybrid, 7 s and longer) or entirely on the ANE (folded, below 7 s). DecoderPre and the hn-nsf harmonic source run concurrently on different engines.}
 \label{fig:kokoro-pipeline}
 \end{figure}
